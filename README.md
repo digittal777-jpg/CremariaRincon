@@ -32,6 +32,13 @@ Abre `http://localhost:3100`.
 npm.cmd run dev
 ```
 
+## Modo offline en Railway
+
+- La app guarda una copia local del catalogo, ventas recientes, inventario y cola de operaciones pendientes en el navegador.
+- Despues de abrir la pagina con internet y dejar que carguen los productos al menos una vez, puedes recargar sin conexion y seguir trabajando con el ultimo estado guardado.
+- Las ventas y ajustes hechos sin internet se guardan localmente y se sincronizan cuando vuelve la conexion.
+- Si entras por primera vez sin que el catalogo se haya sincronizado antes, no habra datos locales para mostrar.
+
 ## Reimportar catalogo
 
 Desde la interfaz puedes usar el boton `Reimportar catalogo`, o desde terminal:

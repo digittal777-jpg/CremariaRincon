@@ -37,6 +37,9 @@ const STORAGE_KEYS = {
   snapshot: "cremeria.snapshot",
   queue: "cremeria.queue",
 };
+const OFFLINE_DB_NAME = "cremeria-rincon-offline";
+const OFFLINE_DB_VERSION = 1;
+const OFFLINE_DB_STORE = "app_state";
 
 const state = {
   products: [],
@@ -66,6 +69,7 @@ const state = {
 };
 
 const refs = {};
+let offlineDbPromise = null;
 
 function $(id) {
   return document.getElementById(id);
@@ -206,30 +210,150 @@ function isNetworkError(error) {
   return error instanceof TypeError;
 }
 
-function saveSnapshot(snapshot) {
-  localStorage.setItem(STORAGE_KEYS.snapshot, JSON.stringify(snapshot));
+function readStorageJson(key, fallbackValue = null) {
+  try {
+    const rawValue = localStorage.getItem(key);
+    return rawValue ? JSON.parse(rawValue) : fallbackValue;
+  } catch (_error) {
+    return fallbackValue;
+  }
 }
 
-function restoreSnapshot() {
+function writeStorageJson(key, value) {
   try {
-    const rawSnapshot = localStorage.getItem(STORAGE_KEYS.snapshot);
-    return rawSnapshot ? JSON.parse(rawSnapshot) : null;
+    localStorage.setItem(key, JSON.stringify(value));
   } catch (_error) {
-    return null;
+    // Ignora errores de almacenamiento local para no bloquear la caja.
   }
+}
+
+function readStorageText(key, fallbackValue = "") {
+  try {
+    const rawValue = localStorage.getItem(key);
+    return rawValue ?? fallbackValue;
+  } catch (_error) {
+    return fallbackValue;
+  }
+}
+
+function writeStorageText(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (_error) {
+    // Ignora errores de almacenamiento local para no bloquear la caja.
+  }
+}
+
+function openOfflineDb() {
+  if (typeof indexedDB === "undefined") {
+    return Promise.resolve(null);
+  }
+
+  if (!offlineDbPromise) {
+    offlineDbPromise = new Promise((resolve) => {
+      const request = indexedDB.open(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
+
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(OFFLINE_DB_STORE)) {
+          db.createObjectStore(OFFLINE_DB_STORE);
+        }
+      };
+
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+      request.onblocked = () => resolve(null);
+    });
+  }
+
+  return offlineDbPromise;
+}
+
+async function readOfflineRecord(key) {
+  const db = await openOfflineDb();
+  if (!db) {
+    return undefined;
+  }
+
+  return new Promise((resolve) => {
+    const transaction = db.transaction(OFFLINE_DB_STORE, "readonly");
+    const request = transaction.objectStore(OFFLINE_DB_STORE).get(key);
+
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(undefined);
+    transaction.onabort = () => resolve(undefined);
+  });
+}
+
+async function writeOfflineRecord(key, value) {
+  const db = await openOfflineDb();
+  if (!db) {
+    return false;
+  }
+
+  return new Promise((resolve) => {
+    const transaction = db.transaction(OFFLINE_DB_STORE, "readwrite");
+    transaction.objectStore(OFFLINE_DB_STORE).put(value, key);
+
+    transaction.oncomplete = () => resolve(true);
+    transaction.onerror = () => resolve(false);
+    transaction.onabort = () => resolve(false);
+  });
+}
+
+async function readPersistedJson(key, fallbackValue = null) {
+  const offlineValue = await readOfflineRecord(key);
+  if (typeof offlineValue !== "undefined") {
+    return offlineValue ?? fallbackValue;
+  }
+
+  return readStorageJson(key, fallbackValue);
+}
+
+async function readPersistedText(key, fallbackValue = "") {
+  const offlineValue = await readOfflineRecord(key);
+  if (typeof offlineValue !== "undefined") {
+    return offlineValue ?? fallbackValue;
+  }
+
+  return readStorageText(key, fallbackValue);
+}
+
+function persistJson(key, value) {
+  writeStorageJson(key, value);
+  void writeOfflineRecord(key, value);
+}
+
+function persistText(key, value) {
+  writeStorageText(key, value);
+  void writeOfflineRecord(key, value);
+}
+
+function buildPersistedSnapshot() {
+  return {
+    products: state.products,
+    lowStock: state.lowStock,
+    recentSales: state.recentSales,
+    salesByHour: state.salesByHour,
+    shiftSummary: state.shiftSummary,
+    summary: state.summary,
+  };
+}
+
+function saveSnapshot(snapshot) {
+  persistJson(STORAGE_KEYS.snapshot, snapshot);
+}
+
+async function restoreSnapshot() {
+  return readPersistedJson(STORAGE_KEYS.snapshot, null);
 }
 
 function saveQueue() {
-  localStorage.setItem(STORAGE_KEYS.queue, JSON.stringify(state.pendingQueue));
+  persistJson(STORAGE_KEYS.queue, state.pendingQueue);
 }
 
-function restoreQueue() {
-  try {
-    const rawQueue = localStorage.getItem(STORAGE_KEYS.queue);
-    state.pendingQueue = rawQueue ? JSON.parse(rawQueue) : [];
-  } catch (_error) {
-    state.pendingQueue = [];
-  }
+async function restoreQueue() {
+  state.pendingQueue = await readPersistedJson(STORAGE_KEYS.queue, []);
 }
 
 function renderSyncStatus() {
@@ -280,26 +404,21 @@ async function requestJson(url, options = {}) {
 }
 
 function saveCart() {
-  localStorage.setItem(STORAGE_KEYS.cart, JSON.stringify(state.cart));
+  persistJson(STORAGE_KEYS.cart, state.cart);
 }
 
-function restoreCart() {
-  try {
-    const rawCart = localStorage.getItem(STORAGE_KEYS.cart);
-    state.cart = rawCart ? JSON.parse(rawCart) : [];
-  } catch (_error) {
-    state.cart = [];
-  }
+async function restoreCart() {
+  state.cart = await readPersistedJson(STORAGE_KEYS.cart, []);
 }
 
 function persistPreferences() {
-  localStorage.setItem(STORAGE_KEYS.shift, refs.shiftSelect.value);
-  localStorage.setItem(STORAGE_KEYS.cashier, refs.cashierInput.value.trim());
+  persistText(STORAGE_KEYS.shift, refs.shiftSelect.value);
+  persistText(STORAGE_KEYS.cashier, refs.cashierInput.value.trim());
 }
 
-function restorePreferences() {
-  const savedShift = localStorage.getItem(STORAGE_KEYS.shift);
-  const savedCashier = localStorage.getItem(STORAGE_KEYS.cashier);
+async function restorePreferences() {
+  const savedShift = await readPersistedText(STORAGE_KEYS.shift, "");
+  const savedCashier = await readPersistedText(STORAGE_KEYS.cashier, "");
 
   if (savedShift) {
     refs.shiftSelect.value = savedShift;
@@ -320,14 +439,16 @@ function getCartCount() {
   return state.cart.length;
 }
 
-function applySnapshot(snapshot) {
+function applySnapshot(snapshot, options = {}) {
   state.products = Array.isArray(snapshot.products) ? snapshot.products : [];
   state.lowStock = Array.isArray(snapshot.lowStock) ? snapshot.lowStock : [];
   state.recentSales = Array.isArray(snapshot.recentSales) ? snapshot.recentSales : [];
   state.salesByHour = Array.isArray(snapshot.salesByHour) ? snapshot.salesByHour : [];
   state.shiftSummary = Array.isArray(snapshot.shiftSummary) ? snapshot.shiftSummary : [];
   state.summary = snapshot.summary || state.summary;
-  saveSnapshot(snapshot);
+  if (!options.skipPersist) {
+    saveSnapshot(buildPersistedSnapshot());
+  }
 
   renderSummary();
   renderCategoryFilters();
@@ -384,6 +505,7 @@ function applyOptimisticProductUpdate(productId, payload) {
   });
 
   rebuildInventoryDerivedState();
+  saveSnapshot(buildPersistedSnapshot());
   renderSummary();
   renderProducts();
   renderLowStock();
@@ -463,6 +585,7 @@ function applyOptimisticSale(payload) {
   );
 
   rebuildInventoryDerivedState();
+  saveSnapshot(buildPersistedSnapshot());
   renderSummary();
   renderProducts();
   renderLowStock();
@@ -1168,10 +1291,12 @@ function connectSocket() {
 
   state.socket.on("connect", () => {
     refs.socketStatus.textContent = "En vivo";
+    state.online = true;
+    renderSyncStatus();
   });
 
   state.socket.on("disconnect", () => {
-    refs.socketStatus.textContent = "Reconectando...";
+    refs.socketStatus.textContent = state.online ? "Reconectando..." : "Sin conexion";
   });
 
   state.socket.on("dashboard:snapshot", (snapshot) => {
@@ -1229,12 +1354,14 @@ async function syncPendingQueue() {
 function registerConnectionEvents() {
   window.addEventListener("online", () => {
     state.online = true;
+    refs.socketStatus.textContent = "Reconectando...";
     renderSyncStatus();
     syncPendingQueue();
   });
 
   window.addEventListener("offline", () => {
     state.online = false;
+    refs.socketStatus.textContent = "Sin conexion";
     renderSyncStatus();
   });
 }
@@ -1288,9 +1415,9 @@ async function bootstrap() {
   refs.networkStatus = $("network-status");
   refs.syncStatus = $("sync-status");
 
-  restorePreferences();
-  restoreCart();
-  restoreQueue();
+  await restorePreferences();
+  await restoreCart();
+  await restoreQueue();
   renderCart();
   updateClock();
   renderSyncStatus();
@@ -1425,14 +1552,22 @@ async function bootstrap() {
   registerConnectionEvents();
   registerServiceWorker();
 
+  const cachedSnapshot = await restoreSnapshot();
+  if (cachedSnapshot) {
+    applySnapshot(cachedSnapshot, { skipPersist: true });
+    if (!state.online) {
+      refs.socketStatus.textContent = "Sin conexion";
+      showToast("Cargando ultimo estado guardado en modo offline.", "info");
+    }
+  }
+
   try {
     const snapshot = await performJsonRequest("/api/bootstrap");
     applySnapshot(snapshot);
   } catch (_error) {
-    const cachedSnapshot = restoreSnapshot();
     if (cachedSnapshot) {
-      applySnapshot(cachedSnapshot);
-      showToast("Cargando ultimo estado guardado en modo offline.", "info");
+      refs.socketStatus.textContent = "Sin conexion";
+      showToast("Trabajando con el ultimo estado guardado localmente.", "info");
     } else {
       throw _error;
     }
