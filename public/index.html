@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#b44c59" />
+    <title>Cremeria El Rincon | Punto de Venta</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=Manrope:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <div class="ambient ambient-three"></div>
+
+    <div class="page-shell">
+      <header class="hero-card">
+        <div class="brand-lockup">
+          <div class="brand-mark">ER</div>
+          <div>
+            <p class="eyebrow">Centro de control comercial</p>
+            <h1>Cremeria El Rincon</h1>
+            <p class="hero-copy">
+              Caja rapida, inventario vivo y seguimiento inmediato de cada venta.
+            </p>
+          </div>
+        </div>
+
+        <div class="hero-status">
+          <div class="live-pill">
+            <span class="live-dot"></span>
+            <span id="socket-status">Conectando...</span>
+          </div>
+          <div class="live-pill secondary-pill">
+            <span id="network-status">En linea</span>
+          </div>
+          <div class="live-pill secondary-pill">
+            <span id="sync-status">Sin pendientes</span>
+          </div>
+          <div class="clock-card">
+            <span id="live-date">--</span>
+            <strong id="live-time">--:--</strong>
+          </div>
+        </div>
+      </header>
+
+      <section class="stats-grid" id="summary-cards"></section>
+
+      <main class="main-layout">
+        <section class="panel pos-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Caja</p>
+              <h2>Venta asistida</h2>
+            </div>
+            <div class="panel-actions">
+              <button class="secondary-button" id="refresh-catalog-button" type="button">
+                Reimportar catalogo
+              </button>
+              <button class="secondary-button" id="export-workbook-button" type="button">
+                Exportar Excel
+              </button>
+            </div>
+          </div>
+
+          <div class="toolbar-grid">
+            <label class="field">
+              <span>Turno</span>
+              <select id="shift-select">
+                <option value="Manana">Manana</option>
+                <option value="Tarde" selected>Tarde</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Cajero</span>
+              <input id="cashier-input" type="text" placeholder="Mostrador principal" />
+            </label>
+
+            <label class="field field-search">
+              <span>Buscar producto</span>
+              <input id="search-input" type="search" placeholder="Queso, miel, pay..." />
+            </label>
+          </div>
+
+          <div class="category-bar" id="category-filters"></div>
+
+          <div class="products-grid" id="products-grid"></div>
+        </section>
+
+        <aside class="sidebar-stack">
+          <section class="panel cart-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Carrito actual</p>
+                <h2>Cobro</h2>
+              </div>
+              <span class="small-pill" id="cart-count">0 lineas</span>
+            </div>
+
+            <div class="cart-items" id="cart-items"></div>
+
+            <div class="cart-summary">
+              <div class="summary-row">
+                <span>Total</span>
+                <strong id="cart-total">$0.00</strong>
+              </div>
+
+              <div class="cart-actions">
+                <button class="ghost-button" id="clear-cart-button" type="button">
+                  Vaciar
+                </button>
+                <button class="primary-button" id="open-payment-button" type="button">
+                  Cobrar ahora
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel feed-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Tiempo real</p>
+                <h2>Ventas recientes</h2>
+              </div>
+            </div>
+            <div class="feed-list" id="recent-sales"></div>
+          </section>
+
+          <section class="panel low-stock-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Atencion</p>
+                <h2>Stock sensible</h2>
+              </div>
+            </div>
+            <div class="alert-list" id="low-stock-list"></div>
+          </section>
+        </aside>
+      </main>
+
+      <section class="bottom-layout">
+        <section class="panel trend-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Pulso del dia</p>
+              <h2>Ventas por hora</h2>
+            </div>
+          </div>
+
+          <div class="trend-chart" id="trend-chart"></div>
+          <div class="shift-chips" id="shift-summary"></div>
+        </section>
+
+        <section class="panel inventory-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Inventario</p>
+                <h2>Control editable</h2>
+              </div>
+            <span class="helper-text">Guarda cambios de precio, existencia, minimo, estado y nota.</span>
+          </div>
+
+          <div class="inventory-table-wrap">
+            <table class="inventory-table">
+              <thead>
+                <tr>
+                  <th>Producto</th>
+                  <th>Precio</th>
+                  <th>Existencia</th>
+                  <th>Minimo</th>
+                  <th>Activo</th>
+                  <th>Nota</th>
+                  <th>Estado</th>
+                  <th>Accion</th>
+                </tr>
+              </thead>
+              <tbody id="inventory-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </div>
+
+    <div class="modal-shell" id="item-modal">
+      <div class="modal-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Agregar al carrito</p>
+            <h3 id="item-modal-name">Producto</h3>
+            <p class="modal-note" id="item-modal-meta"></p>
+          </div>
+          <button class="icon-button" id="close-item-modal" type="button">×</button>
+        </div>
+
+        <div class="modal-body">
+          <label class="field">
+            <span>Cantidad</span>
+            <div class="stepper-wrap">
+              <button class="stepper-button" data-step="-1" type="button">-</button>
+              <input id="item-quantity" type="number" min="0.001" step="0.25" />
+              <button class="stepper-button" data-step="1" type="button">+</button>
+            </div>
+          </label>
+
+          <label class="field">
+            <span>Total de la linea</span>
+            <input id="item-total" type="number" min="0" step="0.01" />
+          </label>
+        </div>
+
+        <div class="modal-actions">
+          <button class="ghost-button" id="cancel-item-button" type="button">Cancelar</button>
+          <button class="primary-button" id="add-item-button" type="button">Agregar</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-shell" id="payment-modal">
+      <div class="modal-card payment-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Cobro</p>
+            <h3>Confirmar venta</h3>
+            <p class="modal-note">Procesa el ticket y descuenta inventario al instante.</p>
+          </div>
+          <button class="icon-button" id="close-payment-modal" type="button">×</button>
+        </div>
+
+        <div class="payment-total-box">
+          <span>Total a pagar</span>
+          <strong id="payment-total">$0.00</strong>
+        </div>
+
+        <div class="payment-methods" id="payment-methods">
+          <button class="payment-method active" data-method="Efectivo" type="button">
+            Efectivo
+          </button>
+          <button class="payment-method" data-method="Tarjeta" type="button">
+            Tarjeta
+          </button>
+          <button class="payment-method" data-method="Transferencia" type="button">
+            Transferencia
+          </button>
+        </div>
+
+        <div id="cash-payment-block">
+          <div class="money-display" id="money-display">$0.00</div>
+          <div class="keypad" id="payment-keypad">
+            <button type="button" data-digit="1">1</button>
+            <button type="button" data-digit="2">2</button>
+            <button type="button" data-digit="3">3</button>
+            <button type="button" data-action="clear-money">C</button>
+            <button type="button" data-digit="4">4</button>
+            <button type="button" data-digit="5">5</button>
+            <button type="button" data-digit="6">6</button>
+            <button type="button" data-digit="00">00</button>
+            <button type="button" data-digit="7">7</button>
+            <button type="button" data-digit="8">8</button>
+            <button type="button" data-digit="9">9</button>
+            <button type="button" data-digit=".">.</button>
+            <button class="wide" type="button" data-digit="0">0</button>
+            <button type="button" data-action="backspace">⌫</button>
+          </div>
+        </div>
+
+        <div class="payment-meta">
+          <div>
+            <span>Recibido</span>
+            <strong id="payment-received">$0.00</strong>
+          </div>
+          <div>
+            <span>Cambio</span>
+            <strong id="payment-change">$0.00</strong>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button class="ghost-button" id="cancel-payment-button" type="button">
+            Cancelar
+          </button>
+          <button class="primary-button" id="confirm-sale-button" type="button">
+            Completar venta
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast-region" id="toast-region"></div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

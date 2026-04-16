@@ -1,0 +1,22 @@
+{
+  "name": "cremaria-rincon-pos",
+  "version": "1.0.0",
+  "description": "Punto de venta profesional con inventario y ventas en tiempo real para Cremeria El Rincon.",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "import:excel": "node scripts/import-workbook.js",
+    "test": "node --test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "socket.io": "^4.8.3"
+  }
+}

@@ -1,0 +1,62 @@
+# Cremeria El Rincon POS
+
+Punto de venta profesional hecho con Node.js para registrar ventas, monitorear inventario y ver actividad en tiempo real desde una sola interfaz.
+
+## Lo que incluye
+
+- Caja rapida con carrito, cobro, cambio y turnos.
+- Inventario editable con alertas de stock.
+- Panel en tiempo real con ventas recientes, resumen del dia y ventas por hora.
+- Base de datos local en SQLite.
+- Importacion inicial del catalogo desde tu archivo de Excel.
+
+## Requisitos
+
+- Node.js 24 o superior.
+- El archivo `Queseria El rincon V1.5.xlsx` disponible en:
+  - `C:\Users\Cristina\Downloads\Queseria El rincon V1.5.xlsx`
+  - o una ruta personalizada usando `POS_WORKBOOK_PATH`
+
+## Como iniciar
+
+```powershell
+npm.cmd install
+npm.cmd start
+```
+
+Abre `http://localhost:3100`.
+
+## Desarrollo
+
+```powershell
+npm.cmd run dev
+```
+
+## Reimportar catalogo
+
+Desde la interfaz puedes usar el boton `Reimportar catalogo`, o desde terminal:
+
+```powershell
+npm.cmd run import:excel
+```
+
+Si necesitas otra ruta:
+
+```powershell
+$env:POS_WORKBOOK_PATH='C:\ruta\mi-archivo.xlsx'
+npm.cmd run import:excel
+```
+
+## Estructura
+
+- `src/server.js`: servidor HTTP y Socket.IO.
+- `src/store.js`: logica de ventas, inventario y dashboard.
+- `src/db.js`: inicializacion de SQLite.
+- `src/catalogParser.js`: lectura del Excel.
+- `public/`: interfaz web.
+
+## Notas
+
+- La base de datos se guarda en `data/cremaria-rincon.sqlite`.
+- La primera vez que arranca, el sistema importa el catalogo automaticamente si encuentra el Excel.
+- Los productos arrancan como `Pendiente` hasta que captures inventario o registres movimiento en ellos.
