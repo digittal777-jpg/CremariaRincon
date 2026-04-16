@@ -9,8 +9,13 @@ const STORE_TIME_ZONE = process.env.POS_TIMEZONE || "America/Mexico_City";
 const STORE_SHIFTS = ["Manana", "Tarde"];
 const SALES_PULSE_START_HOUR = 8;
 const SALES_PULSE_END_HOUR = 20;
+const PROJECT_WORKBOOK_PATH = path.join(ROOT_DIR, "Queseria El rincon V1.5.xlsx");
+const CUSTOM_WORKBOOK_PATH = process.env.POS_WORKBOOK_PATH
+  ? path.resolve(ROOT_DIR, process.env.POS_WORKBOOK_PATH)
+  : null;
 const DEFAULT_WORKBOOK_PATHS = [
-  process.env.POS_WORKBOOK_PATH,
+  CUSTOM_WORKBOOK_PATH,
+  PROJECT_WORKBOOK_PATH,
   path.join(process.env.USERPROFILE || "", "Downloads", "Queseria El rincon V1.5.xlsx"),
 ].filter(Boolean);
 

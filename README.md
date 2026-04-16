@@ -13,9 +13,9 @@ Punto de venta profesional hecho con Node.js para registrar ventas, monitorear i
 ## Requisitos
 
 - Node.js 24 o superior.
-- El archivo `Queseria El rincon V1.5.xlsx` disponible en:
-  - `C:\Users\Cristina\Downloads\Queseria El rincon V1.5.xlsx`
-  - o una ruta personalizada usando `POS_WORKBOOK_PATH`
+- El archivo `Queseria El rincon V1.5.xlsx` ya puede vivir dentro del proyecto en la raiz:
+  - `C:\Users\Cristina\Desktop\CremariaRicon\Queseria El rincon V1.5.xlsx`
+- Si prefieres otra ubicacion, puedes personalizar `POS_WORKBOOK_PATH`.
 
 ## Como iniciar
 
@@ -43,6 +43,13 @@ npm.cmd run import:excel
 Si necesitas otra ruta:
 
 ```powershell
+$env:POS_WORKBOOK_PATH='.\Queseria El rincon V1.5.xlsx'
+npm.cmd run import:excel
+```
+
+Tambien puedes apuntarlo a cualquier otra carpeta:
+
+```powershell
 $env:POS_WORKBOOK_PATH='C:\ruta\mi-archivo.xlsx'
 npm.cmd run import:excel
 ```
@@ -58,5 +65,5 @@ npm.cmd run import:excel
 ## Notas
 
 - La base de datos se guarda en `data/cremaria-rincon.sqlite`.
-- La primera vez que arranca, el sistema importa el catalogo automaticamente si encuentra el Excel.
+- La primera vez que arranca, el sistema importa el catalogo automaticamente si encuentra el Excel en `POS_WORKBOOK_PATH`, en la raiz del proyecto o en `Downloads`.
 - Los productos arrancan como `Pendiente` hasta que captures inventario o registres movimiento en ellos.
