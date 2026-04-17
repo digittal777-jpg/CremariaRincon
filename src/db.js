@@ -64,9 +64,32 @@ function initializeSchema(db) {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS register_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_type TEXT NOT NULL,
+      shift TEXT NOT NULL,
+      cashier TEXT NOT NULL,
+      opening_amount REAL NOT NULL DEFAULT 0,
+      counted_amount REAL NOT NULL DEFAULT 0,
+      expected_cash REAL NOT NULL DEFAULT 0,
+      difference_amount REAL NOT NULL DEFAULT 0,
+      cash_sales REAL NOT NULL DEFAULT 0,
+      non_cash_sales REAL NOT NULL DEFAULT 0,
+      total_sales REAL NOT NULL DEFAULT 0,
+      notes TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
     CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);
     CREATE INDEX IF NOT EXISTS idx_inventory_movements_product_id ON inventory_movements(product_id);
+    CREATE INDEX IF NOT EXISTS idx_register_events_shift_created_at ON register_events(shift, created_at);
   `);
 
   const productColumns = db.prepare("PRAGMA table_info(products)").all();

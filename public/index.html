@@ -60,11 +60,8 @@
               <h2>Venta asistida</h2>
             </div>
             <div class="panel-actions">
-              <button class="secondary-button" id="refresh-catalog-button" type="button">
-                Reimportar catalogo
-              </button>
-              <button class="secondary-button" id="export-workbook-button" type="button">
-                Exportar Excel
+              <button class="secondary-button" id="open-admin-button" type="button">
+                Panel admin
               </button>
             </div>
           </div>
@@ -87,6 +84,21 @@
               <span>Buscar producto</span>
               <input id="search-input" type="search" placeholder="Queso, miel, pay..." />
             </label>
+          </div>
+
+          <div class="register-toolbar">
+            <button class="secondary-button" id="open-start-register-button" type="button">
+              Inicio de dia
+            </button>
+            <button class="secondary-button" id="open-quick-cut-button" type="button">
+              Corte rapido
+            </button>
+            <button class="secondary-button" id="open-final-cut-button" type="button">
+              Corte final
+            </button>
+            <span class="small-pill register-pill" id="register-summary-pill">
+              Caja sin iniciar para este turno
+            </span>
           </div>
 
           <div class="category-bar" id="category-filters"></div>
@@ -133,6 +145,16 @@
             <div class="feed-list" id="recent-sales"></div>
           </section>
 
+          <section class="panel activity-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Historial</p>
+                <h2>Movimientos realizados</h2>
+              </div>
+            </div>
+            <div class="activity-list" id="activity-list"></div>
+          </section>
+
           <section class="panel low-stock-panel">
             <div class="panel-head">
               <div>
@@ -145,7 +167,7 @@
         </aside>
       </main>
 
-      <section class="bottom-layout">
+      <section class="bottom-layout single-panel">
         <section class="panel trend-panel">
           <div class="panel-head">
             <div>
@@ -156,34 +178,6 @@
 
           <div class="trend-chart" id="trend-chart"></div>
           <div class="shift-chips" id="shift-summary"></div>
-        </section>
-
-        <section class="panel inventory-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Inventario</p>
-                <h2>Control editable</h2>
-              </div>
-            <span class="helper-text">Guarda cambios de precio, existencia, minimo, estado y nota.</span>
-          </div>
-
-          <div class="inventory-table-wrap">
-            <table class="inventory-table">
-              <thead>
-                <tr>
-                  <th>Producto</th>
-                  <th>Precio</th>
-                  <th>Existencia</th>
-                  <th>Minimo</th>
-                  <th>Activo</th>
-                  <th>Nota</th>
-                  <th>Estado</th>
-                  <th>Accion</th>
-                </tr>
-              </thead>
-              <tbody id="inventory-body"></tbody>
-            </table>
-          </div>
         </section>
       </section>
     </div>
@@ -287,6 +281,396 @@
           </button>
           <button class="primary-button" id="confirm-sale-button" type="button">
             Completar venta
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-shell priority-modal" id="quick-import-modal">
+      <div class="modal-card quick-import-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Inventario</p>
+            <h3>Importacion rapida</h3>
+            <p class="modal-note" id="quick-import-description">
+              Captura inventario inicial o entradas de proveedor sin editar fila por fila.
+            </p>
+          </div>
+          <button class="icon-button" id="close-quick-import-modal" type="button">×</button>
+        </div>
+
+        <div class="quick-import-mode-bar" id="quick-import-mode-bar">
+          <button class="payment-method active" data-mode="initial" type="button">
+            Inventario inicial
+          </button>
+          <button class="payment-method" data-mode="supplier" type="button">
+            Entrada de proveedor
+          </button>
+        </div>
+
+        <div class="quick-import-layout">
+          <section class="quick-import-main">
+            <div class="quick-import-progress">
+              <div>
+                <span class="eyebrow">Progreso</span>
+                <strong id="quick-import-progress-text">0 de 0</strong>
+              </div>
+              <div class="quick-import-progress-bar">
+                <span id="quick-import-progress-fill"></span>
+              </div>
+            </div>
+
+            <div class="quick-import-empty" id="quick-import-empty" hidden>
+              No hay productos activos para captura rapida.
+            </div>
+
+            <div id="quick-import-content">
+              <div class="quick-import-product-head">
+                <div>
+                  <h4 id="quick-import-product-name">Producto</h4>
+                  <p class="modal-note" id="quick-import-product-meta">Categoria · unidad</p>
+                </div>
+                <span class="status-chip ok" id="quick-import-product-status">Disponible</span>
+              </div>
+
+              <div class="quick-import-stats">
+                <article class="quick-import-stat">
+                  <span>Existencia anterior</span>
+                  <strong id="quick-import-stock-before">0</strong>
+                </article>
+                <article class="quick-import-stat">
+                  <span>Vendido hoy</span>
+                  <strong id="quick-import-sold-today">0</strong>
+                </article>
+                <article class="quick-import-stat">
+                  <span>Resultado</span>
+                  <strong id="quick-import-stock-result">0</strong>
+                </article>
+              </div>
+
+              <div class="quick-import-fields">
+                <label class="field quick-import-provider-field" id="quick-import-direction-field">
+                  <span>Movimiento proveedor</span>
+                  <select id="quick-import-direction">
+                    <option value="in">Entrega producto</option>
+                    <option value="out">Se lleva producto</option>
+                  </select>
+                </label>
+
+                <label class="field quick-import-provider-field" id="quick-import-provider-field">
+                  <span>Proveedor</span>
+                  <input id="quick-import-supplier" type="text" placeholder="Ej. Lala, Sigma, rancho..." />
+                </label>
+
+                <label class="field">
+                  <span id="quick-import-value-label">Inventario inicial a sumar</span>
+                  <input id="quick-import-value" type="number" min="0" step="0.25" />
+                </label>
+
+                <label class="field">
+                  <span>Nota</span>
+                  <input id="quick-import-note" type="text" maxlength="120" placeholder="Opcional" />
+                </label>
+              </div>
+
+              <p class="modal-note" id="quick-import-helper">
+                Presiona Enter para guardar y avanzar al siguiente producto.
+              </p>
+            </div>
+          </section>
+
+          <aside class="quick-import-side">
+            <div class="quick-import-side-card">
+              <span class="eyebrow">Siguiente</span>
+              <div class="quick-import-next-list" id="quick-import-next-list"></div>
+            </div>
+          </aside>
+        </div>
+
+        <div class="modal-actions">
+          <button class="ghost-button" id="quick-import-prev-button" type="button">
+            Anterior
+          </button>
+          <button class="ghost-button" id="quick-import-skip-button" type="button">
+            Saltar
+          </button>
+          <button class="primary-button" id="quick-import-save-button" type="button">
+            Guardar y siguiente
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-shell" id="register-modal">
+      <div class="modal-card register-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow" id="register-modal-eyebrow">Caja</p>
+            <h3 id="register-modal-title">Inicio de dia</h3>
+            <p class="modal-note" id="register-modal-description">
+              Registra el monto con el que arranca la caja del turno.
+            </p>
+          </div>
+          <button class="icon-button" id="close-register-modal" type="button">×</button>
+        </div>
+
+        <div class="register-summary-grid" id="register-summary-grid">
+          <article class="register-summary-card">
+            <span>Caja inicial</span>
+            <strong id="register-opening-amount">$0.00</strong>
+          </article>
+          <article class="register-summary-card">
+            <span>Ventas en efectivo</span>
+            <strong id="register-cash-sales">$0.00</strong>
+          </article>
+          <article class="register-summary-card">
+            <span>Efectivo esperado</span>
+            <strong id="register-expected-cash">$0.00</strong>
+          </article>
+          <article class="register-summary-card">
+            <span>Total vendido</span>
+            <strong id="register-total-sales">$0.00</strong>
+          </article>
+        </div>
+
+        <div class="modal-body">
+          <label class="field">
+            <span id="register-amount-label">Monto inicial de caja</span>
+            <input id="register-amount-input" type="number" min="0" step="0.01" />
+          </label>
+
+          <label class="field">
+            <span>Nota</span>
+            <input id="register-note-input" type="text" maxlength="180" placeholder="Opcional" />
+          </label>
+
+          <p class="modal-note" id="register-helper-text">
+            El turno actual se toma desde el selector principal.
+          </p>
+        </div>
+
+        <div class="modal-actions">
+          <button class="ghost-button" id="cancel-register-button" type="button">
+            Cancelar
+          </button>
+          <button class="primary-button" id="save-register-button" type="button">
+            Guardar
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-shell" id="detail-viewer-modal">
+      <div class="modal-card detail-viewer-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Detalle</p>
+            <h3 id="detail-viewer-title">Movimiento</h3>
+            <p class="modal-note" id="detail-viewer-meta"></p>
+          </div>
+          <button class="icon-button" id="close-detail-viewer-modal" type="button">×</button>
+        </div>
+        <div class="detail-viewer-body" id="detail-viewer-body"></div>
+      </div>
+    </div>
+
+    <div class="modal-shell" id="admin-modal">
+      <div class="modal-card admin-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Administracion</p>
+            <h3>Panel admin</h3>
+            <p class="modal-note">
+              Control total del catalogo, inventario y metricas en tiempo real sin cargar la caja principal.
+            </p>
+          </div>
+          <button class="icon-button" id="close-admin-modal" type="button">×</button>
+        </div>
+
+        <div class="admin-actions">
+          <button class="secondary-button" id="refresh-catalog-button" type="button">
+            Reimportar catalogo
+          </button>
+          <button class="secondary-button" id="export-workbook-button" type="button">
+            Exportar Excel
+          </button>
+          <button class="primary-button" id="open-quick-import-button" type="button">
+            Importacion rapida
+          </button>
+        </div>
+
+        <div class="admin-layout">
+          <section class="admin-metrics-panel">
+            <div class="panel-head admin-subhead">
+              <div>
+                <p class="eyebrow">Metricas</p>
+                <h2>Rendimiento en vivo</h2>
+              </div>
+              <span class="small-pill" id="admin-metrics-status">Esperando datos</span>
+            </div>
+
+            <div class="admin-metrics-grid">
+              <article class="admin-metric-card">
+                <span>CPU app</span>
+                <strong id="admin-process-cpu">0%</strong>
+              </article>
+              <article class="admin-metric-card">
+                <span>Memoria app</span>
+                <strong id="admin-process-memory">0 MB</strong>
+              </article>
+              <article class="admin-metric-card">
+                <span>Render catalogo</span>
+                <strong id="admin-products-render">0 ms</strong>
+              </article>
+              <article class="admin-metric-card">
+                <span>Snapshot UI</span>
+                <strong id="admin-snapshot-render">0 ms</strong>
+              </article>
+              <article class="admin-metric-card">
+                <span>Productos visibles</span>
+                <strong id="admin-visible-products">0</strong>
+              </article>
+              <article class="admin-metric-card">
+                <span>Nodos DOM</span>
+                <strong id="admin-dom-nodes">0</strong>
+              </article>
+            </div>
+
+            <div class="admin-system-grid">
+              <article class="admin-system-card">
+                <span>Servidor</span>
+                <strong id="admin-server-runtime">0s</strong>
+                <p id="admin-server-memory">RAM sistema 0%</p>
+              </article>
+              <article class="admin-system-card">
+                <span>Cliente</span>
+                <strong id="admin-client-memory">Sin dato</strong>
+                <p id="admin-client-hardware">CPU 0 · RAM 0 GB</p>
+                <p id="admin-client-network">Red sin dato</p>
+              </article>
+            </div>
+          </section>
+
+          <section class="panel inventory-panel admin-inventory-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Inventario</p>
+                <h2>Control editable</h2>
+              </div>
+              <span class="helper-text">Guarda cambios de precio, existencia, minimo, estado y nota.</span>
+            </div>
+
+            <div class="inventory-table-wrap">
+              <table class="inventory-table">
+                <thead>
+                  <tr>
+                    <th>Producto</th>
+                    <th>Precio</th>
+                    <th>Existencia</th>
+                    <th>Minimo</th>
+                    <th>Activo</th>
+                    <th>Nota</th>
+                    <th>Estado</th>
+                    <th>Accion</th>
+                  </tr>
+                </thead>
+                <tbody id="inventory-body"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <div class="admin-editor-layout">
+          <section class="admin-records-panel">
+            <div class="panel-head admin-subhead">
+              <div>
+                <p class="eyebrow">Ventas</p>
+                <h2>Editar ventas</h2>
+              </div>
+            </div>
+            <div class="admin-record-list" id="admin-sales-list"></div>
+          </section>
+
+          <section class="admin-records-panel">
+            <div class="panel-head admin-subhead">
+              <div>
+                <p class="eyebrow">Caja</p>
+                <h2>Editar cortes e inicios</h2>
+              </div>
+            </div>
+            <div class="admin-record-list" id="admin-register-events-list"></div>
+          </section>
+
+          <section class="admin-records-panel">
+            <div class="panel-head admin-subhead">
+              <div>
+                <p class="eyebrow">Inventario</p>
+                <h2>Editar movimientos</h2>
+              </div>
+            </div>
+            <div class="admin-record-list" id="admin-inventory-movements-list"></div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-shell priority-modal" id="admin-auth-modal">
+      <div class="modal-card auth-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Seguridad</p>
+            <h3 id="admin-auth-title">Acceso admin</h3>
+            <p class="modal-note" id="admin-auth-description">
+              Ingresa la contrasena para abrir el panel admin.
+            </p>
+          </div>
+          <button class="icon-button" id="close-admin-auth-modal" type="button">×</button>
+        </div>
+
+        <div class="modal-body">
+          <label class="field">
+            <span id="admin-auth-password-label">Contrasena</span>
+            <input id="admin-auth-password" type="password" autocomplete="current-password" />
+          </label>
+
+          <label class="field" id="admin-auth-confirm-field" hidden>
+            <span>Confirmar contrasena</span>
+            <input id="admin-auth-confirm-password" type="password" autocomplete="new-password" />
+          </label>
+        </div>
+
+        <div class="modal-actions">
+          <button class="ghost-button" id="cancel-admin-auth-button" type="button">
+            Cancelar
+          </button>
+          <button class="primary-button" id="save-admin-auth-button" type="button">
+            Continuar
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-shell priority-modal" id="admin-editor-modal">
+      <div class="modal-card editor-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Edicion admin</p>
+            <h3 id="admin-editor-title">Editar registro</h3>
+            <p class="modal-note" id="admin-editor-description">
+              Ajusta los datos y guarda los cambios.
+            </p>
+          </div>
+          <button class="icon-button" id="close-admin-editor-modal" type="button">×</button>
+        </div>
+
+        <div class="modal-body" id="admin-editor-body"></div>
+
+        <div class="modal-actions">
+          <button class="ghost-button" id="cancel-admin-editor-button" type="button">
+            Cancelar
+          </button>
+          <button class="primary-button" id="save-admin-editor-button" type="button">
+            Guardar cambios
           </button>
         </div>
       </div>

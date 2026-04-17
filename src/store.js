@@ -11,7 +11,7 @@ const {
   STORE_SHIFTS,
   STORE_TIME_ZONE,
 } = require("./config");
-const { getDb, getTodayBounds, nowIso } = require("./db");
+const { getDb, nowIso } = require("./db");
 
 const db = getDb();
 
@@ -22,6 +22,17 @@ const CATEGORY_LABELS = {
   piezas: "Piezas",
   general: "General",
 };
+const storeDatePartsFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: STORE_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+const storeHourFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: STORE_TIME_ZONE,
+  hour: "2-digit",
+  hour12: false,
+});
 
 function createHttpError(message, statusCode = 400) {
   const error = new Error(message);
@@ -40,6 +51,28 @@ function roundMoney(value) {
 
 function roundStock(value) {
   return Math.round((toNumber(value) + Number.EPSILON) * 1000) / 1000;
+}
+
+function getStoreDateParts(value = new Date()) {
+  return Object.fromEntries(
+    storeDatePartsFormatter
+      .formatToParts(new Date(value))
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+}
+
+function getStoreDateKey(value = new Date()) {
+  const parts = getStoreDateParts(value);
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function isSameStoreDay(value, baseDate = new Date()) {
+  return getStoreDateKey(value) === getStoreDateKey(baseDate);
+}
+
+function getStoreHourLabel(value) {
+  return `${storeHourFormatter.format(new Date(value))}:00`;
 }
 
 function normalizeText(value, maxLength = 80) {
@@ -227,6 +260,79 @@ function getProductById(productId) {
   return row ? mapProduct(row) : null;
 }
 
+function listStoreDaySales(baseDate = new Date()) {
+  return db.prepare(`
+    SELECT
+      id,
+      shift,
+      payment_method,
+      total,
+      subtotal,
+      item_count,
+      created_at
+    FROM sales
+    ORDER BY created_at DESC
+  `).all().filter((row) => isSameStoreDay(row.created_at, baseDate));
+}
+
+function listStoreDaySaleItems(baseDate = new Date()) {
+  return db.prepare(`
+    SELECT
+      s.created_at,
+      si.product_id,
+      si.product_name,
+      si.quantity,
+      si.line_total
+    FROM sale_items si
+    JOIN sales s ON s.id = si.sale_id
+    ORDER BY s.created_at DESC, si.id DESC
+  `).all().filter((row) => isSameStoreDay(row.created_at, baseDate));
+}
+
+function getQuickImportRows() {
+  const soldTodayByProductId = new Map();
+  listStoreDaySaleItems().forEach((item) => {
+    const currentValue = soldTodayByProductId.get(item.product_id) || 0;
+    soldTodayByProductId.set(
+      item.product_id,
+      roundStock(currentValue + roundStock(item.quantity)),
+    );
+  });
+
+  const rows = db.prepare(`
+    SELECT
+      p.id,
+      p.name,
+      p.price,
+      p.category,
+      p.unit,
+      p.type_code,
+      p.stock,
+      p.min_stock,
+      p.stock_initialized,
+      p.active,
+      p.display_order
+    FROM products p
+    WHERE p.active = 1
+    ORDER BY
+      CASE p.category
+        WHEN 'quesos' THEN 0
+        WHEN 'carnes' THEN 1
+        WHEN 'piezas' THEN 2
+        ELSE 3
+      END,
+      p.stock_initialized ASC,
+      p.display_order,
+      p.name COLLATE NOCASE
+  `).all();
+
+  return rows.map((row) => ({
+    ...mapProduct(row),
+    soldToday: roundStock(soldTodayByProductId.get(row.id) || 0),
+    recordedStock: roundStock(row.stock),
+  }));
+}
+
 function buildTicketPrefix(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -235,16 +341,8 @@ function buildTicketPrefix(date = new Date()) {
 }
 
 function getSummary() {
-  const { start, end } = getTodayBounds();
-  const todayTotals = db.prepare(`
-    SELECT
-      COUNT(*) AS ticketsToday,
-      COALESCE(SUM(total), 0) AS revenueToday,
-      COALESCE(AVG(total), 0) AS averageTicket,
-      COALESCE(SUM(item_count), 0) AS unitsSoldToday
-    FROM sales
-    WHERE created_at >= ? AND created_at < ?
-  `).get(start, end);
+  const todaySales = listStoreDaySales();
+  const todaySaleItems = listStoreDaySaleItems();
 
   const inventoryTotals = db.prepare(`
     SELECT
@@ -259,31 +357,39 @@ function getSummary() {
     FROM products
     WHERE active = 1 AND stock_initialized = 1 AND stock <= min_stock
   `).get().count;
+  const productTotals = new Map();
 
-  const topProduct = db.prepare(`
-    SELECT
-      si.product_name AS name,
-      COALESCE(SUM(si.line_total), 0) AS total
-    FROM sale_items si
-    JOIN sales s ON s.id = si.sale_id
-    WHERE s.created_at >= ? AND s.created_at < ?
-    GROUP BY si.product_name
-    ORDER BY total DESC
-    LIMIT 1
-  `).get(start, end);
+  todaySaleItems.forEach((item) => {
+    const currentValue = productTotals.get(item.product_name) || 0;
+    productTotals.set(
+      item.product_name,
+      roundMoney(currentValue + roundMoney(item.line_total)),
+    );
+  });
+
+  const topProductEntry = [...productTotals.entries()].sort(
+    (left, right) => right[1] - left[1],
+  )[0];
+  const ticketsToday = todaySales.length;
+  const revenueToday = roundMoney(
+    todaySales.reduce((sum, sale) => sum + roundMoney(sale.total), 0),
+  );
+  const unitsSoldToday = roundStock(
+    todaySales.reduce((sum, sale) => sum + roundStock(sale.item_count), 0),
+  );
 
   return {
-    ticketsToday: Number(todayTotals.ticketsToday || 0),
-    revenueToday: roundMoney(todayTotals.revenueToday),
-    averageTicket: roundMoney(todayTotals.averageTicket),
-    unitsSoldToday: roundStock(todayTotals.unitsSoldToday),
+    ticketsToday,
+    revenueToday,
+    averageTicket: roundMoney(revenueToday / Math.max(ticketsToday, 1)),
+    unitsSoldToday,
     catalogSize: Number(inventoryTotals.catalogSize || 0),
     inventoryValue: roundMoney(inventoryTotals.inventoryValue),
     lowStockCount: Number(lowStockCount || 0),
-    topProduct: topProduct
+    topProduct: topProductEntry
       ? {
-          name: topProduct.name,
-          total: roundMoney(topProduct.total),
+          name: topProductEntry[0],
+          total: roundMoney(topProductEntry[1]),
         }
       : null,
   };
@@ -377,20 +483,13 @@ function getLowStockProducts(limit = 8) {
 }
 
 function getSalesByHour() {
-  const { start, end } = getTodayBounds();
-  const rows = db.prepare(`
-    SELECT
-      strftime('%H:00', datetime(created_at, 'localtime')) AS hour_slot,
-      COALESCE(SUM(total), 0) AS total
-    FROM sales
-    WHERE created_at >= ? AND created_at < ?
-    GROUP BY hour_slot
-    ORDER BY hour_slot
-  `).all(start, end);
+  const salesByHourMap = new Map();
 
-  const salesByHourMap = new Map(
-    rows.map((row) => [row.hour_slot, roundMoney(row.total)]),
-  );
+  listStoreDaySales().forEach((sale) => {
+    const hourSlot = getStoreHourLabel(sale.created_at);
+    const currentValue = salesByHourMap.get(hourSlot) || 0;
+    salesByHourMap.set(hourSlot, roundMoney(currentValue + roundMoney(sale.total)));
+  });
 
   const slots = [];
   for (let hour = SALES_PULSE_START_HOUR; hour <= SALES_PULSE_END_HOUR; hour += 1) {
@@ -405,28 +504,18 @@ function getSalesByHour() {
 }
 
 function getShiftSummary() {
-  const { start, end } = getTodayBounds();
-  const rows = db.prepare(`
-    SELECT
-      shift,
-      COUNT(*) AS tickets,
-      COALESCE(SUM(total), 0) AS total
-    FROM sales
-    WHERE created_at >= ? AND created_at < ?
-    GROUP BY shift
-    ORDER BY total DESC
-  `).all(start, end);
+  const rowMap = new Map();
 
-  const rowMap = new Map(
-    rows.map((row) => [
-      row.shift,
-      {
-        shift: row.shift,
-        tickets: Number(row.tickets || 0),
-        total: roundMoney(row.total),
-      },
-    ]),
-  );
+  listStoreDaySales().forEach((sale) => {
+    const currentValue = rowMap.get(sale.shift) || {
+      shift: sale.shift,
+      tickets: 0,
+      total: 0,
+    };
+    currentValue.tickets += 1;
+    currentValue.total = roundMoney(currentValue.total + roundMoney(sale.total));
+    rowMap.set(sale.shift, currentValue);
+  });
 
   return STORE_SHIFTS.map((shift) =>
     rowMap.get(shift) || {
@@ -435,6 +524,408 @@ function getShiftSummary() {
       total: 0,
     },
   );
+}
+
+function getRegisterEventsForStoreDay(shift, baseDate = new Date()) {
+  return db.prepare(`
+    SELECT
+      id,
+      event_type,
+      shift,
+      cashier,
+      opening_amount,
+      counted_amount,
+      expected_cash,
+      difference_amount,
+      cash_sales,
+      non_cash_sales,
+      total_sales,
+      notes,
+      created_at
+    FROM register_events
+    WHERE shift = ?
+    ORDER BY created_at DESC, id DESC
+  `).all(shift).filter((row) => isSameStoreDay(row.created_at, baseDate));
+}
+
+function getRegisterSummary(shift) {
+  const normalizedShift = normalizeText(shift || STORE_SHIFTS[0], 24) || STORE_SHIFTS[0];
+  if (!STORE_SHIFTS.includes(normalizedShift)) {
+    throw createHttpError("Selecciona un turno valido para la caja.");
+  }
+
+  const sales = listStoreDaySales().filter((sale) => sale.shift === normalizedShift);
+  const events = getRegisterEventsForStoreDay(normalizedShift);
+  const startEvent = events.find((event) => event.event_type === "start") || null;
+  const openingAmount = roundMoney(startEvent?.opening_amount || 0);
+  const totalSales = roundMoney(
+    sales.reduce((sum, sale) => sum + roundMoney(sale.total), 0),
+  );
+  const cashSales = roundMoney(
+    sales
+      .filter((sale) => sale.payment_method === "Efectivo")
+      .reduce((sum, sale) => sum + roundMoney(sale.total), 0),
+  );
+  const cardSales = roundMoney(
+    sales
+      .filter((sale) => sale.payment_method === "Tarjeta")
+      .reduce((sum, sale) => sum + roundMoney(sale.total), 0),
+  );
+  const transferSales = roundMoney(
+    sales
+      .filter((sale) => sale.payment_method === "Transferencia")
+      .reduce((sum, sale) => sum + roundMoney(sale.total), 0),
+  );
+  const nonCashSales = roundMoney(totalSales - cashSales);
+
+  return {
+    shift: normalizedShift,
+    openingAmount,
+    cashSales,
+    cardSales,
+    transferSales,
+    nonCashSales,
+    totalSales,
+    expectedCash: roundMoney(openingAmount + cashSales),
+    tickets: sales.length,
+    lastStartAt: startEvent?.created_at || null,
+    lastStartCashier: startEvent?.cashier || null,
+    quickCuts: events.filter((event) => event.event_type === "quick_cut").length,
+    finalCuts: events.filter((event) => event.event_type === "final_cut").length,
+  };
+}
+
+function getRegisterEventById(eventId) {
+  const row = db.prepare(`
+    SELECT
+      id,
+      event_type,
+      shift,
+      cashier,
+      opening_amount,
+      counted_amount,
+      expected_cash,
+      difference_amount,
+      cash_sales,
+      non_cash_sales,
+      total_sales,
+      notes,
+      created_at
+    FROM register_events
+    WHERE id = ?
+  `).get(eventId);
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    eventType: row.event_type,
+    shift: row.shift,
+    cashier: row.cashier,
+    openingAmount: roundMoney(row.opening_amount),
+    countedAmount: roundMoney(row.counted_amount),
+    expectedCash: roundMoney(row.expected_cash),
+    differenceAmount: roundMoney(row.difference_amount),
+    cashSales: roundMoney(row.cash_sales),
+    nonCashSales: roundMoney(row.non_cash_sales),
+    totalSales: roundMoney(row.total_sales),
+    notes: row.notes || "",
+    createdAt: row.created_at,
+  };
+}
+
+function getInventoryMovementById(movementId) {
+  const row = db.prepare(`
+    SELECT
+      im.id,
+      im.product_id,
+      p.name AS product_name,
+      im.movement_type,
+      im.quantity_delta,
+      im.stock_before,
+      im.stock_after,
+      im.note,
+      im.reference_type,
+      im.reference_id,
+      im.created_at
+    FROM inventory_movements im
+    JOIN products p ON p.id = im.product_id
+    WHERE im.id = ?
+  `).get(movementId);
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    productId: row.product_id,
+    productName: row.product_name,
+    movementType: row.movement_type,
+    quantityDelta: roundStock(row.quantity_delta),
+    stockBefore: roundStock(row.stock_before),
+    stockAfter: roundStock(row.stock_after),
+    note: row.note || "",
+    referenceType: row.reference_type || "",
+    referenceId: row.reference_id,
+    createdAt: row.created_at,
+  };
+}
+
+function getRegisterEventTypeLabel(eventType) {
+  if (eventType === "start") {
+    return "Inicio de caja";
+  }
+
+  if (eventType === "quick_cut") {
+    return "Corte rapido";
+  }
+
+  if (eventType === "final_cut") {
+    return "Corte final";
+  }
+
+  return "Movimiento de caja";
+}
+
+function getInventoryMovementTypeLabel(movementType) {
+  if (movementType === "sale") {
+    return "Venta";
+  }
+
+  if (movementType === "initial") {
+    return "Inventario inicial";
+  }
+
+  if (movementType === "supplier") {
+    return "Entrada proveedor";
+  }
+
+  if (movementType === "supplier_out") {
+    return "Salida proveedor";
+  }
+
+  if (movementType === "adjustment") {
+    return "Ajuste manual";
+  }
+
+  return "Movimiento";
+}
+
+function getRecentActivity(limit = 18) {
+  const sales = getRecentSales(limit).map((sale) => ({
+    kind: "sale",
+    id: sale.id,
+    createdAt: sale.createdAt,
+    title: sale.ticketNumber,
+    subtitle: `${sale.cashier} · ${sale.shift}`,
+    amount: sale.total,
+    amountPrefix: "",
+    tag: "Venta",
+  }));
+
+  const registerEvents = db.prepare(`
+    SELECT
+      id,
+      event_type,
+      shift,
+      cashier,
+      counted_amount,
+      difference_amount,
+      created_at
+    FROM register_events
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(limit).map((event) => ({
+    kind: "register",
+    id: event.id,
+    createdAt: event.created_at,
+    title: getRegisterEventTypeLabel(event.event_type),
+    subtitle: `${event.shift} · ${event.cashier}`,
+    amount: event.counted_amount,
+    amountPrefix: "",
+    tag: "Caja",
+    differenceAmount: roundMoney(event.difference_amount),
+  }));
+
+  const inventoryMovements = db.prepare(`
+    SELECT
+      im.id,
+      p.name AS product_name,
+      im.movement_type,
+      im.quantity_delta,
+      im.created_at
+    FROM inventory_movements im
+    JOIN products p ON p.id = im.product_id
+    ORDER BY im.created_at DESC, im.id DESC
+    LIMIT ?
+  `).all(limit).map((movement) => ({
+    kind: "inventory",
+    id: movement.id,
+    createdAt: movement.created_at,
+    title: movement.product_name,
+    subtitle: getInventoryMovementTypeLabel(movement.movement_type),
+    amount: Math.abs(roundStock(movement.quantity_delta)),
+    amountPrefix: roundStock(movement.quantity_delta) >= 0 ? "+" : "-",
+    tag: "Inventario",
+  }));
+
+  return [...sales, ...registerEvents, ...inventoryMovements]
+    .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+    .slice(0, limit);
+}
+
+function getRecentRegisterEvents(limit = 16) {
+  return db.prepare(`
+    SELECT
+      id,
+      event_type,
+      shift,
+      cashier,
+      counted_amount,
+      difference_amount,
+      created_at
+    FROM register_events
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(limit).map((row) => ({
+    id: row.id,
+    eventType: row.event_type,
+    shift: row.shift,
+    cashier: row.cashier,
+    countedAmount: roundMoney(row.counted_amount),
+    differenceAmount: roundMoney(row.difference_amount),
+    createdAt: row.created_at,
+  }));
+}
+
+function getRecentInventoryMovements(limit = 16) {
+  return db.prepare(`
+    SELECT
+      im.id,
+      im.product_id,
+      p.name AS product_name,
+      im.movement_type,
+      im.quantity_delta,
+      im.created_at
+    FROM inventory_movements im
+    JOIN products p ON p.id = im.product_id
+    ORDER BY im.created_at DESC, im.id DESC
+    LIMIT ?
+  `).all(limit).map((row) => ({
+    id: row.id,
+    productId: row.product_id,
+    productName: row.product_name,
+    movementType: row.movement_type,
+    quantityDelta: roundStock(row.quantity_delta),
+    createdAt: row.created_at,
+  }));
+}
+
+function startRegister(payload) {
+  const summary = getRegisterSummary(payload.shift);
+  const shift = summary.shift;
+  const cashier = normalizeText(payload.cashier || "Mostrador", 60) || "Mostrador";
+  const openingAmount = roundMoney(payload.openingAmount);
+  const notes = normalizeText(payload.notes || "", 180) || null;
+
+  if (!Number.isFinite(openingAmount) || openingAmount < 0) {
+    throw createHttpError("El monto inicial de caja debe ser cero o mayor.");
+  }
+
+  const now = nowIso();
+  const insert = db.prepare(`
+    INSERT INTO register_events (
+      event_type,
+      shift,
+      cashier,
+      opening_amount,
+      counted_amount,
+      expected_cash,
+      difference_amount,
+      cash_sales,
+      non_cash_sales,
+      total_sales,
+      notes,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "start",
+    shift,
+    cashier,
+    openingAmount,
+    openingAmount,
+    openingAmount,
+    0,
+    0,
+    0,
+    0,
+    notes,
+    now,
+  );
+
+  return {
+    eventId: Number(insert.lastInsertRowid),
+    summary: getRegisterSummary(shift),
+  };
+}
+
+function createRegisterCut(payload) {
+  const eventType = normalizeText(payload.eventType || "quick_cut", 24).toLowerCase();
+  if (!["quick_cut", "final_cut"].includes(eventType)) {
+    throw createHttpError("El tipo de corte no es valido.");
+  }
+
+  const summary = getRegisterSummary(payload.shift);
+  const cashier = normalizeText(payload.cashier || "Mostrador", 60) || "Mostrador";
+  const countedAmount = roundMoney(
+    payload.countedAmount === undefined ? summary.expectedCash : payload.countedAmount,
+  );
+  const notes = normalizeText(payload.notes || "", 180) || null;
+
+  if (!Number.isFinite(countedAmount) || countedAmount < 0) {
+    throw createHttpError("El efectivo contado debe ser cero o mayor.");
+  }
+
+  const now = nowIso();
+  const differenceAmount = roundMoney(countedAmount - summary.expectedCash);
+  const insert = db.prepare(`
+    INSERT INTO register_events (
+      event_type,
+      shift,
+      cashier,
+      opening_amount,
+      counted_amount,
+      expected_cash,
+      difference_amount,
+      cash_sales,
+      non_cash_sales,
+      total_sales,
+      notes,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    eventType,
+    summary.shift,
+    cashier,
+    summary.openingAmount,
+    countedAmount,
+    summary.expectedCash,
+    differenceAmount,
+    summary.cashSales,
+    summary.nonCashSales,
+    summary.totalSales,
+    notes,
+    now,
+  );
+
+  return {
+    eventId: Number(insert.lastInsertRowid),
+    differenceAmount,
+    summary: getRegisterSummary(summary.shift),
+  };
 }
 
 function getDashboardSnapshot() {
@@ -452,6 +943,7 @@ function getDashboardSnapshot() {
     products: listProducts(),
     lowStock: getLowStockProducts(),
     recentSales: getRecentSales(),
+    recentActivity: getRecentActivity(),
     salesByHour: getSalesByHour(),
     shiftSummary: getShiftSummary(),
     generatedAt: nowIso(),
@@ -776,6 +1268,295 @@ function updateProduct(productId, payload) {
   return getProductById(productId);
 }
 
+function applyQuickInventoryEntry(payload) {
+  const productId = Number(payload.productId);
+  const mode = normalizeText(payload.mode || "initial", 24).toLowerCase();
+
+  if (!productId) {
+    throw createHttpError("Selecciona un producto valido para la captura rapida.");
+  }
+
+  if (!["initial", "supplier"].includes(mode)) {
+    throw createHttpError("El tipo de captura rapida no es valido.");
+  }
+
+  const current = db.prepare(`
+    SELECT id, name, stock, active
+    FROM products
+    WHERE id = ?
+  `).get(productId);
+
+  if (!current || !current.active) {
+    throw createHttpError("El producto ya no esta disponible para inventario.", 404);
+  }
+
+  const stockBefore = roundStock(current.stock);
+  const supplierName = normalizeText(payload.supplierName || "", 60);
+  const direction = normalizeText(payload.direction || "in", 12).toLowerCase();
+  const customNote = normalizeText(payload.note || "", 120);
+  const now = nowIso();
+
+  let quantityDelta = 0;
+  let stockAfter = stockBefore;
+  let movementType = "initial";
+  let referenceType = "quick-import";
+  let note = customNote;
+
+  if (mode === "initial") {
+    quantityDelta = roundStock(payload.stock);
+    if (!Number.isFinite(quantityDelta) || quantityDelta < 0) {
+      throw createHttpError("El inventario inicial a sumar debe ser un numero igual o mayor a cero.");
+    }
+
+    stockAfter = roundStock(stockBefore + quantityDelta);
+    movementType = "initial";
+    note = note || "Inventario inicial sumado";
+  }
+
+  if (mode === "supplier") {
+    const rawQuantity = roundStock(payload.quantity);
+    if (!Number.isFinite(rawQuantity) || rawQuantity <= 0) {
+      throw createHttpError("La cantidad del proveedor debe ser mayor a cero.");
+    }
+
+    if (!["in", "out"].includes(direction)) {
+      throw createHttpError("La direccion del movimiento con proveedor no es valida.");
+    }
+
+    quantityDelta = direction === "out" ? roundStock(-rawQuantity) : rawQuantity;
+    stockAfter = roundStock(stockBefore + quantityDelta);
+    if (stockAfter < 0) {
+      throw createHttpError("No puedes retirar mas producto del que existe en inventario.");
+    }
+
+    movementType = direction === "out" ? "supplier_out" : "supplier";
+    referenceType = "supplier";
+    note =
+      note ||
+      (supplierName
+        ? direction === "out"
+          ? `Proveedor retiro producto: ${supplierName}`
+          : `Entrada de proveedor: ${supplierName}`
+        : direction === "out"
+          ? "Salida con proveedor"
+          : "Entrada de proveedor");
+  }
+
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE products
+      SET stock = ?, stock_initialized = 1, updated_at = ?
+      WHERE id = ?
+    `).run(stockAfter, now, productId);
+
+    db.prepare(`
+      INSERT INTO inventory_movements (
+        product_id,
+        movement_type,
+        quantity_delta,
+        stock_before,
+        stock_after,
+        note,
+        reference_type,
+        reference_id,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      productId,
+      movementType,
+      quantityDelta,
+      stockBefore,
+      stockAfter,
+      note,
+      referenceType,
+      null,
+      now,
+    );
+  })();
+
+  return getProductById(productId);
+}
+
+function updateSaleAdmin(saleId, payload) {
+  const current = db.prepare(`
+    SELECT id, shift, cashier, payment_method, total, received_amount, notes
+    FROM sales
+    WHERE id = ?
+  `).get(saleId);
+
+  if (!current) {
+    throw createHttpError("No encontre la venta que quieres editar.", 404);
+  }
+
+  const nextShift = normalizeText(payload.shift || current.shift, 24) || current.shift;
+  const nextCashier = normalizeText(payload.cashier || current.cashier, 60) || current.cashier;
+  const nextPaymentMethod =
+    normalizeText(payload.paymentMethod || current.payment_method, 24) || current.payment_method;
+  const nextNotes = normalizeText(payload.notes ?? current.notes ?? "", 240) || null;
+  const receivedAmount =
+    nextPaymentMethod === "Efectivo"
+      ? roundMoney(
+          payload.receivedAmount === undefined ? current.received_amount : payload.receivedAmount,
+        )
+      : roundMoney(current.total);
+  const changeAmount =
+    nextPaymentMethod === "Efectivo" ? roundMoney(receivedAmount - roundMoney(current.total)) : 0;
+
+  if (!STORE_SHIFTS.includes(nextShift)) {
+    throw createHttpError("Selecciona un turno valido para la venta.");
+  }
+
+  if (nextPaymentMethod === "Efectivo" && receivedAmount < roundMoney(current.total)) {
+    throw createHttpError("El efectivo recibido no alcanza para la venta.");
+  }
+
+  db.prepare(`
+    UPDATE sales
+    SET shift = ?, cashier = ?, payment_method = ?, received_amount = ?, change_amount = ?, notes = ?
+    WHERE id = ?
+  `).run(
+    nextShift,
+    nextCashier,
+    nextPaymentMethod,
+    receivedAmount,
+    changeAmount,
+    nextNotes,
+    saleId,
+  );
+
+  return getSaleById(saleId);
+}
+
+function updateRegisterEventAdmin(eventId, payload) {
+  const current = getRegisterEventById(eventId);
+  if (!current) {
+    throw createHttpError("No encontre el corte o inicio de caja.", 404);
+  }
+
+  const nextShift = normalizeText(payload.shift || current.shift, 24) || current.shift;
+  const nextCashier = normalizeText(payload.cashier || current.cashier, 60) || current.cashier;
+  const nextOpeningAmount = roundMoney(
+    payload.openingAmount === undefined ? current.openingAmount : payload.openingAmount,
+  );
+  const nextCountedAmount = roundMoney(
+    payload.countedAmount === undefined ? current.countedAmount : payload.countedAmount,
+  );
+  const nextNotes = normalizeText(payload.notes ?? current.notes ?? "", 180) || null;
+  const nextExpectedCash = roundMoney(
+    payload.expectedCash === undefined ? current.expectedCash : payload.expectedCash,
+  );
+  const nextCashSales = roundMoney(
+    payload.cashSales === undefined ? current.cashSales : payload.cashSales,
+  );
+  const nextNonCashSales = roundMoney(
+    payload.nonCashSales === undefined ? current.nonCashSales : payload.nonCashSales,
+  );
+  const nextTotalSales = roundMoney(
+    payload.totalSales === undefined ? current.totalSales : payload.totalSales,
+  );
+
+  if (!STORE_SHIFTS.includes(nextShift)) {
+    throw createHttpError("Selecciona un turno valido para caja.");
+  }
+
+  db.prepare(`
+    UPDATE register_events
+    SET shift = ?, cashier = ?, opening_amount = ?, counted_amount = ?, expected_cash = ?, difference_amount = ?, cash_sales = ?, non_cash_sales = ?, total_sales = ?, notes = ?
+    WHERE id = ?
+  `).run(
+    nextShift,
+    nextCashier,
+    nextOpeningAmount,
+    nextCountedAmount,
+    nextExpectedCash,
+    roundMoney(nextCountedAmount - nextExpectedCash),
+    nextCashSales,
+    nextNonCashSales,
+    nextTotalSales,
+    nextNotes,
+    eventId,
+  );
+
+  return getRegisterEventById(eventId);
+}
+
+function updateInventoryMovementAdmin(movementId, payload) {
+  const current = getInventoryMovementById(movementId);
+  if (!current) {
+    throw createHttpError("No encontre el movimiento de inventario.", 404);
+  }
+
+  const nextNote = normalizeText(payload.note ?? current.note ?? "", 120) || null;
+
+  if (current.movementType === "sale") {
+    db.prepare(`
+      UPDATE inventory_movements
+      SET note = ?
+      WHERE id = ?
+    `).run(nextNote, movementId);
+
+    return getInventoryMovementById(movementId);
+  }
+
+  const nextQuantityDelta = roundStock(
+    payload.quantityDelta === undefined ? current.quantityDelta : payload.quantityDelta,
+  );
+  const quantityDiff = roundStock(nextQuantityDelta - current.quantityDelta);
+  const currentProduct = db.prepare(`
+    SELECT stock
+    FROM products
+    WHERE id = ?
+  `).get(current.productId);
+
+  if (roundStock((currentProduct?.stock || 0) + quantityDiff) < 0) {
+    throw createHttpError("Ese cambio dejaria el inventario del producto en negativo.");
+  }
+
+  db.transaction(() => {
+    if (quantityDiff !== 0) {
+      db.prepare(`
+        UPDATE inventory_movements
+        SET quantity_delta = ?, note = ?
+        WHERE id = ?
+      `).run(nextQuantityDelta, nextNote, movementId);
+
+      let runningBefore = current.stockBefore;
+      const fullRows = db.prepare(`
+        SELECT id, quantity_delta
+        FROM inventory_movements
+        WHERE product_id = ? AND (created_at > ? OR (created_at = ? AND id >= ?))
+        ORDER BY created_at ASC, id ASC
+      `).all(current.productId, current.createdAt, current.createdAt, current.id);
+
+      fullRows.forEach((row, index) => {
+        const delta = row.id === movementId ? nextQuantityDelta : roundStock(row.quantity_delta);
+        const before = index === 0 ? current.stockBefore : runningBefore;
+        const after = roundStock(before + delta);
+        db.prepare(`
+          UPDATE inventory_movements
+          SET stock_before = ?, stock_after = ?
+          WHERE id = ?
+        `).run(before, after, row.id);
+        runningBefore = after;
+      });
+
+      db.prepare(`
+        UPDATE products
+        SET stock = stock + ?, updated_at = ?
+        WHERE id = ?
+      `).run(quantityDiff, nowIso(), current.productId);
+    } else {
+      db.prepare(`
+        UPDATE inventory_movements
+        SET note = ?
+        WHERE id = ?
+      `).run(nextNote, movementId);
+    }
+  })();
+
+  return getInventoryMovementById(movementId);
+}
+
 function listAllProductsForExport() {
   return db.prepare(`
     SELECT
@@ -1096,14 +1877,29 @@ async function exportWorkbookReport() {
 }
 
 module.exports = {
+  applyQuickInventoryEntry,
   CATEGORY_LABELS,
+  createRegisterCut,
   createSale,
   ensureCatalogSeeded,
   exportWorkbookReport,
   getDashboardSnapshot,
+  getInventoryMovementById,
   getProductById,
+  getQuickImportRows,
+  getRecentActivity,
+  getRecentSales,
+  getRecentInventoryMovements,
+  getRecentRegisterEvents,
+  getRegisterEventById,
+  getRegisterSummary,
+  getSaleById,
   importCatalogFromWorkbook,
   listProducts,
   resolveWorkbookPath,
+  startRegister,
+  updateInventoryMovementAdmin,
   updateProduct,
+  updateRegisterEventAdmin,
+  updateSaleAdmin,
 };
