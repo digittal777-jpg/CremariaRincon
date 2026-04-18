@@ -251,17 +251,19 @@ function showToast(message, type = "info") {
 }
 
 async function performJsonRequest(url, options = {}) {
+  // Headers siempre al FINAL para que no se sobrescriban
   const response = await fetch(url, {
+    ...options,                                 // method, body, etc.
     headers: {
       "Content-Type": "application/json",
-      ...(options.headers || {}),
+      ...(options.headers || {}),               // Authorization del admin (se agrega encima)
     },
-    ...options,
   });
 
   const data = await response.json().catch(() => ({}));
+
   if (!response.ok) {
-    throw new Error(data.message || "No fue posible completar la accion.");
+    throw new Error(data.message || "No fue posible completar la acción.");
   }
 
   return data;
@@ -1407,6 +1409,18 @@ function getCurrentQuickImportItem() {
   return getQuickImportItems()[state.quickImport.index] || null;
 }
 
+function normalizeQuickImportItem(item) {
+  const normalizedId = Number(item?.id ?? item?.productId ?? item?.product_id);
+
+  return {
+    ...item,
+    id: Number.isInteger(normalizedId) && normalizedId > 0 ? normalizedId : null,
+    soldToday:
+      item?.soldToday == null ? null : roundStock(item.soldToday),
+    recordedStock: roundStock(item?.recordedStock ?? item?.stock),
+  };
+}
+
 function formatQuickImportValue(value, unit) {
   return value == null ? "Sin dato" : `${formatQuantity(value)} ${unit}`;
 }
@@ -1417,8 +1431,9 @@ function syncQuickImportItemsFromProducts() {
   }
 
   const productMap = new Map(state.products.map((product) => [product.id, product]));
-  state.quickImport.items = state.quickImport.items.map((item) => {
-    const nextProduct = productMap.get(item.id);
+  state.quickImport.items = state.quickImport.items.map((rawItem) => {
+    const item = normalizeQuickImportItem(rawItem);
+    const nextProduct = item.id ? productMap.get(item.id) : null;
     if (!nextProduct) {
       return item;
     }
@@ -1488,7 +1503,9 @@ async function loadQuickImportItems() {
 
   try {
     const response = await requestAdminJson("/api/inventory/quick-import");
-    state.quickImport.items = Array.isArray(response.items) ? response.items : [];
+    state.quickImport.items = Array.isArray(response.items)
+      ? response.items.map((item) => normalizeQuickImportItem(item))
+      : [];
   } catch (_error) {
     state.quickImport.items = buildQuickImportFallbackItems();
     showToast(
@@ -1684,7 +1701,13 @@ function closeQuickImportModal() {
 
 async function saveQuickImportEntry() {
   const item = getCurrentQuickImportItem();
+
+  // === DEBUG (quítalo después de que funcione) ===
+  console.log('[QUICK-IMPORT FRONTEND DEBUG] item actual:', item);
+  console.log('[QUICK-IMPORT FRONTEND DEBUG] quickImport.items.length:', getQuickImportItems().length);
+
   if (!item || state.quickImport.saving) {
+    showToast("No hay producto seleccionado.", "error");
     return;
   }
 
@@ -1698,6 +1721,7 @@ async function saveQuickImportEntry() {
   const isSupplierMode = state.quickImport.mode === "supplier";
   const isSupplierOut = isSupplierMode && state.quickImport.direction === "out";
   const numericValue = Number(rawValue);
+
   if (!Number.isFinite(numericValue)) {
     showToast("El valor capturado no es valido.", "error");
     focusQuickImportValue();
@@ -1705,29 +1729,33 @@ async function saveQuickImportEntry() {
   }
 
   const parsedValue = roundStock(numericValue);
+
+  // VALIDACIONES
   if (isSupplierMode && parsedValue <= 0) {
-    showToast("La entrada del proveedor debe ser mayor a cero.", "error");
+    showToast("La cantidad del proveedor debe ser mayor a cero.", "error");
     focusQuickImportValue();
     return;
   }
-
-  if (isSupplierOut && parsedValue > roundStock(item.recordedStock)) {
-    showToast("No puedes descontar mas de lo que existe en inventario.", "error");
+  if (isSupplierOut && parsedValue > roundStock(item.recordedStock || 0)) {
+    showToast("No puedes descontar más de lo que existe.", "error");
     focusQuickImportValue();
     return;
   }
-
   if (!isSupplierMode && parsedValue < 0) {
     showToast("La existencia no puede ser negativa.", "error");
     focusQuickImportValue();
     return;
   }
 
-  const nextStock = isSupplierMode
-    ? roundStock(item.recordedStock + (isSupplierOut ? -parsedValue : parsedValue))
-    : roundStock(item.recordedStock + parsedValue);
+  // === PAYLOAD BLINDADO (esto arregla el {} vacío) ===
+  const safeItem = {
+    id: Number(item.id ?? item.productId ?? item.product_id),
+    name: String(item.name || item.productName || "Producto sin nombre").trim(),
+  };
+
   const payload = {
-    productId: item.id,
+    productId: safeItem.id,
+    productName: safeItem.name,
     mode: state.quickImport.mode,
     note: state.quickImport.note.trim(),
     supplierName: state.quickImport.supplierName.trim(),
@@ -1740,6 +1768,8 @@ async function saveQuickImportEntry() {
     payload.stock = parsedValue;
   }
 
+  console.log('[QUICK-IMPORT FRONTEND DEBUG] Payload que se envía:', payload);
+
   state.quickImport.saving = true;
   renderQuickImportModal();
 
@@ -1748,24 +1778,23 @@ async function saveQuickImportEntry() {
       method: "POST",
       body: JSON.stringify(payload),
     });
+
     applySnapshot(response.snapshot);
+    state.quickImport.saving = false;
+
+    if (state.quickImport.index >= getQuickImportItems().length - 1) {
+      closeQuickImportModal();
+      showToast("Captura rapida completada.", "success");
+      return;
+    }
+
+    setQuickImportIndex(state.quickImport.index + 1);
   } catch (error) {
     showToast(error.message, "error");
     state.quickImport.saving = false;
     renderQuickImportModal();
     focusQuickImportValue();
-    return;
   }
-
-  state.quickImport.saving = false;
-
-  if (state.quickImport.index >= getQuickImportItems().length - 1) {
-    closeQuickImportModal();
-    showToast("Captura rapida completada.", "success");
-    return;
-  }
-
-  setQuickImportIndex(state.quickImport.index + 1);
 }
 
 function goToPreviousQuickImportItem() {

@@ -333,6 +333,77 @@ function getQuickImportRows() {
   }));
 }
 
+function getQuickImportProductId(payload) {
+  const candidateIds = [payload.productId, payload.id, payload.product_id];
+
+  for (const candidateId of candidateIds) {
+    const productId = Number(candidateId);
+    if (Number.isInteger(productId) && productId > 0) {
+      return productId;
+    }
+  }
+
+  return null;
+}
+
+function findQuickImportProduct(payload) {
+  console.log('\n[QUICK-IMPORT CRÍTICO] Payload recibido:', JSON.stringify(payload, null, 2));
+
+  // 1. Intentar por ID (varios nombres posibles)
+  let productId = getQuickImportProductId(payload);
+  if (productId) {
+    const byId = db.prepare(`
+      SELECT id, name, stock, active FROM products WHERE id = ?
+    `).get(productId);
+    if (byId) {
+      console.log('[QUICK-IMPORT CRÍTICO] ✅ Encontrado por ID:', byId.name);
+      return byId;
+    }
+  }
+
+  // 2. Intentar por nombre (ultra tolerante)
+  const rawName = String(
+    payload.productName || payload.name || payload.product_name || ""
+  ).trim();
+
+  console.log('[QUICK-IMPORT CRÍTICO] Buscando por nombre:', rawName || '(VACÍO)');
+
+  if (!rawName) {
+    console.log('[QUICK-IMPORT CRÍTICO] ❌ Payload sin ID ni nombre → ERROR');
+    return null;
+  }
+
+  // Búsqueda exacta
+  let product = db.prepare(`
+    SELECT id, name, stock, active
+    FROM products
+    WHERE active = 1 AND UPPER(TRIM(name)) = UPPER(TRIM(?))
+    LIMIT 1
+  `).get(rawName);
+
+  if (product) {
+    console.log('[QUICK-IMPORT CRÍTICO] ✅ Encontrado EXACTO:', product.name);
+    return product;
+  }
+
+  // Búsqueda parcial (último recurso)
+  product = db.prepare(`
+    SELECT id, name, stock, active
+    FROM products
+    WHERE active = 1 AND UPPER(TRIM(name)) LIKE '%' || UPPER(TRIM(?)) || '%'
+    ORDER BY LENGTH(name) ASC, id ASC
+    LIMIT 1
+  `).get(rawName);
+
+  if (product) {
+    console.log('[QUICK-IMPORT CRÍTICO] ✅ Encontrado PARCIAL:', product.name);
+    return product;
+  }
+
+  console.log('[QUICK-IMPORT CRÍTICO] ❌ NO SE ENCONTRÓ EL PRODUCTO');
+  return null;
+}
+
 function buildTicketPrefix(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -1269,10 +1340,10 @@ function updateProduct(productId, payload) {
 }
 
 function applyQuickInventoryEntry(payload) {
-  const productId = Number(payload.productId);
   const mode = normalizeText(payload.mode || "initial", 24).toLowerCase();
+  const current = findQuickImportProduct(payload);
 
-  if (!productId) {
+  if (!current) {
     throw createHttpError("Selecciona un producto valido para la captura rapida.");
   }
 
@@ -1280,16 +1351,11 @@ function applyQuickInventoryEntry(payload) {
     throw createHttpError("El tipo de captura rapida no es valido.");
   }
 
-  const current = db.prepare(`
-    SELECT id, name, stock, active
-    FROM products
-    WHERE id = ?
-  `).get(productId);
-
   if (!current || !current.active) {
     throw createHttpError("El producto ya no esta disponible para inventario.", 404);
   }
 
+  const productId = current.id;
   const stockBefore = roundStock(current.stock);
   const supplierName = normalizeText(payload.supplierName || "", 60);
   const direction = normalizeText(payload.direction || "in", 12).toLowerCase();
