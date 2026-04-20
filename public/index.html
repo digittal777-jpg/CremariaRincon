@@ -673,6 +673,27 @@
 
             <div class="admin-record-list cashier-record-list" id="admin-cashiers-list"></div>
           </section>
+
+          <section class="admin-config-panel">
+            <div class="panel-head admin-subhead">
+              <div>
+                <p class="eyebrow">Configuraciones</p>
+                <h2>Reglas de venta</h2>
+              </div>
+            </div>
+
+            <div class="admin-config-form">
+              <label class="field">
+                <span>Permitir ventas con stock negativo</span>
+                <input id="config-allow-negative-stock" type="checkbox" />
+                <small>Si esta activado, se podran vender productos aunque no haya stock suficiente.</small>
+              </label>
+
+              <button class="primary-button" id="save-admin-config-button" type="button">
+                Guardar configuraciones
+              </button>
+            </div>
+          </section>
         </div>
 
         <div class="admin-editor-layout">

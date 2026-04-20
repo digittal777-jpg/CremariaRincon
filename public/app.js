@@ -891,6 +891,7 @@ async function refreshAdminWorkspace() {
     loadAdminSnapshot(getAdminBranch()),
     loadAdminEditorData(getAdminBranch()),
     loadAdminCashiers(getAdminBranch()),
+    loadAdminConfig(),
   ]);
 }
 
@@ -3250,6 +3251,32 @@ async function deleteAdminCashier(cashierId) {
   }
 }
 
+async function loadAdminConfig() {
+  try {
+    const response = await requestAdminJson("/api/admin/settings");
+    const settings = response.settings || {};
+    refs.configAllowNegativeStock.checked = settings["sales.allow_negative_stock"] === "true";
+  } catch (error) {
+    showToast("Error al cargar configuraciones.", "error");
+  }
+}
+
+async function submitAdminConfig() {
+  const updates = {
+    "sales.allow_negative_stock": refs.configAllowNegativeStock.checked ? "true" : "false",
+  };
+
+  try {
+    await requestAdminJson("/api/admin/settings", {
+      method: "PATCH",
+      body: JSON.stringify(updates),
+    });
+    showToast("Configuraciones guardadas.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
 function setModalOpen(modal, isOpen) {
   modal.classList.toggle("open", isOpen);
 }
@@ -3814,6 +3841,8 @@ async function bootstrap() {
   refs.adminCashierPassword = $("admin-cashier-password");
   refs.saveAdminCashierButton = $("save-admin-cashier-button");
   refs.adminCashiersList = $("admin-cashiers-list");
+  refs.configAllowNegativeStock = $("config-allow-negative-stock");
+  refs.saveAdminConfigButton = $("save-admin-config-button");
   refs.adminAuthModal = $("admin-auth-modal");
   refs.adminAuthTitle = $("admin-auth-title");
   refs.adminAuthDescription = $("admin-auth-description");
@@ -4180,6 +4209,7 @@ async function bootstrap() {
   refs.closeCashierAuthModal.addEventListener("click", closeCashierAuthModal);
   refs.loginCashierButton.addEventListener("click", loginCashier);
   refs.saveAdminCashierButton.addEventListener("click", submitAdminCashier);
+  refs.saveAdminConfigButton.addEventListener("click", submitAdminConfig);
   refs.cashierAuthName.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();

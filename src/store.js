@@ -44,6 +44,11 @@ function createHttpError(message, statusCode = 400) {
   return error;
 }
 
+function getSetting(key) {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
+  return row ? row.value : null;
+}
+
 function normalizeBranch(branch, options = {}) {
   const normalizedBranch = normalizeText(branch || "", 24).toLowerCase();
   if (options.allowAll && normalizedBranch === ALL_BRANCHES) {
@@ -1354,7 +1359,8 @@ function createSale(payload) {
       const stockBefore = roundStock(product.stock);
       const stockAfter = roundStock(stockBefore - quantity);
 
-      if (product.stock_initialized && stockAfter < 0) {
+      const allowNegativeStock = getSetting("sales.allow_negative_stock") === "true";
+      if (product.stock_initialized && stockAfter < 0 && !allowNegativeStock) {
         throw createHttpError(`No hay inventario suficiente para ${product.name}.`);
       }
 

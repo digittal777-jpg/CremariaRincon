@@ -406,6 +406,23 @@ app.post("/api/import-workbook", requireAdminAuth, async (request, response) => 
   });
 });
 
+app.get("/api/admin/settings", requireAdminAuth, (_request, response) => {
+  const settings = {};
+  const rows = db.prepare("SELECT key, value FROM app_settings").all();
+  for (const row of rows) {
+    settings[row.key] = row.value;
+  }
+  response.json({ settings });
+});
+
+app.patch("/api/admin/settings", requireAdminAuth, (request, response) => {
+  const updates = request.body || {};
+  for (const [key, value] of Object.entries(updates)) {
+    setSetting(key, String(value));
+  }
+  response.json({ ok: true });
+});
+
 app.post("/api/cashier/auth", (request, response) => {
   const { name, branch, password } = request.body || {};
   if (!name || !branch || !password) {
