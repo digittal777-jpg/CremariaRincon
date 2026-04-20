@@ -101,12 +101,9 @@ function initializeSchema(db) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
-    CREATE INDEX IF NOT EXISTS idx_sales_branch_created_at ON sales(branch, created_at);
     CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);
     CREATE INDEX IF NOT EXISTS idx_inventory_movements_product_id ON inventory_movements(product_id);
-    CREATE INDEX IF NOT EXISTS idx_inventory_movements_branch_created_at ON inventory_movements(branch, created_at);
     CREATE INDEX IF NOT EXISTS idx_register_events_shift_created_at ON register_events(shift, created_at);
-    CREATE INDEX IF NOT EXISTS idx_register_events_branch_shift_created_at ON register_events(branch, shift, created_at);
   `);
 
   const productColumns = db.prepare("PRAGMA table_info(products)").all();
@@ -128,6 +125,12 @@ function initializeSchema(db) {
   if (!registerEventsColumns.some((column) => column.name === "branch")) {
     db.exec("ALTER TABLE register_events ADD COLUMN branch TEXT NOT NULL DEFAULT 'carrizal'");
   }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sales_branch_created_at ON sales(branch, created_at);
+    CREATE INDEX IF NOT EXISTS idx_inventory_movements_branch_created_at ON inventory_movements(branch, created_at);
+    CREATE INDEX IF NOT EXISTS idx_register_events_branch_shift_created_at ON register_events(branch, shift, created_at);
+  `);
 }
 
 function getDb() {

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
+    "rebuild:native": "npm rebuild better-sqlite3",
     "import:excel": "node scripts/import-workbook.js",
     "test": "node --test"
   },

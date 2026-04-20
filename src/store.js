@@ -415,8 +415,6 @@ function getQuickImportProductId(payload) {
 }
 
 function findQuickImportProduct(payload) {
-  console.log('\n[QUICK-IMPORT CRÍTICO] Payload recibido:', JSON.stringify(payload, null, 2));
-
   // 1. Intentar por ID (varios nombres posibles)
   let productId = getQuickImportProductId(payload);
   if (productId) {
@@ -424,7 +422,6 @@ function findQuickImportProduct(payload) {
       SELECT id, name, stock, active FROM products WHERE id = ?
     `).get(productId);
     if (byId) {
-      console.log('[QUICK-IMPORT CRÍTICO] ✅ Encontrado por ID:', byId.name);
       return byId;
     }
   }
@@ -434,10 +431,7 @@ function findQuickImportProduct(payload) {
     payload.productName || payload.name || payload.product_name || ""
   ).trim();
 
-  console.log('[QUICK-IMPORT CRÍTICO] Buscando por nombre:', rawName || '(VACÍO)');
-
   if (!rawName) {
-    console.log('[QUICK-IMPORT CRÍTICO] ❌ Payload sin ID ni nombre → ERROR');
     return null;
   }
 
@@ -450,7 +444,6 @@ function findQuickImportProduct(payload) {
   `).get(rawName);
 
   if (product) {
-    console.log('[QUICK-IMPORT CRÍTICO] ✅ Encontrado EXACTO:', product.name);
     return product;
   }
 
@@ -464,11 +457,9 @@ function findQuickImportProduct(payload) {
   `).get(rawName);
 
   if (product) {
-    console.log('[QUICK-IMPORT CRÍTICO] ✅ Encontrado PARCIAL:', product.name);
     return product;
   }
 
-  console.log('[QUICK-IMPORT CRÍTICO] ❌ NO SE ENCONTRÓ EL PRODUCTO');
   return null;
 }
 
@@ -911,116 +902,6 @@ function getInventoryMovementTypeLabel(movementType) {
   }
 
   return "Movimiento";
-}
-
-function getRecentActivity(limit = 18) {
-  const sales = getRecentSales(limit).map((sale) => ({
-    kind: "sale",
-    id: sale.id,
-    createdAt: sale.createdAt,
-    title: sale.ticketNumber,
-    subtitle: `${sale.cashier} · ${sale.shift}`,
-    amount: sale.total,
-    amountPrefix: "",
-    tag: "Venta",
-  }));
-
-  const registerEvents = db.prepare(`
-    SELECT
-      id,
-      event_type,
-      shift,
-      cashier,
-      counted_amount,
-      difference_amount,
-      created_at
-    FROM register_events
-    ORDER BY created_at DESC, id DESC
-    LIMIT ?
-  `).all(limit).map((event) => ({
-    kind: "register",
-    id: event.id,
-    createdAt: event.created_at,
-    title: getRegisterEventTypeLabel(event.event_type),
-    subtitle: `${event.shift} · ${event.cashier}`,
-    amount: event.counted_amount,
-    amountPrefix: "",
-    tag: "Caja",
-    differenceAmount: roundMoney(event.difference_amount),
-  }));
-
-  const inventoryMovements = db.prepare(`
-    SELECT
-      im.id,
-      p.name AS product_name,
-      im.movement_type,
-      im.quantity_delta,
-      im.created_at
-    FROM inventory_movements im
-    JOIN products p ON p.id = im.product_id
-    ORDER BY im.created_at DESC, im.id DESC
-    LIMIT ?
-  `).all(limit).map((movement) => ({
-    kind: "inventory",
-    id: movement.id,
-    createdAt: movement.created_at,
-    title: movement.product_name,
-    subtitle: getInventoryMovementTypeLabel(movement.movement_type),
-    amount: Math.abs(roundStock(movement.quantity_delta)),
-    amountPrefix: roundStock(movement.quantity_delta) >= 0 ? "+" : "-",
-    tag: "Inventario",
-  }));
-
-  return [...sales, ...registerEvents, ...inventoryMovements]
-    .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
-    .slice(0, limit);
-}
-
-function getRecentRegisterEvents(limit = 16) {
-  return db.prepare(`
-    SELECT
-      id,
-      event_type,
-      shift,
-      cashier,
-      counted_amount,
-      difference_amount,
-      created_at
-    FROM register_events
-    ORDER BY created_at DESC, id DESC
-    LIMIT ?
-  `).all(limit).map((row) => ({
-    id: row.id,
-    eventType: row.event_type,
-    shift: row.shift,
-    cashier: row.cashier,
-    countedAmount: roundMoney(row.counted_amount),
-    differenceAmount: roundMoney(row.difference_amount),
-    createdAt: row.created_at,
-  }));
-}
-
-function getRecentInventoryMovements(limit = 16) {
-  return db.prepare(`
-    SELECT
-      im.id,
-      im.product_id,
-      p.name AS product_name,
-      im.movement_type,
-      im.quantity_delta,
-      im.created_at
-    FROM inventory_movements im
-    JOIN products p ON p.id = im.product_id
-    ORDER BY im.created_at DESC, im.id DESC
-    LIMIT ?
-  `).all(limit).map((row) => ({
-    id: row.id,
-    productId: row.product_id,
-    productName: row.product_name,
-    movementType: row.movement_type,
-    quantityDelta: roundStock(row.quantity_delta),
-    createdAt: row.created_at,
-  }));
 }
 
 function getRecentActivity(limit = 18, branch = STORE_BRANCHES[0]) {

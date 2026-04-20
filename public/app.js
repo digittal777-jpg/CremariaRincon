@@ -194,6 +194,16 @@ function getActiveCashierBranch() {
   return state.cashier.branch || state.store.currentBranch || "carrizal";
 }
 
+function requireCashierSession(message = "Inicia sesion de cajero para continuar.") {
+  if (state.cashier.authenticated) {
+    return true;
+  }
+
+  showToast(message, "info");
+  openCashierAuthModal();
+  return false;
+}
+
 function getAdminBranch() {
   return state.admin.branch || "all";
 }
@@ -2107,6 +2117,10 @@ async function loadRegisterSummary(options = {}) {
 }
 
 async function openRegisterModal(mode) {
+  if (!requireCashierSession("Inicia sesion de cajero para usar la caja.")) {
+    return;
+  }
+
   state.register.mode = mode;
   state.register.note = "";
   state.register.amountInput = "";
@@ -2126,6 +2140,10 @@ function closeRegisterModal() {
 }
 
 async function saveRegisterAction() {
+  if (!requireCashierSession("Inicia sesion de cajero para registrar caja.")) {
+    return;
+  }
+
   if (state.register.saving) {
     return;
   }
@@ -2821,70 +2839,6 @@ function closeAdminEditor() {
   setModalOpen(refs.adminEditorModal, false);
 }
 
-function renderCashierAuthModal() {
-  if (!refs.cashierAuthModal) {
-    return;
-  }
-
-  refs.loginCashierButton.disabled = state.cashierAuth.loading;
-  refs.loginCashierButton.textContent = state.cashierAuth.loading ? "Iniciando..." : "Iniciar sesion";
-}
-
-function openCashierAuthModal() {
-  if (state.cashier.authenticated) {
-    return;
-  }
-
-  setModalOpen(refs.cashierAuthModal, true);
-  renderCashierAuthModal();
-  refs.cashierAuthName.focus();
-}
-
-function closeCashierAuthModal() {
-  setModalOpen(refs.cashierAuthModal, false);
-}
-
-async function loginCashier() {
-  if (state.cashierAuth.loading) {
-    return;
-  }
-
-  const name = refs.cashierAuthName.value.trim();
-  const branch = refs.cashierAuthBranch.value;
-  const password = refs.cashierAuthPassword.value;
-
-  if (!name || !branch || !password) {
-    showToast("Completa todos los campos.", "error");
-    return;
-  }
-
-  state.cashierAuth.loading = true;
-  renderCashierAuthModal();
-
-  try {
-    const response = await performJsonRequest("/api/cashier/auth", {
-      method: "POST",
-      body: JSON.stringify({ name, branch, password }),
-    });
-
-    if (response.authenticated) {
-      state.cashier.name = name;
-      state.cashier.branch = branch;
-      state.cashier.authenticated = true;
-      writeStorageText(STORAGE_KEYS.cashier, JSON.stringify({ name, branch }));
-      closeCashierAuthModal();
-      showToast(`Bienvenido, ${name} (${branch}).`, "success");
-    } else {
-      showToast("Credenciales incorrectas.", "error");
-    }
-  } catch (error) {
-    showToast(error.message, "error");
-  } finally {
-    state.cashierAuth.loading = false;
-    renderCashierAuthModal();
-  }
-}
-
 async function saveAdminEditor() {
   if (!state.adminEditor.detail || state.adminEditor.saving) {
     return;
@@ -3189,7 +3143,6 @@ function logoutCashier() {
   state.cashier.authenticated = false;
   persistCashierSession();
   renderCashierSession();
-  openCashierAuthModal();
 }
 
 async function saveAdminEditor() {
@@ -3302,6 +3255,10 @@ function setModalOpen(modal, isOpen) {
 }
 
 function openItemModal(product) {
+  if (!requireCashierSession("Inicia sesion de cajero antes de agregar productos.")) {
+    return;
+  }
+
   state.currentProduct = product;
   refs.itemModalName.textContent = product.name;
   refs.itemModalMeta.textContent = `${product.categoryLabel} · Precio base ${formatCurrency(product.price)} · Stock ${formatProductStock(product)}`;
@@ -3451,8 +3408,7 @@ function updatePaymentView() {
 }
 
 function openPaymentModal() {
-  if (!state.cashier.authenticated) {
-    openCashierAuthModal();
+  if (!requireCashierSession("Inicia sesion de cajero antes de cobrar.")) {
     return;
   }
 
@@ -3507,6 +3463,10 @@ function backspaceMoneyInput() {
 }
 
 async function submitSale() {
+  if (!requireCashierSession("Inicia sesion de cajero antes de completar la venta.")) {
+    return;
+  }
+
   const payload = {
     shift: refs.shiftSelect.value,
     cashier: state.cashier.name || "Mostrador",
@@ -4330,10 +4290,6 @@ async function bootstrap() {
   updatePaymentView();
   await loadRegisterSummary({ silent: true });
   syncPendingQueue();
-
-  if (!state.cashier.authenticated) {
-    openCashierAuthModal();
-  }
   if (refs.openAdminButton) {
   refs.openAdminButton.disabled = false;
   refs.openAdminButton.style.opacity = "1";
