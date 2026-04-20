@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 
 const ExcelJS = require("exceljs");
@@ -7,6 +8,8 @@ const {
   DEFAULT_WORKBOOK_PATHS,
   SALES_PULSE_END_HOUR,
   SALES_PULSE_START_HOUR,
+  STORE_BRANCHES,
+  STORE_BRANCH_LABELS,
   STORE_NAME,
   STORE_SHIFTS,
   STORE_TIME_ZONE,
@@ -33,11 +36,37 @@ const storeHourFormatter = new Intl.DateTimeFormat("en-GB", {
   hour: "2-digit",
   hour12: false,
 });
+const ALL_BRANCHES = "all";
 
 function createHttpError(message, statusCode = 400) {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
+}
+
+function normalizeBranch(branch, options = {}) {
+  const normalizedBranch = normalizeText(branch || "", 24).toLowerCase();
+  if (options.allowAll && normalizedBranch === ALL_BRANCHES) {
+    return ALL_BRANCHES;
+  }
+
+  if (STORE_BRANCHES.includes(normalizedBranch)) {
+    return normalizedBranch;
+  }
+
+  return options.fallback || STORE_BRANCHES[0];
+}
+
+function getBranchLabel(branch) {
+  if (branch === ALL_BRANCHES) {
+    return "Todas las sucursales";
+  }
+
+  return STORE_BRANCH_LABELS[branch] || branch;
+}
+
+function isAllBranches(branch) {
+  return normalizeBranch(branch, { allowAll: true }) === ALL_BRANCHES;
 }
 
 function toNumber(value, fallback = 0) {
@@ -260,38 +289,77 @@ function getProductById(productId) {
   return row ? mapProduct(row) : null;
 }
 
-function listStoreDaySales(baseDate = new Date()) {
-  return db.prepare(`
-    SELECT
-      id,
-      shift,
-      payment_method,
-      total,
-      subtotal,
-      item_count,
-      created_at
-    FROM sales
-    ORDER BY created_at DESC
-  `).all().filter((row) => isSameStoreDay(row.created_at, baseDate));
+function listStoreDaySales(baseDate = new Date(), branch = STORE_BRANCHES[0]) {
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const rows = normalizedBranch === ALL_BRANCHES
+    ? db.prepare(`
+      SELECT
+        id,
+        shift,
+        cashier,
+        branch,
+        payment_method,
+        total,
+        subtotal,
+        item_count,
+        created_at
+      FROM sales
+      ORDER BY created_at DESC
+    `).all()
+    : db.prepare(`
+      SELECT
+        id,
+        shift,
+        cashier,
+        branch,
+        payment_method,
+        total,
+        subtotal,
+        item_count,
+        created_at
+      FROM sales
+      WHERE branch = ?
+      ORDER BY created_at DESC
+    `).all(normalizedBranch);
+
+  return rows.filter((row) => isSameStoreDay(row.created_at, baseDate));
 }
 
-function listStoreDaySaleItems(baseDate = new Date()) {
-  return db.prepare(`
-    SELECT
-      s.created_at,
-      si.product_id,
-      si.product_name,
-      si.quantity,
-      si.line_total
-    FROM sale_items si
-    JOIN sales s ON s.id = si.sale_id
-    ORDER BY s.created_at DESC, si.id DESC
-  `).all().filter((row) => isSameStoreDay(row.created_at, baseDate));
+function listStoreDaySaleItems(baseDate = new Date(), branch = STORE_BRANCHES[0]) {
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const rows = normalizedBranch === ALL_BRANCHES
+    ? db.prepare(`
+      SELECT
+        s.created_at,
+        s.branch,
+        si.product_id,
+        si.product_name,
+        si.quantity,
+        si.line_total
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
+      ORDER BY s.created_at DESC, si.id DESC
+    `).all()
+    : db.prepare(`
+      SELECT
+        s.created_at,
+        s.branch,
+        si.product_id,
+        si.product_name,
+        si.quantity,
+        si.line_total
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
+      WHERE s.branch = ?
+      ORDER BY s.created_at DESC, si.id DESC
+    `).all(normalizedBranch);
+
+  return rows.filter((row) => isSameStoreDay(row.created_at, baseDate));
 }
 
-function getQuickImportRows() {
+function getQuickImportRows(branch = STORE_BRANCHES[0]) {
   const soldTodayByProductId = new Map();
-  listStoreDaySaleItems().forEach((item) => {
+  listStoreDaySaleItems(new Date(), branch).forEach((item) => {
     const currentValue = soldTodayByProductId.get(item.product_id) || 0;
     soldTodayByProductId.set(
       item.product_id,
@@ -411,9 +479,9 @@ function buildTicketPrefix(date = new Date()) {
   return `RIN-${year}${month}${day}`;
 }
 
-function getSummary() {
-  const todaySales = listStoreDaySales();
-  const todaySaleItems = listStoreDaySaleItems();
+function getSummary(branch = STORE_BRANCHES[0]) {
+  const todaySales = listStoreDaySales(new Date(), branch);
+  const todaySaleItems = listStoreDaySaleItems(new Date(), branch);
 
   const inventoryTotals = db.prepare(`
     SELECT
@@ -466,37 +534,67 @@ function getSummary() {
   };
 }
 
-function getRecentSales(limit = 8) {
-  const rows = db.prepare(`
-    SELECT
-      s.id,
-      s.ticket_number,
-      s.shift,
-      s.cashier,
-      s.payment_method,
-      s.total,
-      s.subtotal,
-      s.notes,
-      s.item_count,
-      s.received_amount,
-      s.change_amount,
-      s.created_at,
-      GROUP_CONCAT(
-        si.product_name || ' x' || printf('%g', si.quantity) || ' @ ' || printf('%.2f', si.unit_price) || ' = ' || printf('%.2f', si.line_total),
-        ' || '
-      ) AS items_breakdown
-    FROM sales s
-    LEFT JOIN sale_items si ON si.sale_id = s.id
-    GROUP BY s.id
-    ORDER BY s.created_at DESC
-    LIMIT ?
-  `).all(limit);
+function getRecentSales(limit = 8, branch = STORE_BRANCHES[0]) {
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const rows = normalizedBranch === ALL_BRANCHES
+    ? db.prepare(`
+      SELECT
+        s.id,
+        s.ticket_number,
+        s.shift,
+        s.cashier,
+        s.branch,
+        s.payment_method,
+        s.total,
+        s.subtotal,
+        s.notes,
+        s.item_count,
+        s.received_amount,
+        s.change_amount,
+        s.created_at,
+        GROUP_CONCAT(
+          si.product_name || ' x' || printf('%g', si.quantity) || ' @ ' || printf('%.2f', si.unit_price) || ' = ' || printf('%.2f', si.line_total),
+          ' || '
+        ) AS items_breakdown
+      FROM sales s
+      LEFT JOIN sale_items si ON si.sale_id = s.id
+      GROUP BY s.id
+      ORDER BY s.created_at DESC
+      LIMIT ?
+    `).all(limit)
+    : db.prepare(`
+      SELECT
+        s.id,
+        s.ticket_number,
+        s.shift,
+        s.cashier,
+        s.branch,
+        s.payment_method,
+        s.total,
+        s.subtotal,
+        s.notes,
+        s.item_count,
+        s.received_amount,
+        s.change_amount,
+        s.created_at,
+        GROUP_CONCAT(
+          si.product_name || ' x' || printf('%g', si.quantity) || ' @ ' || printf('%.2f', si.unit_price) || ' = ' || printf('%.2f', si.line_total),
+          ' || '
+        ) AS items_breakdown
+      FROM sales s
+      LEFT JOIN sale_items si ON si.sale_id = s.id
+      WHERE s.branch = ?
+      GROUP BY s.id
+      ORDER BY s.created_at DESC
+      LIMIT ?
+    `).all(normalizedBranch, limit);
 
   return rows.map((row) => ({
     id: row.id,
     ticketNumber: row.ticket_number,
     shift: row.shift,
     cashier: row.cashier,
+    branch: row.branch,
     paymentMethod: row.payment_method,
     subtotal: roundMoney(row.subtotal),
     total: roundMoney(row.total),
@@ -553,10 +651,10 @@ function getLowStockProducts(limit = 8) {
   return rows.map(mapProduct);
 }
 
-function getSalesByHour() {
+function getSalesByHour(branch = STORE_BRANCHES[0]) {
   const salesByHourMap = new Map();
 
-  listStoreDaySales().forEach((sale) => {
+  listStoreDaySales(new Date(), branch).forEach((sale) => {
     const hourSlot = getStoreHourLabel(sale.created_at);
     const currentValue = salesByHourMap.get(hourSlot) || 0;
     salesByHourMap.set(hourSlot, roundMoney(currentValue + roundMoney(sale.total)));
@@ -574,10 +672,10 @@ function getSalesByHour() {
   return slots;
 }
 
-function getShiftSummary() {
+function getShiftSummary(branch = STORE_BRANCHES[0]) {
   const rowMap = new Map();
 
-  listStoreDaySales().forEach((sale) => {
+  listStoreDaySales(new Date(), branch).forEach((sale) => {
     const currentValue = rowMap.get(sale.shift) || {
       shift: sale.shift,
       tickets: 0,
@@ -597,36 +695,62 @@ function getShiftSummary() {
   );
 }
 
-function getRegisterEventsForStoreDay(shift, baseDate = new Date()) {
-  return db.prepare(`
-    SELECT
-      id,
-      event_type,
-      shift,
-      cashier,
-      opening_amount,
-      counted_amount,
-      expected_cash,
-      difference_amount,
-      cash_sales,
-      non_cash_sales,
-      total_sales,
-      notes,
-      created_at
-    FROM register_events
-    WHERE shift = ?
-    ORDER BY created_at DESC, id DESC
-  `).all(shift).filter((row) => isSameStoreDay(row.created_at, baseDate));
+function getRegisterEventsForStoreDay(shift, baseDate = new Date(), branch = STORE_BRANCHES[0]) {
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const rows = normalizedBranch === ALL_BRANCHES
+    ? db.prepare(`
+      SELECT
+        id,
+        event_type,
+        shift,
+        cashier,
+        branch,
+        opening_amount,
+        counted_amount,
+        expected_cash,
+        difference_amount,
+        cash_sales,
+        non_cash_sales,
+        total_sales,
+        notes,
+        created_at
+      FROM register_events
+      WHERE shift = ?
+      ORDER BY created_at DESC, id DESC
+    `).all(shift)
+    : db.prepare(`
+      SELECT
+        id,
+        event_type,
+        shift,
+        cashier,
+        branch,
+        opening_amount,
+        counted_amount,
+        expected_cash,
+        difference_amount,
+        cash_sales,
+        non_cash_sales,
+        total_sales,
+        notes,
+        created_at
+      FROM register_events
+      WHERE shift = ? AND branch = ?
+      ORDER BY created_at DESC, id DESC
+    `).all(shift, normalizedBranch);
+
+  return rows.filter((row) => isSameStoreDay(row.created_at, baseDate));
 }
 
-function getRegisterSummary(shift) {
+function getRegisterSummary(shift, branch = STORE_BRANCHES[0]) {
   const normalizedShift = normalizeText(shift || STORE_SHIFTS[0], 24) || STORE_SHIFTS[0];
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
   if (!STORE_SHIFTS.includes(normalizedShift)) {
     throw createHttpError("Selecciona un turno valido para la caja.");
   }
 
-  const sales = listStoreDaySales().filter((sale) => sale.shift === normalizedShift);
-  const events = getRegisterEventsForStoreDay(normalizedShift);
+  const sales = listStoreDaySales(new Date(), normalizedBranch).filter((sale) => sale.shift === normalizedShift);
+  const events = getRegisterEventsForStoreDay(normalizedShift, new Date(), normalizedBranch);
   const startEvent = events.find((event) => event.event_type === "start") || null;
   const openingAmount = roundMoney(startEvent?.opening_amount || 0);
   const totalSales = roundMoney(
@@ -673,6 +797,7 @@ function getRegisterEventById(eventId) {
       event_type,
       shift,
       cashier,
+      branch,
       opening_amount,
       counted_amount,
       expected_cash,
@@ -695,6 +820,7 @@ function getRegisterEventById(eventId) {
     eventType: row.event_type,
     shift: row.shift,
     cashier: row.cashier,
+    branch: row.branch,
     openingAmount: roundMoney(row.opening_amount),
     countedAmount: roundMoney(row.counted_amount),
     expectedCash: roundMoney(row.expected_cash),
@@ -712,6 +838,7 @@ function getInventoryMovementById(movementId) {
     SELECT
       im.id,
       im.product_id,
+      im.branch,
       p.name AS product_name,
       im.movement_type,
       im.quantity_delta,
@@ -734,6 +861,7 @@ function getInventoryMovementById(movementId) {
     id: row.id,
     productId: row.product_id,
     productName: row.product_name,
+    branch: row.branch,
     movementType: row.movement_type,
     quantityDelta: roundStock(row.quantity_delta),
     stockBefore: roundStock(row.stock_before),
@@ -895,12 +1023,200 @@ function getRecentInventoryMovements(limit = 16) {
   }));
 }
 
+function getRecentActivity(limit = 18, branch = STORE_BRANCHES[0]) {
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const sales = getRecentSales(limit, normalizedBranch).map((sale) => ({
+    kind: "sale",
+    id: sale.id,
+    createdAt: sale.createdAt,
+    title: sale.ticketNumber,
+    subtitle: `${getBranchLabel(sale.branch)} - ${sale.cashier} - ${sale.shift}`,
+    amount: sale.total,
+    amountPrefix: "",
+    tag: "Venta",
+  }));
+
+  const registerEvents = (normalizedBranch === ALL_BRANCHES
+    ? db.prepare(`
+      SELECT
+        id,
+        event_type,
+        shift,
+        cashier,
+        branch,
+        counted_amount,
+        difference_amount,
+        created_at
+      FROM register_events
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `).all(limit)
+    : db.prepare(`
+      SELECT
+        id,
+        event_type,
+        shift,
+        cashier,
+        branch,
+        counted_amount,
+        difference_amount,
+        created_at
+      FROM register_events
+      WHERE branch = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `).all(normalizedBranch, limit)).map((event) => ({
+    kind: "register",
+    id: event.id,
+    createdAt: event.created_at,
+    title: getRegisterEventTypeLabel(event.event_type),
+    subtitle: `${getBranchLabel(event.branch)} - ${event.shift} - ${event.cashier}`,
+    amount: event.counted_amount,
+    amountPrefix: "",
+    tag: "Caja",
+    differenceAmount: roundMoney(event.difference_amount),
+  }));
+
+  const inventoryMovements = getRecentInventoryMovements(limit, normalizedBranch).map((movement) => ({
+    kind: "inventory",
+    id: movement.id,
+    createdAt: movement.createdAt,
+    title: movement.productName,
+    subtitle: `${getBranchLabel(movement.branch)} - ${getInventoryMovementTypeLabel(movement.movementType)}`,
+    amount: Math.abs(roundStock(movement.quantityDelta)),
+    amountPrefix: roundStock(movement.quantityDelta) >= 0 ? "+" : "-",
+    tag: "Inventario",
+  }));
+
+  return [...sales, ...registerEvents, ...inventoryMovements]
+    .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+    .slice(0, limit);
+}
+
+function getRecentRegisterEvents(limit = 16, branch = STORE_BRANCHES[0]) {
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const rows = normalizedBranch === ALL_BRANCHES
+    ? db.prepare(`
+      SELECT
+        id,
+        event_type,
+        shift,
+        cashier,
+        branch,
+        counted_amount,
+        difference_amount,
+        created_at
+      FROM register_events
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `).all(limit)
+    : db.prepare(`
+      SELECT
+        id,
+        event_type,
+        shift,
+        cashier,
+        branch,
+        counted_amount,
+        difference_amount,
+        created_at
+      FROM register_events
+      WHERE branch = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `).all(normalizedBranch, limit);
+
+  return rows.map((row) => ({
+    id: row.id,
+    eventType: row.event_type,
+    shift: row.shift,
+    cashier: row.cashier,
+    branch: row.branch,
+    countedAmount: roundMoney(row.counted_amount),
+    differenceAmount: roundMoney(row.difference_amount),
+    createdAt: row.created_at,
+  }));
+}
+
+function getRecentInventoryMovements(limit = 16, branch = STORE_BRANCHES[0]) {
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const rows = normalizedBranch === ALL_BRANCHES
+    ? db.prepare(`
+      SELECT
+        im.id,
+        im.product_id,
+        im.branch,
+        p.name AS product_name,
+        im.movement_type,
+        im.quantity_delta,
+        im.created_at
+      FROM inventory_movements im
+      JOIN products p ON p.id = im.product_id
+      ORDER BY im.created_at DESC, im.id DESC
+      LIMIT ?
+    `).all(limit)
+    : db.prepare(`
+      SELECT
+        im.id,
+        im.product_id,
+        im.branch,
+        p.name AS product_name,
+        im.movement_type,
+        im.quantity_delta,
+        im.created_at
+      FROM inventory_movements im
+      JOIN products p ON p.id = im.product_id
+      WHERE im.branch = ?
+      ORDER BY im.created_at DESC, im.id DESC
+      LIMIT ?
+    `).all(normalizedBranch, limit);
+
+  return rows.map((row) => ({
+    id: row.id,
+    productId: row.product_id,
+    productName: row.product_name,
+    branch: row.branch,
+    movementType: row.movement_type,
+    quantityDelta: roundStock(row.quantity_delta),
+    createdAt: row.created_at,
+  }));
+}
+
+function initializeTestCashiers() {
+  const existingCount = db.prepare("SELECT COUNT(*) AS count FROM cashiers").get().count;
+  if (existingCount > 0) {
+    return;
+  }
+
+  const testCashiers = [
+    { name: "Juan", branch: "carrizal", password: "1234" },
+    { name: "Maria", branch: "miradores", password: "1234" },
+    { name: "Pedro", branch: "carrizal", password: "1234" },
+  ];
+
+  const now = nowIso();
+  const insert = db.prepare(`
+    INSERT INTO cashiers (name, branch, password_hash, active, created_at, updated_at)
+    VALUES (?, ?, ?, 1, ?, ?)
+  `);
+
+  testCashiers.forEach((cashier) => {
+    const passwordHash = JSON.stringify(hashCashierPassword(cashier.password));
+    insert.run(cashier.name, cashier.branch, passwordHash, now, now);
+  });
+}
+
 function startRegister(payload) {
-  const summary = getRegisterSummary(payload.shift);
+  const summary = getRegisterSummary(payload.shift, payload.branch);
   const shift = summary.shift;
+  const branch = normalizeBranch(payload.branch);
   const cashier = normalizeText(payload.cashier || "Mostrador", 60) || "Mostrador";
   const openingAmount = roundMoney(payload.openingAmount);
   const notes = normalizeText(payload.notes || "", 180) || null;
+
+  if (!STORE_BRANCHES.includes(branch)) {
+    throw createHttpError("Selecciona una sucursal valida.");
+  }
 
   if (!Number.isFinite(openingAmount) || openingAmount < 0) {
     throw createHttpError("El monto inicial de caja debe ser cero o mayor.");
@@ -912,6 +1228,7 @@ function startRegister(payload) {
       event_type,
       shift,
       cashier,
+      branch,
       opening_amount,
       counted_amount,
       expected_cash,
@@ -921,11 +1238,12 @@ function startRegister(payload) {
       total_sales,
       notes,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     "start",
     shift,
     cashier,
+    branch,
     openingAmount,
     openingAmount,
     openingAmount,
@@ -939,7 +1257,7 @@ function startRegister(payload) {
 
   return {
     eventId: Number(insert.lastInsertRowid),
-    summary: getRegisterSummary(shift),
+    summary: getRegisterSummary(shift, branch),
   };
 }
 
@@ -949,12 +1267,17 @@ function createRegisterCut(payload) {
     throw createHttpError("El tipo de corte no es valido.");
   }
 
-  const summary = getRegisterSummary(payload.shift);
+  const summary = getRegisterSummary(payload.shift, payload.branch);
   const cashier = normalizeText(payload.cashier || "Mostrador", 60) || "Mostrador";
+  const branch = normalizeBranch(payload.branch);
   const countedAmount = roundMoney(
     payload.countedAmount === undefined ? summary.expectedCash : payload.countedAmount,
   );
   const notes = normalizeText(payload.notes || "", 180) || null;
+
+  if (!STORE_BRANCHES.includes(branch)) {
+    throw createHttpError("Selecciona una sucursal valida.");
+  }
 
   if (!Number.isFinite(countedAmount) || countedAmount < 0) {
     throw createHttpError("El efectivo contado debe ser cero o mayor.");
@@ -967,6 +1290,7 @@ function createRegisterCut(payload) {
       event_type,
       shift,
       cashier,
+      branch,
       opening_amount,
       counted_amount,
       expected_cash,
@@ -976,11 +1300,12 @@ function createRegisterCut(payload) {
       total_sales,
       notes,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     eventType,
     summary.shift,
     cashier,
+    branch,
     summary.openingAmount,
     countedAmount,
     summary.expectedCash,
@@ -995,28 +1320,38 @@ function createRegisterCut(payload) {
   return {
     eventId: Number(insert.lastInsertRowid),
     differenceAmount,
-    summary: getRegisterSummary(summary.shift),
+    summary: getRegisterSummary(summary.shift, branch),
   };
 }
 
-function getDashboardSnapshot() {
+function getDashboardSnapshot(branch = STORE_BRANCHES[0]) {
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
   return {
     store: {
       name: STORE_NAME,
       timezone: STORE_TIME_ZONE,
       shifts: STORE_SHIFTS,
+      branches: [
+        { value: ALL_BRANCHES, label: getBranchLabel(ALL_BRANCHES) },
+        ...STORE_BRANCHES.map((branchCode) => ({
+          value: branchCode,
+          label: getBranchLabel(branchCode),
+        })),
+      ],
+      currentBranch: normalizedBranch,
+      currentBranchLabel: getBranchLabel(normalizedBranch),
       salesPulse: {
         startHour: SALES_PULSE_START_HOUR,
         endHour: SALES_PULSE_END_HOUR,
       },
     },
-    summary: getSummary(),
+    summary: getSummary(normalizedBranch),
     products: listProducts(),
     lowStock: getLowStockProducts(),
-    recentSales: getRecentSales(),
-    recentActivity: getRecentActivity(),
-    salesByHour: getSalesByHour(),
-    shiftSummary: getShiftSummary(),
+    recentSales: getRecentSales(8, normalizedBranch),
+    recentActivity: getRecentActivity(18, normalizedBranch),
+    salesByHour: getSalesByHour(normalizedBranch),
+    shiftSummary: getShiftSummary(normalizedBranch),
     generatedAt: nowIso(),
   };
 }
@@ -1028,6 +1363,7 @@ function getSaleById(saleId) {
       ticket_number,
       shift,
       cashier,
+      branch,
       payment_method,
       subtotal,
       total,
@@ -1062,6 +1398,7 @@ function getSaleById(saleId) {
     ticketNumber: sale.ticket_number,
     shift: sale.shift,
     cashier: sale.cashier,
+    branch: sale.branch,
     paymentMethod: sale.payment_method,
     subtotal: roundMoney(sale.subtotal),
     total: roundMoney(sale.total),
@@ -1084,9 +1421,18 @@ function getSaleById(saleId) {
 function createSale(payload) {
   const shift = normalizeText(payload.shift || "Tarde", 24) || "Tarde";
   const cashier = normalizeText(payload.cashier || "Mostrador", 60) || "Mostrador";
+  const branch = normalizeBranch(payload.branch);
   const paymentMethod = normalizeText(payload.paymentMethod || "Efectivo", 24) || "Efectivo";
   const notes = normalizeText(payload.notes || "", 240) || null;
   const incomingItems = Array.isArray(payload.items) ? payload.items : [];
+
+  if (!STORE_SHIFTS.includes(shift)) {
+    throw createHttpError("Selecciona un turno valido para registrar la venta.");
+  }
+
+  if (!STORE_BRANCHES.includes(branch)) {
+    throw createHttpError("Selecciona una sucursal valida.");
+  }
 
   if (!STORE_SHIFTS.includes(shift)) {
     throw createHttpError("Selecciona un turno valido para registrar la venta.");
@@ -1177,6 +1523,7 @@ function createSale(payload) {
         ticket_number,
         shift,
         cashier,
+        branch,
         payment_method,
         subtotal,
         total,
@@ -1185,11 +1532,12 @@ function createSale(payload) {
         notes,
         item_count,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       ticketNumber,
       shift,
       cashier,
+      branch,
       paymentMethod,
       subtotal,
       total,
@@ -1222,6 +1570,7 @@ function createSale(payload) {
       INSERT INTO inventory_movements (
         product_id,
         movement_type,
+        branch,
         quantity_delta,
         stock_before,
         stock_after,
@@ -1229,7 +1578,7 @@ function createSale(payload) {
         reference_type,
         reference_id,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     preparedItems.forEach((item) => {
@@ -1249,6 +1598,7 @@ function createSale(payload) {
       insertMovement.run(
         item.productId,
         "sale",
+        branch,
         -item.quantity,
         item.stockBefore,
         item.stockAfter,
@@ -1301,6 +1651,7 @@ function updateProduct(productId, payload) {
 
   const now = nowIso();
   const note = normalizeText(payload.note || "Ajuste manual de inventario", 120);
+  const branch = normalizeBranch(payload.branch);
 
   db.transaction(() => {
     db.prepare(`
@@ -1314,6 +1665,7 @@ function updateProduct(productId, payload) {
         INSERT INTO inventory_movements (
           product_id,
           movement_type,
+          branch,
           quantity_delta,
           stock_before,
           stock_after,
@@ -1321,10 +1673,11 @@ function updateProduct(productId, payload) {
           reference_type,
           reference_id,
           created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         productId,
         "adjustment",
+        branch,
         roundStock(nextStock - roundStock(current.stock)),
         roundStock(current.stock),
         nextStock,
@@ -1341,7 +1694,12 @@ function updateProduct(productId, payload) {
 
 function applyQuickInventoryEntry(payload) {
   const mode = normalizeText(payload.mode || "initial", 24).toLowerCase();
+  const branch = normalizeBranch(payload.branch);
   const current = findQuickImportProduct(payload);
+
+  if (!STORE_BRANCHES.includes(branch)) {
+    throw createHttpError("Selecciona una sucursal valida.");
+  }
 
   if (!current) {
     throw createHttpError("Selecciona un producto valido para la captura rapida.");
@@ -1419,6 +1777,7 @@ function applyQuickInventoryEntry(payload) {
       INSERT INTO inventory_movements (
         product_id,
         movement_type,
+        branch,
         quantity_delta,
         stock_before,
         stock_after,
@@ -1426,10 +1785,11 @@ function applyQuickInventoryEntry(payload) {
         reference_type,
         reference_id,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       productId,
       movementType,
+      branch,
       quantityDelta,
       stockBefore,
       stockAfter,
@@ -1942,11 +2302,173 @@ async function exportWorkbookReport() {
   return workbook.xlsx.writeBuffer();
 }
 
+function hashCashierPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
+  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
+  return { salt, hash };
+}
+
+function verifyCashierPassword(password, stored) {
+  if (!stored) {
+    return false;
+  }
+
+  try {
+    const { salt, hash } = JSON.parse(stored);
+    const candidate = hashCashierPassword(password, salt);
+    return crypto.timingSafeEqual(
+      Buffer.from(candidate.hash, "hex"),
+      Buffer.from(hash, "hex"),
+    );
+  } catch (_error) {
+    return false;
+  }
+}
+
+function authenticateCashier(name, branch, password) {
+  const normalizedName = normalizeText(name, 60);
+  const normalizedBranch = normalizeBranch(branch);
+  const row = db.prepare(`
+    SELECT password_hash
+    FROM cashiers
+    WHERE name = ? AND branch = ? AND active = 1
+  `).get(normalizedName, normalizedBranch);
+
+  if (!row) {
+    return false;
+  }
+
+  return verifyCashierPassword(password, row.password_hash);
+}
+
+function createCashier(name, branch, password) {
+  const normalizedName = normalizeText(name, 60);
+  const normalizedBranch = normalizeBranch(branch);
+  const normalizedPassword = String(password || "").trim();
+
+  if (!normalizedName) {
+    throw createHttpError("Escribe el nombre del cajero.");
+  }
+
+  if (!STORE_BRANCHES.includes(normalizedBranch)) {
+    throw createHttpError("Sucursal no valida.");
+  }
+
+  if (normalizedPassword.length < 4) {
+    throw createHttpError("La contrasena del cajero debe tener al menos 4 caracteres.");
+  }
+
+  const existingCashier = db.prepare(`
+    SELECT id
+    FROM cashiers
+    WHERE name = ? AND branch = ?
+  `).get(normalizedName, normalizedBranch);
+  if (existingCashier) {
+    throw createHttpError("Ya existe un cajero con ese nombre en esa sucursal.");
+  }
+
+  const now = nowIso();
+  const { salt, hash } = hashCashierPassword(normalizedPassword);
+  const insert = db.prepare(`
+    INSERT INTO cashiers (name, branch, password_hash, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(normalizedName, normalizedBranch, JSON.stringify({ salt, hash }), now, now);
+
+  return {
+    id: Number(insert.lastInsertRowid),
+    name: normalizedName,
+    branch: normalizedBranch,
+    branchLabel: getBranchLabel(normalizedBranch),
+    active: true,
+  };
+}
+
+function listCashiers(branch = null) {
+  const normalizedBranch =
+    branch == null || branch === ""
+      ? null
+      : normalizeBranch(branch, { allowAll: true });
+  const query = normalizedBranch && normalizedBranch !== ALL_BRANCHES
+    ? "SELECT id, name, branch, active, created_at FROM cashiers WHERE branch = ? ORDER BY name"
+    : "SELECT id, name, branch, active, created_at FROM cashiers ORDER BY branch, name";
+  const statement = db.prepare(query);
+  const rows = normalizedBranch && normalizedBranch !== ALL_BRANCHES
+    ? statement.all(normalizedBranch)
+    : statement.all();
+  return rows.map((cashier) => ({
+    ...cashier,
+    branchLabel: getBranchLabel(cashier.branch),
+    active: Boolean(cashier.active),
+  }));
+}
+
+function updateCashier(cashierId, updates) {
+  const current = db.prepare("SELECT * FROM cashiers WHERE id = ?").get(cashierId);
+  if (!current) {
+    throw createHttpError("Cajero no encontrado.", 404);
+  }
+
+  const nextName =
+    updates.name !== undefined ? normalizeText(updates.name, 60) : current.name;
+  const nextBranch =
+    updates.branch !== undefined ? normalizeBranch(updates.branch) : current.branch;
+  const nextActive = updates.active !== undefined ? Boolean(updates.active) : Boolean(current.active);
+
+  if (!nextName) {
+    throw createHttpError("Escribe el nombre del cajero.");
+  }
+
+  if (updates.password !== undefined && String(updates.password).trim() !== "" && String(updates.password).trim().length < 4) {
+    throw createHttpError("La nueva contrasena debe tener al menos 4 caracteres.");
+  }
+
+  if (!STORE_BRANCHES.includes(nextBranch)) {
+    throw createHttpError("Sucursal no valida.");
+  }
+
+  const conflictingCashier = db.prepare(`
+    SELECT id
+    FROM cashiers
+    WHERE name = ? AND branch = ? AND id != ?
+  `).get(nextName, nextBranch, cashierId);
+  if (conflictingCashier) {
+    throw createHttpError("Ya existe otro cajero con ese nombre en esa sucursal.");
+  }
+
+  const safePasswordHash =
+    updates.password !== undefined && String(updates.password).trim() !== ""
+      ? JSON.stringify(hashCashierPassword(String(updates.password).trim()))
+      : current.password_hash;
+
+  db.prepare(`
+    UPDATE cashiers
+    SET name = ?, branch = ?, password_hash = ?, active = ?, updated_at = ?
+    WHERE id = ?
+  `).run(nextName, nextBranch, safePasswordHash, nextActive ? 1 : 0, nowIso(), cashierId);
+
+  return {
+    id: cashierId,
+    name: nextName,
+    branch: nextBranch,
+    branchLabel: getBranchLabel(nextBranch),
+    active: nextActive,
+  };
+}
+
+function deleteCashier(cashierId) {
+  const result = db.prepare("DELETE FROM cashiers WHERE id = ?").run(cashierId);
+  if (result.changes === 0) {
+    throw createHttpError("Cajero no encontrado.", 404);
+  }
+}
+
 module.exports = {
   applyQuickInventoryEntry,
+  authenticateCashier,
   CATEGORY_LABELS,
+  createCashier,
   createRegisterCut,
   createSale,
+  deleteCashier,
   ensureCatalogSeeded,
   exportWorkbookReport,
   getDashboardSnapshot,
@@ -1961,9 +2483,12 @@ module.exports = {
   getRegisterSummary,
   getSaleById,
   importCatalogFromWorkbook,
+  initializeTestCashiers,
+  listCashiers,
   listProducts,
   resolveWorkbookPath,
   startRegister,
+  updateCashier,
   updateInventoryMovementAdmin,
   updateProduct,
   updateRegisterEventAdmin,

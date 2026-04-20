@@ -305,9 +305,43 @@ h3 {
 
 .toolbar-grid {
   display: grid;
-  grid-template-columns: 180px 1fr 1.2fr;
+  grid-template-columns: 180px 220px 220px minmax(220px, 1fr);
   gap: 12px;
   margin-bottom: 18px;
+}
+
+.session-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border-radius: 22px;
+  border: 1px solid rgba(87, 63, 46, 0.08);
+  background: rgba(255, 251, 246, 0.9);
+}
+
+.session-summary-card {
+  display: grid;
+  gap: 4px;
+}
+
+.session-summary-card strong {
+  color: var(--primary-deep);
+  font-size: 1rem;
+}
+
+.session-summary-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.session-toolbar-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .register-toolbar {
@@ -900,13 +934,12 @@ h3 {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
-  margin-top: 18px;
 }
 
 .admin-layout {
   margin-top: 18px;
   display: grid;
-  grid-template-columns: minmax(320px, 0.88fr) minmax(0, 1.6fr);
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
   gap: 18px;
   align-items: start;
 }
@@ -916,6 +949,50 @@ h3 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
+}
+
+.admin-toolbar-panel,
+.admin-summary-panel,
+.admin-cashiers-panel {
+  border-radius: 26px;
+  padding: 20px;
+  border: 1px solid rgba(87, 63, 46, 0.08);
+  background: rgba(255, 252, 248, 0.92);
+}
+
+.admin-toolbar-panel {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: center;
+}
+
+.admin-toolbar-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.admin-toolbar-copy h4 {
+  margin: 0;
+  color: var(--primary-deep);
+  font-size: 1.32rem;
+}
+
+.admin-toolbar-controls {
+  display: grid;
+  gap: 12px;
+  justify-items: end;
+}
+
+.admin-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.admin-shift-chips {
+  margin-top: 14px;
 }
 
 .admin-subhead {
@@ -1005,6 +1082,32 @@ h3 {
   margin: 0;
   color: var(--muted);
   font-size: 0.88rem;
+}
+
+.admin-record-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.compact-button {
+  padding: 10px 12px;
+  border-radius: 14px;
+  font-size: 0.86rem;
+}
+
+.danger-button {
+  color: #8c2c2c;
+}
+
+.admin-cashier-form {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.cashier-record-list {
+  max-height: 420px;
 }
 
 .admin-inventory-panel {
@@ -1421,6 +1524,8 @@ h3 {
 
   .hero-card,
   .hero-status,
+  .session-toolbar,
+  .admin-toolbar-panel,
   .cart-actions,
   .modal-actions,
   .panel-head,
@@ -1446,6 +1551,7 @@ h3 {
   .quick-import-stats,
   .quick-import-mode-bar,
   .admin-layout,
+  .admin-summary-grid,
   .admin-metrics-grid,
   .admin-editor-layout {
     grid-template-columns: 1fr;

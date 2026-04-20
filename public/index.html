@@ -43,6 +43,9 @@
           <div class="live-pill secondary-pill">
             <span id="sync-status">Sin pendientes</span>
           </div>
+          <button class="secondary-button" id="header-admin-button" type="button" title="Acceso directo al panel admin">
+            🔧 Admin
+          </button>
           <div class="clock-card">
             <span id="live-date">--</span>
             <strong id="live-time">--:--</strong>
@@ -76,14 +79,35 @@
             </label>
 
             <label class="field">
-              <span>Cajero</span>
-              <input id="cashier-input" type="text" placeholder="Mostrador principal" />
+              <span>Sucursal activa</span>
+              <input id="branch-display" type="text" value="Carrizal" readonly />
+            </label>
+
+            <label class="field">
+              <span>Cajero activo</span>
+              <input id="cashier-input" type="text" placeholder="Sin sesion" readonly />
             </label>
 
             <label class="field field-search">
               <span>Buscar producto</span>
               <input id="search-input" type="search" placeholder="Queso, miel, pay..." />
             </label>
+          </div>
+
+          <div class="session-toolbar">
+            <div class="session-summary-card">
+              <span class="eyebrow">Sesion actual</span>
+              <strong id="cashier-session-label">Sin iniciar sesion</strong>
+              <p id="cashier-session-helper">Selecciona sucursal y entra con la clave del cajero.</p>
+            </div>
+            <div class="session-toolbar-actions">
+              <button class="secondary-button" id="switch-cashier-button" type="button">
+                Cambiar sucursal
+              </button>
+              <button class="ghost-button" id="logout-cashier-button" type="button">
+                Cerrar sesion cajero
+              </button>
+            </div>
           </div>
 
           <div class="register-toolbar">
@@ -487,26 +511,62 @@
           <button class="icon-button" id="close-admin-modal" type="button">×</button>
         </div>
 
-        <div class="admin-actions">
-          <button class="secondary-button" id="refresh-catalog-button" type="button">
-            Reimportar catalogo
-          </button>
-          <button class="secondary-button" id="export-workbook-button" type="button">
-            Exportar Excel
-          </button>
-          <button class="primary-button" id="open-quick-import-button" type="button">
-            Importacion rapida
-          </button>
-        </div>
-
         <div class="admin-layout">
+          <section class="admin-toolbar-panel">
+            <div class="admin-toolbar-copy">
+              <p class="eyebrow">Vista admin</p>
+              <h4 id="admin-branch-title">Todas las sucursales</h4>
+              <p class="modal-note" id="admin-branch-description">
+                Revisa ventas, movimientos y rendimiento sin mover la caja activa.
+              </p>
+            </div>
+
+            <div class="admin-toolbar-controls">
+              <label class="field">
+                <span>Sucursal</span>
+                <select id="admin-branch-select">
+                  <option value="all">Todas las sucursales</option>
+                  <option value="carrizal">Carrizal</option>
+                  <option value="miradores">Miradores</option>
+                </select>
+              </label>
+
+              <div class="admin-actions">
+                <button class="secondary-button" id="refresh-catalog-button" type="button">
+                  Reimportar catalogo
+                </button>
+                <button class="secondary-button" id="export-workbook-button" type="button">
+                  Exportar Excel
+                </button>
+                <button class="primary-button" id="open-quick-import-button" type="button">
+                  Importacion rapida
+                </button>
+                <button class="secondary-button" id="admin-logout-button" type="button">
+                  Cerrar sesion
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section class="admin-summary-panel">
+            <div class="panel-head admin-subhead">
+              <div>
+                <p class="eyebrow">Resumen</p>
+                <h2>Lectura por sucursal</h2>
+              </div>
+              <span class="small-pill" id="admin-metrics-status">Esperando datos</span>
+            </div>
+
+            <div class="admin-summary-grid" id="admin-summary-cards"></div>
+            <div class="shift-chips admin-shift-chips" id="admin-shift-summary"></div>
+          </section>
+
           <section class="admin-metrics-panel">
             <div class="panel-head admin-subhead">
               <div>
                 <p class="eyebrow">Metricas</p>
                 <h2>Rendimiento en vivo</h2>
               </div>
-              <span class="small-pill" id="admin-metrics-status">Esperando datos</span>
             </div>
 
             <div class="admin-metrics-grid">
@@ -577,6 +637,41 @@
                 <tbody id="inventory-body"></tbody>
               </table>
             </div>
+          </section>
+
+          <section class="admin-cashiers-panel">
+            <div class="panel-head admin-subhead">
+              <div>
+                <p class="eyebrow">Accesos</p>
+                <h2>Cajeros y contraseñas</h2>
+              </div>
+            </div>
+
+            <div class="admin-cashier-form">
+              <label class="field">
+                <span>Nombre del cajero</span>
+                <input id="admin-cashier-name" type="text" maxlength="60" placeholder="Ej. Andrea" />
+              </label>
+
+              <label class="field">
+                <span>Sucursal</span>
+                <select id="admin-cashier-branch">
+                  <option value="carrizal">Carrizal</option>
+                  <option value="miradores">Miradores</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span>Contrasena</span>
+                <input id="admin-cashier-password" type="password" maxlength="60" placeholder="Minimo 4 caracteres" />
+              </label>
+
+              <button class="primary-button" id="save-admin-cashier-button" type="button">
+                Crear cajero
+              </button>
+            </div>
+
+            <div class="admin-record-list cashier-record-list" id="admin-cashiers-list"></div>
           </section>
         </div>
 
@@ -671,6 +766,47 @@
           </button>
           <button class="primary-button" id="save-admin-editor-button" type="button">
             Guardar cambios
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-shell priority-modal" id="cashier-auth-modal">
+      <div class="modal-card auth-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Acceso cajero</p>
+            <h3>Inicio de sesion</h3>
+            <p class="modal-note">
+              Elige sucursal y entra con la clave del cajero para abrir esa caja.
+            </p>
+          </div>
+          <button class="icon-button" id="close-cashier-auth-modal" type="button">×</button>
+        </div>
+
+        <div class="modal-body">
+          <label class="field">
+            <span>Nombre de usuario</span>
+            <input id="cashier-auth-name" type="text" autocomplete="username" />
+          </label>
+
+          <label class="field">
+            <span>Sucursal</span>
+            <select id="cashier-auth-branch">
+              <option value="carrizal">Carrizal</option>
+              <option value="miradores">Miradores</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Contrasena</span>
+            <input id="cashier-auth-password" type="password" autocomplete="current-password" />
+          </label>
+        </div>
+
+        <div class="modal-actions">
+          <button class="primary-button" id="login-cashier-button" type="button">
+            Iniciar sesion
           </button>
         </div>
       </div>

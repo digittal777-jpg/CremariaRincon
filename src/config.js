@@ -7,6 +7,11 @@ const PORT = Number(process.env.PORT || 3100);
 const STORE_NAME = "Cremeria El Rincon";
 const STORE_TIME_ZONE = process.env.POS_TIMEZONE || "America/Mexico_City";
 const STORE_SHIFTS = ["Manana", "Tarde"];
+const STORE_BRANCHES = ["carrizal", "miradores"];
+const STORE_BRANCH_LABELS = {
+  carrizal: "Carrizal",
+  miradores: "Miradores",
+};
 const SALES_PULSE_START_HOUR = 8;
 const SALES_PULSE_END_HOUR = 20;
 const PROJECT_WORKBOOK_PATH = path.join(ROOT_DIR, "Queseria El rincon V1.5.xlsx");
@@ -27,6 +32,8 @@ module.exports = {
   STORE_NAME,
   STORE_TIME_ZONE,
   STORE_SHIFTS,
+  STORE_BRANCHES,
+  STORE_BRANCH_LABELS,
   SALES_PULSE_START_HOUR,
   SALES_PULSE_END_HOUR,
   DEFAULT_WORKBOOK_PATHS,

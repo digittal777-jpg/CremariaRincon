@@ -33,7 +33,7 @@ const CATEGORY_LABELS = {
 const STORAGE_KEYS = {
   cart: "cremeria.cart",
   shift: "cremeria.shift",
-  cashier: "cremeria.cashier",
+  cashierSession: "cremeria.cashier.session",
   snapshot: "cremeria.snapshot",
   queue: "cremeria.queue",
   adminToken: "cremeria.adminToken",
@@ -44,6 +44,12 @@ const OFFLINE_DB_STORE = "app_state";
 const PRODUCT_RENDER_BATCH = 24;
 
 const state = {
+  store: {
+    branches: [],
+    currentBranch: "carrizal",
+    currentBranchLabel: "Carrizal",
+    shifts: ["Manana", "Tarde"],
+  },
   products: [],
   lowStock: [],
   recentSales: [],
@@ -95,12 +101,15 @@ const state = {
     detail: null,
   },
   admin: {
+    branch: "all",
     loading: false,
     metrics: null,
     pollTimerId: null,
     token: "",
     configured: false,
     authenticated: false,
+    snapshot: null,
+    cashiers: [],
     editorData: {
       sales: [],
       registerEvents: [],
@@ -117,6 +126,14 @@ const state = {
     loading: false,
     saving: false,
     detail: null,
+  },
+  cashier: {
+    name: "",
+    branch: "",
+    authenticated: false,
+  },
+  cashierAuth: {
+    loading: false,
   },
   performance: {
     productsRenderMs: 0,
@@ -156,6 +173,33 @@ function roundStock(value) {
 
 function roundMetric(value) {
   return Math.round((toNumber(value) + Number.EPSILON) * 10) / 10;
+}
+
+function getBranchOptions() {
+  return Array.isArray(state.store?.branches) && state.store.branches.length > 0
+    ? state.store.branches
+    : [
+        { value: "all", label: "Todas las sucursales" },
+        { value: "carrizal", label: "Carrizal" },
+        { value: "miradores", label: "Miradores" },
+      ];
+}
+
+function getBranchLabel(branch) {
+  const option = getBranchOptions().find((item) => item.value === branch);
+  return option?.label || branch || "Sin sucursal";
+}
+
+function getActiveCashierBranch() {
+  return state.cashier.branch || state.store.currentBranch || "carrizal";
+}
+
+function getAdminBranch() {
+  return state.admin.branch || "all";
+}
+
+function getAdminActionBranch() {
+  return getAdminBranch() === "all" ? getActiveCashierBranch() : getAdminBranch();
 }
 
 function getStockStatus(stock, minStock, stockInitialized) {
@@ -394,9 +438,11 @@ function persistText(key, value) {
 
 function buildPersistedSnapshot() {
   return {
+    store: state.store,
     products: state.products,
     lowStock: state.lowStock,
     recentSales: state.recentSales,
+    recentActivity: state.recentActivity,
     salesByHour: state.salesByHour,
     shiftSummary: state.shiftSummary,
     summary: state.summary,
@@ -476,19 +522,42 @@ async function restoreCart() {
 
 function persistPreferences() {
   persistText(STORAGE_KEYS.shift, refs.shiftSelect.value);
-  persistText(STORAGE_KEYS.cashier, refs.cashierInput.value.trim());
 }
 
 async function restorePreferences() {
   const savedShift = await readPersistedText(STORAGE_KEYS.shift, "");
-  const savedCashier = await readPersistedText(STORAGE_KEYS.cashier, "");
 
   if (savedShift) {
     refs.shiftSelect.value = savedShift;
   }
+}
 
-  if (savedCashier) {
-    refs.cashierInput.value = savedCashier;
+function persistCashierSession() {
+  persistText(
+    STORAGE_KEYS.cashierSession,
+    JSON.stringify({
+      name: state.cashier.name,
+      branch: state.cashier.branch,
+      authenticated: state.cashier.authenticated,
+    }),
+  );
+}
+
+async function restoreCashierSession() {
+  const rawValue = await readPersistedText(STORAGE_KEYS.cashierSession, "");
+  if (!rawValue) {
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue);
+    state.cashier.name = parsed.name || "";
+    state.cashier.branch = parsed.branch || "";
+    state.cashier.authenticated = Boolean(parsed.authenticated && parsed.name && parsed.branch);
+  } catch (_error) {
+    state.cashier.name = "";
+    state.cashier.branch = "";
+    state.cashier.authenticated = false;
   }
 }
 
@@ -505,6 +574,7 @@ function getCartCount() {
 function applySnapshot(snapshot, options = {}) {
   const renderStartedAt =
     typeof performance !== "undefined" ? performance.now() : Date.now();
+  state.store = snapshot.store || state.store;
   state.products = Array.isArray(snapshot.products) ? snapshot.products : [];
   state.lowStock = Array.isArray(snapshot.lowStock) ? snapshot.lowStock : [];
   state.recentSales = Array.isArray(snapshot.recentSales) ? snapshot.recentSales : [];
@@ -519,6 +589,7 @@ function applySnapshot(snapshot, options = {}) {
   }
 
   renderSummary();
+  renderCashierSession();
   renderCategoryFilters();
   requestProductsRender();
   renderLowStock();
@@ -715,6 +786,102 @@ function applyOptimisticSale(payload) {
   if (refs.adminModal?.classList.contains("open")) {
     renderInventory();
   }
+}
+
+function setSelectOptions(select, options, selectedValue) {
+  if (!select) {
+    return;
+  }
+
+  const nextOptions = Array.isArray(options) ? options : [];
+  const currentMarkup = nextOptions
+    .map(
+      (option) =>
+        `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`,
+    )
+    .join("");
+
+  if (select.innerHTML !== currentMarkup) {
+    select.innerHTML = currentMarkup;
+  }
+
+  if (nextOptions.some((option) => option.value === selectedValue)) {
+    select.value = selectedValue;
+  }
+}
+
+function renderCashierSession() {
+  const branchLabel = getBranchLabel(getActiveCashierBranch());
+  const cashierLabel = state.cashier.name || "Sin sesion";
+  const sessionText = state.cashier.authenticated
+    ? `${cashierLabel} en ${branchLabel}`
+    : "Sin iniciar sesion";
+
+  if (refs.branchDisplay) {
+    refs.branchDisplay.value = branchLabel;
+  }
+
+  if (refs.cashierInput) {
+    refs.cashierInput.value = cashierLabel;
+  }
+
+  if (refs.cashierSessionLabel) {
+    refs.cashierSessionLabel.textContent = sessionText;
+  }
+
+  if (refs.cashierSessionHelper) {
+    refs.cashierSessionHelper.textContent = state.cashier.authenticated
+      ? "Puedes cambiar de sucursal o cerrar la sesion del cajero cuando lo necesites."
+      : "Selecciona sucursal y entra con la clave del cajero para empezar a vender.";
+  }
+
+  if (refs.logoutCashierButton) {
+    refs.logoutCashierButton.disabled = !state.cashier.authenticated;
+  }
+}
+
+async function refreshCurrentSnapshot(branch = getActiveCashierBranch()) {
+  const snapshot = await performJsonRequest(
+    `/api/bootstrap?branch=${encodeURIComponent(branch)}`,
+  );
+  applySnapshot(snapshot);
+  return snapshot;
+}
+
+function applyAdminSnapshot(snapshot) {
+  state.admin.snapshot = snapshot || null;
+  if (snapshot?.store?.currentBranch) {
+    state.admin.branch = snapshot.store.currentBranch;
+  }
+  renderAdminModal();
+}
+
+async function loadAdminSnapshot(branch = getAdminBranch()) {
+  const snapshot = await requestAdminJson(
+    `/api/bootstrap?branch=${encodeURIComponent(branch)}`,
+  );
+  applyAdminSnapshot(snapshot);
+  return snapshot;
+}
+
+async function loadAdminCashiers(branch = getAdminBranch()) {
+  const query =
+    branch && branch !== "all" ? `?branch=${encodeURIComponent(branch)}` : "";
+  try {
+    const response = await requestAdminJson(`/api/admin/cashiers${query}`);
+    state.admin.cashiers = Array.isArray(response.cashiers) ? response.cashiers : [];
+  } catch (_error) {
+    state.admin.cashiers = [];
+  }
+  renderAdminCashiers();
+}
+
+async function refreshAdminWorkspace() {
+  await Promise.allSettled([
+    loadAdminSnapshot(getAdminBranch()),
+    loadAdminEditorData(getAdminBranch()),
+    loadAdminCashiers(getAdminBranch()),
+  ]);
 }
 
 function renderSummary() {
@@ -1502,7 +1669,9 @@ async function loadQuickImportItems() {
   renderQuickImportModal();
 
   try {
-    const response = await requestAdminJson("/api/inventory/quick-import");
+    const response = await requestAdminJson(
+      `/api/inventory/quick-import?branch=${encodeURIComponent(getAdminActionBranch())}`,
+    );
     state.quickImport.items = Array.isArray(response.items)
       ? response.items.map((item) => normalizeQuickImportItem(item))
       : [];
@@ -1691,6 +1860,11 @@ async function openQuickImportModal() {
     return;
   }
 
+  if (getAdminBranch() === "all") {
+    showToast("Selecciona una sucursal especifica en admin para la importacion rapida.", "info");
+    return;
+  }
+
   setModalOpen(refs.quickImportModal, true);
   await loadQuickImportItems();
 }
@@ -1757,6 +1931,7 @@ async function saveQuickImportEntry() {
     productId: safeItem.id,
     productName: safeItem.name,
     mode: state.quickImport.mode,
+    branch: getAdminActionBranch(),
     note: state.quickImport.note.trim(),
     supplierName: state.quickImport.supplierName.trim(),
   };
@@ -1779,7 +1954,8 @@ async function saveQuickImportEntry() {
       body: JSON.stringify(payload),
     });
 
-    applySnapshot(response.snapshot);
+    await refreshCurrentSnapshot();
+    await refreshAdminWorkspace();
     state.quickImport.saving = false;
 
     if (state.quickImport.index >= getQuickImportItems().length - 1) {
@@ -1914,7 +2090,7 @@ async function loadRegisterSummary(options = {}) {
 
   try {
     const response = await performJsonRequest(
-      `/api/register/summary?shift=${encodeURIComponent(shift)}`,
+      `/api/register/summary?shift=${encodeURIComponent(shift)}&branch=${encodeURIComponent(getActiveCashierBranch())}`,
     );
     state.register.summary = response.summary || getEmptyRegisterSummary();
     renderRegisterSummaryPill();
@@ -1970,7 +2146,8 @@ async function saveRegisterAction() {
 
   const payload = {
     shift: refs.shiftSelect.value,
-    cashier: refs.cashierInput.value.trim() || "Mostrador",
+    cashier: state.cashier.name || "Mostrador",
+    branch: getActiveCashierBranch(),
     notes: state.register.note.trim(),
   };
 
@@ -2048,8 +2225,73 @@ function renderAdminModal() {
     return;
   }
 
+  const adminSnapshot = state.admin.snapshot;
   const serverMetrics = state.admin.metrics;
   const clientMetrics = getClientMetrics();
+  const currentBranch = adminSnapshot?.store?.currentBranch || getAdminBranch();
+  const currentBranchLabel =
+    adminSnapshot?.store?.currentBranchLabel || getBranchLabel(currentBranch);
+  const summary = adminSnapshot?.summary || state.summary;
+  const shiftSummary = Array.isArray(adminSnapshot?.shiftSummary)
+    ? adminSnapshot.shiftSummary
+    : [];
+
+  setSelectOptions(refs.adminBranchSelect, getBranchOptions(), currentBranch);
+  state.admin.branch = currentBranch;
+
+  if (refs.adminBranchTitle) {
+    refs.adminBranchTitle.textContent = currentBranchLabel;
+  }
+
+  if (refs.adminBranchDescription) {
+    refs.adminBranchDescription.textContent =
+      currentBranch === "all"
+        ? "Admin viendo ventas y movimientos de ambas sucursales al mismo tiempo."
+        : `Admin enfocado en ${currentBranchLabel} sin mover la caja activa.`;
+  }
+
+  if (refs.adminSummaryCards) {
+    const topProductText = summary.topProduct
+      ? `${summary.topProduct.name} lidera con ${formatCurrency(summary.topProduct.total)}`
+      : "Sin ventas registradas hoy";
+
+    refs.adminSummaryCards.innerHTML = `
+      <article class="admin-metric-card">
+        <span>Ventas del dia</span>
+        <strong>${formatCurrency(summary.revenueToday || 0)}</strong>
+        <p>${formatQuantity(summary.ticketsToday || 0)} tickets</p>
+      </article>
+      <article class="admin-metric-card">
+        <span>Ticket promedio</span>
+        <strong>${formatCurrency(summary.averageTicket || 0)}</strong>
+        <p>${formatQuantity(summary.unitsSoldToday || 0)} unidades</p>
+      </article>
+      <article class="admin-metric-card">
+        <span>Inventario</span>
+        <strong>${formatCurrency(summary.inventoryValue || 0)}</strong>
+        <p>${formatQuantity(summary.catalogSize || 0)} productos activos</p>
+      </article>
+      <article class="admin-metric-card">
+        <span>Alertas</span>
+        <strong>${formatQuantity(summary.lowStockCount || 0)}</strong>
+        <p>${escapeHtml(topProductText)}</p>
+      </article>
+    `;
+  }
+
+  if (refs.adminShiftSummary) {
+    refs.adminShiftSummary.innerHTML = shiftSummary.length
+      ? shiftSummary
+          .map(
+            (item) => `
+              <div class="shift-chip">
+                ${escapeHtml(item.shift)} · ${formatQuantity(item.tickets)} tickets · ${formatCurrency(item.total)}
+              </div>
+            `,
+          )
+          .join("")
+      : `<div class="shift-chip">Sin tickets registrados en esta vista.</div>`;
+  }
 
   refs.adminMetricsStatus.textContent = state.admin.loading
     ? "Actualizando..."
@@ -2109,34 +2351,58 @@ function startAdminMetricsPolling() {
   void loadAdminMetrics();
   state.admin.pollTimerId = window.setInterval(() => {
     void loadAdminMetrics();
-  }, 3000);
+  }, 10000);
 }
 
 async function openAdminModal() {
+  console.log("[ADMIN] Intentando abrir panel admin...");
+
+  // Si NO tenemos token de admin → siempre mostramos el modal de login/setup
   if (!state.admin.token) {
+    console.log("[ADMIN] No hay token → abriendo auth modal");
     await openAdminAuthModal();
     return;
   }
 
+  // Si tenemos token, verificamos que siga siendo válido
   try {
     await requestAdminJson("/api/admin/auth/status");
-  } catch (_error) {
+    console.log("[ADMIN] Token válido → abriendo panel");
+  } catch (error) {
+    console.log("[ADMIN] Token inválido o expirado → forzando login");
     state.admin.token = "";
     writeStorageText(STORAGE_KEYS.adminToken, "");
     await openAdminAuthModal();
     return;
   }
 
+  // Todo correcto → abrimos el panel admin
   setModalOpen(refs.adminModal, true);
   renderInventory();
   renderAdminModal();
   startAdminMetricsPolling();
-  await loadAdminEditorData();
+  await refreshAdminWorkspace();
 }
 
 function closeAdminModal() {
   setModalOpen(refs.adminModal, false);
   stopAdminMetricsPolling();
+}
+
+async function logoutAdmin() {
+  try {
+    await performJsonRequest("/api/admin/auth/logout", {
+      method: "POST",
+      headers: getAdminAuthHeaders(),
+    });
+  } catch (_error) {
+    // Ignorar errores
+  }
+  state.admin.token = "";
+  writeStorageText(STORAGE_KEYS.adminToken, "");
+  state.admin.authenticated = false;
+  closeAdminModal();
+  showToast("Sesion cerrada", "info");
 }
 
 function renderAdminRecordLists() {
@@ -2200,6 +2466,118 @@ function renderAdminRecordLists() {
 async function loadAdminEditorData() {
   try {
     const response = await requestAdminJson("/api/admin/editor-data");
+    state.admin.editorData = {
+      sales: Array.isArray(response.sales) ? response.sales : [],
+      registerEvents: Array.isArray(response.registerEvents) ? response.registerEvents : [],
+      inventoryMovements: Array.isArray(response.inventoryMovements) ? response.inventoryMovements : [],
+    };
+  } catch (_error) {
+    state.admin.editorData = {
+      sales: [],
+      registerEvents: [],
+      inventoryMovements: [],
+    };
+  } finally {
+    renderAdminRecordLists();
+  }
+}
+
+function renderAdminRecordLists() {
+  if (!refs.adminSalesList) {
+    return;
+  }
+
+  const sales = state.admin.editorData.sales || [];
+  const registerEvents = state.admin.editorData.registerEvents || [];
+  const inventoryMovements = state.admin.editorData.inventoryMovements || [];
+
+  refs.adminSalesList.innerHTML = sales.length
+    ? sales
+        .map(
+          (sale) => `
+            <button class="admin-record-item" data-action="edit-admin-record" data-kind="sale" data-id="${sale.id}" type="button">
+              <div class="admin-record-item-head">
+                <strong>${escapeHtml(sale.ticketNumber)}</strong>
+                <span class="small-pill">${formatCurrency(sale.total)}</span>
+              </div>
+              <p>${escapeHtml(getBranchLabel(sale.branch))} · ${escapeHtml(sale.cashier)} · ${escapeHtml(sale.shift)} · ${escapeHtml(dateTimeFormatter.format(new Date(sale.createdAt)))}</p>
+            </button>
+          `,
+        )
+        .join("")
+    : `<div class="empty-state">Sin ventas recientes para editar.</div>`;
+
+  refs.adminRegisterEventsList.innerHTML = registerEvents.length
+    ? registerEvents
+        .map(
+          (item) => `
+            <button class="admin-record-item" data-action="edit-admin-record" data-kind="register" data-id="${item.id}" type="button">
+              <div class="admin-record-item-head">
+                <strong>${escapeHtml(getRegisterEventLabel(item.eventType))}</strong>
+                <span class="small-pill">${formatCurrency(item.countedAmount)}</span>
+              </div>
+              <p>${escapeHtml(getBranchLabel(item.branch))} · ${escapeHtml(item.cashier)} · ${escapeHtml(item.shift)} · ${escapeHtml(dateTimeFormatter.format(new Date(item.createdAt)))}</p>
+            </button>
+          `,
+        )
+        .join("")
+    : `<div class="empty-state">Sin cortes o inicios recientes.</div>`;
+
+  refs.adminInventoryMovementsList.innerHTML = inventoryMovements.length
+    ? inventoryMovements
+        .map(
+          (item) => `
+            <button class="admin-record-item" data-action="edit-admin-record" data-kind="inventory" data-id="${item.id}" type="button">
+              <div class="admin-record-item-head">
+                <strong>${escapeHtml(item.productName)}</strong>
+                <span class="small-pill">${item.quantityDelta >= 0 ? "+" : ""}${escapeHtml(formatQuantity(item.quantityDelta))}</span>
+              </div>
+              <p>${escapeHtml(getBranchLabel(item.branch))} · ${escapeHtml(getInventoryMovementLabel(item.movementType))} · ${escapeHtml(dateTimeFormatter.format(new Date(item.createdAt)))}</p>
+            </button>
+          `,
+        )
+        .join("")
+    : `<div class="empty-state">Sin movimientos recientes para editar.</div>`;
+}
+
+function renderAdminCashiers() {
+  if (!refs.adminCashiersList) {
+    return;
+  }
+
+  refs.adminCashiersList.innerHTML = state.admin.cashiers.length
+    ? state.admin.cashiers
+        .map(
+          (cashier) => `
+            <article class="admin-record-item">
+              <div class="admin-record-item-head">
+                <strong>${escapeHtml(cashier.name)}</strong>
+                <span class="small-pill">${escapeHtml(getBranchLabel(cashier.branch))}</span>
+              </div>
+              <p>${cashier.active ? "Activo" : "Inactivo"} · Alta ${escapeHtml(dateFormatter.format(new Date(cashier.created_at)))}</p>
+              <div class="admin-record-actions">
+                <button class="secondary-button compact-button" data-action="edit-cashier" data-id="${cashier.id}" type="button">
+                  Editar
+                </button>
+                <button class="ghost-button compact-button" data-action="toggle-cashier" data-id="${cashier.id}" data-active="${cashier.active ? "1" : "0"}" type="button">
+                  ${cashier.active ? "Desactivar" : "Activar"}
+                </button>
+                <button class="ghost-button compact-button danger-button" data-action="delete-cashier" data-id="${cashier.id}" type="button">
+                  Eliminar
+                </button>
+              </div>
+            </article>
+          `,
+        )
+        .join("")
+    : `<div class="empty-state">No hay cajeros registrados para esta vista.</div>`;
+}
+
+async function loadAdminEditorData(branch = getAdminBranch()) {
+  try {
+    const response = await requestAdminJson(
+      `/api/admin/editor-data?branch=${encodeURIComponent(branch)}`,
+    );
     state.admin.editorData = {
       sales: Array.isArray(response.sales) ? response.sales : [],
       registerEvents: Array.isArray(response.registerEvents) ? response.registerEvents : [],
@@ -2443,6 +2821,70 @@ function closeAdminEditor() {
   setModalOpen(refs.adminEditorModal, false);
 }
 
+function renderCashierAuthModal() {
+  if (!refs.cashierAuthModal) {
+    return;
+  }
+
+  refs.loginCashierButton.disabled = state.cashierAuth.loading;
+  refs.loginCashierButton.textContent = state.cashierAuth.loading ? "Iniciando..." : "Iniciar sesion";
+}
+
+function openCashierAuthModal() {
+  if (state.cashier.authenticated) {
+    return;
+  }
+
+  setModalOpen(refs.cashierAuthModal, true);
+  renderCashierAuthModal();
+  refs.cashierAuthName.focus();
+}
+
+function closeCashierAuthModal() {
+  setModalOpen(refs.cashierAuthModal, false);
+}
+
+async function loginCashier() {
+  if (state.cashierAuth.loading) {
+    return;
+  }
+
+  const name = refs.cashierAuthName.value.trim();
+  const branch = refs.cashierAuthBranch.value;
+  const password = refs.cashierAuthPassword.value;
+
+  if (!name || !branch || !password) {
+    showToast("Completa todos los campos.", "error");
+    return;
+  }
+
+  state.cashierAuth.loading = true;
+  renderCashierAuthModal();
+
+  try {
+    const response = await performJsonRequest("/api/cashier/auth", {
+      method: "POST",
+      body: JSON.stringify({ name, branch, password }),
+    });
+
+    if (response.authenticated) {
+      state.cashier.name = name;
+      state.cashier.branch = branch;
+      state.cashier.authenticated = true;
+      writeStorageText(STORAGE_KEYS.cashier, JSON.stringify({ name, branch }));
+      closeCashierAuthModal();
+      showToast(`Bienvenido, ${name} (${branch}).`, "success");
+    } else {
+      showToast("Credenciales incorrectas.", "error");
+    }
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.cashierAuth.loading = false;
+    renderCashierAuthModal();
+  }
+}
+
 async function saveAdminEditor() {
   if (!state.adminEditor.detail || state.adminEditor.saving) {
     return;
@@ -2489,6 +2931,369 @@ async function saveAdminEditor() {
   } finally {
     state.adminEditor.saving = false;
     renderAdminEditorModal();
+  }
+}
+
+function renderAdminEditorModal() {
+  if (!refs.adminEditorModal) {
+    return;
+  }
+
+  const { kind, detail, loading, saving } = state.adminEditor;
+  if (loading) {
+    refs.adminEditorTitle.textContent = "Cargando...";
+    refs.adminEditorDescription.textContent = "Preparando formulario de edicion.";
+    refs.adminEditorBody.innerHTML = `<div class="empty-state">Cargando datos...</div>`;
+    refs.saveAdminEditorButton.disabled = true;
+    return;
+  }
+
+  if (!detail) {
+    refs.adminEditorTitle.textContent = "Sin registro";
+    refs.adminEditorDescription.textContent = "";
+    refs.adminEditorBody.innerHTML = `<div class="empty-state">Selecciona un registro para editar.</div>`;
+    refs.saveAdminEditorButton.disabled = true;
+    return;
+  }
+
+  refs.saveAdminEditorButton.disabled = saving;
+  refs.saveAdminEditorButton.textContent = saving ? "Guardando..." : "Guardar cambios";
+
+  if (kind === "cashier") {
+    refs.adminEditorTitle.textContent = `Editar acceso de ${detail.name}`;
+    refs.adminEditorDescription.textContent = "Actualiza nombre, sucursal, estado y la nueva clave si la necesitas.";
+    refs.adminEditorBody.innerHTML = `
+      <label class="field">
+        <span>Nombre</span>
+        <input data-editor-field="name" type="text" maxlength="60" value="${escapeHtml(detail.name)}" />
+      </label>
+      <label class="field">
+        <span>Sucursal</span>
+        <select data-editor-field="branch">
+          ${getBranchOptions().filter((option) => option.value !== "all").map((option) => `<option value="${option.value}" ${detail.branch === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field">
+        <span>Nueva contrasena</span>
+        <input data-editor-field="password" type="password" maxlength="60" placeholder="Deja vacio para conservar la actual" />
+      </label>
+      <label class="field">
+        <span>Estado</span>
+        <select data-editor-field="active">
+          <option value="true" ${detail.active ? "selected" : ""}>Activo</option>
+          <option value="false" ${detail.active ? "" : "selected"}>Inactivo</option>
+        </select>
+      </label>
+    `;
+    return;
+  }
+
+  if (kind === "sale") {
+    refs.adminEditorTitle.textContent = `Editar ${detail.ticketNumber}`;
+    refs.adminEditorDescription.textContent = "Puedes ajustar datos administrativos de la venta.";
+    refs.adminEditorBody.innerHTML = `
+      <label class="field">
+        <span>Turno</span>
+        <select data-editor-field="shift">
+          ${getShiftOptionsMarkup(detail.shift)}
+        </select>
+      </label>
+      <label class="field">
+        <span>Cajero</span>
+        <input data-editor-field="cashier" type="text" value="${escapeHtml(detail.cashier)}" />
+      </label>
+      <label class="field">
+        <span>Metodo de pago</span>
+        <select data-editor-field="paymentMethod">
+          ${["Efectivo", "Tarjeta", "Transferencia"].map((method) => `<option value="${method}" ${detail.paymentMethod === method ? "selected" : ""}>${method}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field">
+        <span>Recibido</span>
+        <input data-editor-field="receivedAmount" type="number" min="0" step="0.01" value="${detail.receivedAmount}" />
+      </label>
+      <label class="field">
+        <span>Nota</span>
+        <input data-editor-field="notes" type="text" maxlength="240" value="${escapeHtml(detail.notes || "")}" />
+      </label>
+    `;
+    return;
+  }
+
+  if (kind === "register") {
+    refs.adminEditorTitle.textContent = `Editar ${getRegisterEventLabel(detail.eventType)}`;
+    refs.adminEditorDescription.textContent = "Ajusta datos del inicio o corte de caja.";
+    refs.adminEditorBody.innerHTML = `
+      <label class="field">
+        <span>Turno</span>
+        <select data-editor-field="shift">
+          ${getShiftOptionsMarkup(detail.shift)}
+        </select>
+      </label>
+      <label class="field">
+        <span>Cajero</span>
+        <input data-editor-field="cashier" type="text" value="${escapeHtml(detail.cashier)}" />
+      </label>
+      <label class="field">
+        <span>Caja inicial</span>
+        <input data-editor-field="openingAmount" type="number" min="0" step="0.01" value="${detail.openingAmount}" />
+      </label>
+      <label class="field">
+        <span>Efectivo contado</span>
+        <input data-editor-field="countedAmount" type="number" min="0" step="0.01" value="${detail.countedAmount}" />
+      </label>
+      <label class="field">
+        <span>Efectivo esperado</span>
+        <input data-editor-field="expectedCash" type="number" min="0" step="0.01" value="${detail.expectedCash}" />
+      </label>
+      <label class="field">
+        <span>Nota</span>
+        <input data-editor-field="notes" type="text" maxlength="180" value="${escapeHtml(detail.notes || "")}" />
+      </label>
+    `;
+    return;
+  }
+
+  refs.adminEditorTitle.textContent = `Editar ${detail.productName}`;
+  refs.adminEditorDescription.textContent =
+    detail.movementType === "sale"
+      ? "Los movimientos por venta solo permiten editar la nota."
+      : "Puedes ajustar cantidad y nota del movimiento.";
+  refs.adminEditorBody.innerHTML = `
+    <label class="field">
+      <span>Movimiento</span>
+      <input type="text" value="${escapeHtml(getInventoryMovementLabel(detail.movementType))}" disabled />
+    </label>
+    <label class="field">
+      <span>Cantidad delta</span>
+      <input data-editor-field="quantityDelta" type="number" step="0.25" value="${detail.quantityDelta}" ${detail.movementType === "sale" ? "disabled" : ""} />
+    </label>
+    <label class="field">
+      <span>Nota</span>
+      <input data-editor-field="note" type="text" maxlength="120" value="${escapeHtml(detail.note || "")}" />
+    </label>
+  `;
+}
+
+async function openAdminEditor(kind, id) {
+  state.adminEditor.kind = kind;
+  state.adminEditor.id = id;
+  state.adminEditor.loading = true;
+  state.adminEditor.detail = null;
+  setModalOpen(refs.adminEditorModal, true);
+  renderAdminEditorModal();
+
+  try {
+    if (kind === "cashier") {
+      state.adminEditor.detail = state.admin.cashiers.find((cashier) => cashier.id === Number(id)) || null;
+    } else {
+      const response = await requestAdminJson(`/api/activity/${encodeURIComponent(kind)}/${id}`);
+      state.adminEditor.kind = response.kind;
+      state.adminEditor.detail = response.detail;
+    }
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.adminEditor.loading = false;
+    renderAdminEditorModal();
+  }
+}
+
+function renderCashierAuthModal() {
+  if (!refs.cashierAuthModal) {
+    return;
+  }
+
+  refs.loginCashierButton.disabled = state.cashierAuth.loading;
+  refs.loginCashierButton.textContent = state.cashierAuth.loading ? "Iniciando..." : "Iniciar sesion";
+}
+
+function openCashierAuthModal() {
+  refs.cashierAuthName.value = state.cashier.name || "";
+  refs.cashierAuthBranch.value = state.cashier.branch || getActiveCashierBranch();
+  refs.cashierAuthPassword.value = "";
+  setModalOpen(refs.cashierAuthModal, true);
+  renderCashierAuthModal();
+  refs.cashierAuthName.focus();
+}
+
+function closeCashierAuthModal() {
+  if (!state.cashier.authenticated) {
+    return;
+  }
+
+  setModalOpen(refs.cashierAuthModal, false);
+}
+
+function clearCartForSessionChange() {
+  if (state.cart.length === 0) {
+    return;
+  }
+
+  state.cart = [];
+  saveCart();
+  renderCart();
+  closePaymentModal();
+  showToast("Se limpio el carrito para cambiar de sucursal sin mezclar ventas.", "info");
+}
+
+async function loginCashier() {
+  if (state.cashierAuth.loading) {
+    return;
+  }
+
+  const name = refs.cashierAuthName.value.trim();
+  const branch = refs.cashierAuthBranch.value;
+  const password = refs.cashierAuthPassword.value;
+
+  if (!name || !branch || !password) {
+    showToast("Completa todos los campos.", "error");
+    return;
+  }
+
+  state.cashierAuth.loading = true;
+  renderCashierAuthModal();
+
+  try {
+    const response = await performJsonRequest("/api/cashier/auth", {
+      method: "POST",
+      body: JSON.stringify({ name, branch, password }),
+    });
+
+    if (response.authenticated) {
+      clearCartForSessionChange();
+      state.cashier.name = name;
+      state.cashier.branch = branch;
+      state.cashier.authenticated = true;
+      persistCashierSession();
+      closeCashierAuthModal();
+      await refreshCurrentSnapshot(branch);
+      await loadRegisterSummary({ silent: true });
+      renderCashierSession();
+      showToast(`Bienvenido, ${name} (${getBranchLabel(branch)}).`, "success");
+    } else {
+      showToast("Credenciales incorrectas.", "error");
+    }
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.cashierAuth.loading = false;
+    renderCashierAuthModal();
+  }
+}
+
+function logoutCashier() {
+  clearCartForSessionChange();
+  state.cashier.name = "";
+  state.cashier.branch = "";
+  state.cashier.authenticated = false;
+  persistCashierSession();
+  renderCashierSession();
+  openCashierAuthModal();
+}
+
+async function saveAdminEditor() {
+  if (!state.adminEditor.detail || state.adminEditor.saving) {
+    return;
+  }
+
+  const root = refs.adminEditorBody;
+  const payload = {};
+  root.querySelectorAll("[data-editor-field]").forEach((field) => {
+    if (field.type === "number") {
+      payload[field.dataset.editorField] = field.value === "" ? "" : Number(field.value);
+      return;
+    }
+
+    if (field.dataset.editorField === "active") {
+      payload.active = field.value === "true";
+      return;
+    }
+
+    payload[field.dataset.editorField] = field.value;
+  });
+
+  let url = "";
+  if (state.adminEditor.kind === "sale") {
+    url = `/api/admin/sales/${state.adminEditor.id}`;
+  } else if (state.adminEditor.kind === "register") {
+    url = `/api/admin/register-events/${state.adminEditor.id}`;
+  } else if (state.adminEditor.kind === "inventory") {
+    url = `/api/admin/inventory-movements/${state.adminEditor.id}`;
+    if (payload.note !== undefined) {
+      payload.note = String(payload.note || "").trim();
+    }
+  } else {
+    url = `/api/admin/cashiers/${state.adminEditor.id}`;
+    payload.password = String(payload.password || "").trim();
+  }
+
+  state.adminEditor.saving = true;
+  renderAdminEditorModal();
+
+  try {
+    await requestAdminJson(url, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    await refreshCurrentSnapshot();
+    await refreshAdminWorkspace();
+    closeAdminEditor();
+    showToast("Registro actualizado desde admin.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.adminEditor.saving = false;
+    renderAdminEditorModal();
+  }
+}
+
+async function submitAdminCashier() {
+  const name = refs.adminCashierName.value.trim();
+  const branch = refs.adminCashierBranch.value;
+  const password = refs.adminCashierPassword.value.trim();
+
+  if (!name || !branch || !password) {
+    showToast("Completa nombre, sucursal y contrasena del cajero.", "error");
+    return;
+  }
+
+  try {
+    await requestAdminJson("/api/admin/cashiers", {
+      method: "POST",
+      body: JSON.stringify({ name, branch, password }),
+    });
+    refs.adminCashierName.value = "";
+    refs.adminCashierPassword.value = "";
+    await loadAdminCashiers(getAdminBranch());
+    showToast("Cajero creado correctamente.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function toggleAdminCashier(cashierId, isActive) {
+  try {
+    await requestAdminJson(`/api/admin/cashiers/${cashierId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ active: !isActive }),
+    });
+    await loadAdminCashiers(getAdminBranch());
+    showToast("Estado del cajero actualizado.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function deleteAdminCashier(cashierId) {
+  try {
+    await requestAdminJson(`/api/admin/cashiers/${cashierId}`, {
+      method: "DELETE",
+    });
+    await loadAdminCashiers(getAdminBranch());
+    showToast("Cajero eliminado.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
   }
 }
 
@@ -2646,6 +3451,11 @@ function updatePaymentView() {
 }
 
 function openPaymentModal() {
+  if (!state.cashier.authenticated) {
+    openCashierAuthModal();
+    return;
+  }
+
   if (state.cart.length === 0) {
     showToast("Agrega productos antes de cobrar.", "error");
     return;
@@ -2699,7 +3509,8 @@ function backspaceMoneyInput() {
 async function submitSale() {
   const payload = {
     shift: refs.shiftSelect.value,
-    cashier: refs.cashierInput.value.trim() || "Mostrador",
+    cashier: state.cashier.name || "Mostrador",
+    branch: getActiveCashierBranch(),
     paymentMethod: state.paymentMethod,
     receivedAmount:
       state.paymentMethod === "Efectivo" ? roundMoney(state.moneyInput) : getCartTotal(),
@@ -2755,15 +3566,17 @@ async function saveInventoryRow(row) {
     stock: roundStock(row.querySelector('[data-field="stock"]').value),
     minStock: roundStock(row.querySelector('[data-field="minStock"]').value),
     active: row.querySelector('[data-field="active"]').checked,
+    branch: getAdminActionBranch(),
     note: row.querySelector('[data-field="note"]').value.trim(),
   };
 
   try {
-    const response = await requestAdminJson(`/api/products/${productId}`, {
+    await requestAdminJson(`/api/products/${productId}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
     });
-    applySnapshot(response.snapshot);
+    await refreshCurrentSnapshot();
+    await refreshAdminWorkspace();
     showToast("Inventario actualizado.", "success");
   } catch (error) {
     showToast(error.message, "error");
@@ -2777,9 +3590,10 @@ async function reimportCatalog() {
   try {
     const response = await requestAdminJson("/api/import-workbook", {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ branch: getAdminActionBranch() }),
     });
-    applySnapshot(response.snapshot);
+    await refreshCurrentSnapshot();
+    await refreshAdminWorkspace();
     showToast(
       `Catalogo sincronizado con ${response.result.importedCount} productos.`,
       "success",
@@ -2843,7 +3657,14 @@ function connectSocket() {
   });
 
   state.socket.on("dashboard:snapshot", (snapshot) => {
-    applySnapshot(snapshot);
+    if (!state.online) {
+      return;
+    }
+
+    void refreshCurrentSnapshot().catch(() => {});
+    if (refs.adminModal?.classList.contains("open") && state.admin.token) {
+      void refreshAdminWorkspace().catch(() => {});
+    }
   });
 }
 
@@ -2883,8 +3704,7 @@ async function syncPendingQueue() {
 
   if (state.online) {
     try {
-      const snapshot = await performJsonRequest("/api/bootstrap");
-      applySnapshot(snapshot);
+      await refreshCurrentSnapshot();
       if (state.pendingQueue.length === 0) {
         showToast("Sincronizacion completada.", "success");
       }
@@ -2937,6 +3757,12 @@ async function bootstrap() {
   refs.cashierInput = $("cashier-input");
   refs.searchInput = $("search-input");
   refs.openAdminButton = $("open-admin-button");
+  refs.headerAdminButton = $("header-admin-button");
+  refs.branchDisplay = $("branch-display");
+  refs.cashierSessionLabel = $("cashier-session-label");
+  refs.cashierSessionHelper = $("cashier-session-helper");
+  refs.switchCashierButton = $("switch-cashier-button");
+  refs.logoutCashierButton = $("logout-cashier-button");
   refs.openStartRegisterButton = $("open-start-register-button");
   refs.openQuickCutButton = $("open-quick-cut-button");
   refs.openFinalCutButton = $("open-final-cut-button");
@@ -3002,7 +3828,13 @@ async function bootstrap() {
   refs.detailViewerMeta = $("detail-viewer-meta");
   refs.detailViewerBody = $("detail-viewer-body");
   refs.adminModal = $("admin-modal");
+  refs.adminBranchSelect = $("admin-branch-select");
+  refs.adminBranchTitle = $("admin-branch-title");
+  refs.adminBranchDescription = $("admin-branch-description");
+  refs.adminLogoutButton = $("admin-logout-button");
   refs.adminMetricsStatus = $("admin-metrics-status");
+  refs.adminSummaryCards = $("admin-summary-cards");
+  refs.adminShiftSummary = $("admin-shift-summary");
   refs.adminProcessCpu = $("admin-process-cpu");
   refs.adminProcessMemory = $("admin-process-memory");
   refs.adminProductsRender = $("admin-products-render");
@@ -3017,6 +3849,11 @@ async function bootstrap() {
   refs.adminSalesList = $("admin-sales-list");
   refs.adminRegisterEventsList = $("admin-register-events-list");
   refs.adminInventoryMovementsList = $("admin-inventory-movements-list");
+  refs.adminCashierName = $("admin-cashier-name");
+  refs.adminCashierBranch = $("admin-cashier-branch");
+  refs.adminCashierPassword = $("admin-cashier-password");
+  refs.saveAdminCashierButton = $("save-admin-cashier-button");
+  refs.adminCashiersList = $("admin-cashiers-list");
   refs.adminAuthModal = $("admin-auth-modal");
   refs.adminAuthTitle = $("admin-auth-title");
   refs.adminAuthDescription = $("admin-auth-description");
@@ -3035,10 +3872,17 @@ async function bootstrap() {
   refs.socketStatus = $("socket-status");
   refs.networkStatus = $("network-status");
   refs.syncStatus = $("sync-status");
+  refs.cashierAuthModal = $("cashier-auth-modal");
+  refs.cashierAuthName = $("cashier-auth-name");
+  refs.cashierAuthBranch = $("cashier-auth-branch");
+  refs.cashierAuthPassword = $("cashier-auth-password");
+  refs.loginCashierButton = $("login-cashier-button");
+  refs.closeCashierAuthModal = $("close-cashier-auth-modal");
 
   await restorePreferences();
   await restoreCart();
   await restoreQueue();
+  await restoreCashierSession();
   state.admin.token = readStorageText(STORAGE_KEYS.adminToken, "");
   try {
     await loadAdminAuthStatus();
@@ -3050,7 +3894,9 @@ async function bootstrap() {
     state.admin.configured = false;
     state.admin.authenticated = false;
   }
+
   renderCart();
+  renderCashierSession();
   renderQuickImportModal();
   renderRegisterModal();
   renderRegisterSummaryPill();
@@ -3060,17 +3906,33 @@ async function bootstrap() {
   renderAdminRecordLists();
   renderAdminAuthModal();
   renderAdminEditorModal();
+  renderCashierAuthModal();
   updateClock();
   renderSyncStatus();
   window.setInterval(updateClock, 1000);
 
   refs.searchInput.addEventListener("input", () => requestProductsRender(true));
   refs.openAdminButton.addEventListener("click", openAdminModal);
+  if (refs.headerAdminButton) {
+    refs.headerAdminButton.addEventListener("click", openAdminModal);
+  }
+  refs.adminBranchSelect.addEventListener("change", async () => {
+    const branch = refs.adminBranchSelect.value;
+    try {
+      state.admin.branch = branch;
+      await refreshAdminWorkspace();
+      showToast(`Vista admin cambiada a ${getBranchLabel(branch)}`, "info");
+    } catch (_error) {
+      showToast("Error al cambiar sucursal", "error");
+    }
+  });
+  refs.adminLogoutButton.addEventListener("click", logoutAdmin);
   refs.shiftSelect.addEventListener("change", () => {
     persistPreferences();
     void loadRegisterSummary({ silent: true });
   });
-  refs.cashierInput.addEventListener("input", persistPreferences);
+  refs.switchCashierButton.addEventListener("click", openCashierAuthModal);
+  refs.logoutCashierButton.addEventListener("click", logoutCashier);
   refs.openStartRegisterButton.addEventListener("click", () => openRegisterModal("start"));
   refs.openQuickCutButton.addEventListener("click", () => openRegisterModal("quick_cut"));
   refs.openFinalCutButton.addEventListener("click", () => openRegisterModal("final_cut"));
@@ -3290,6 +4152,28 @@ async function bootstrap() {
     void openAdminEditor(button.dataset.kind, button.dataset.id);
   });
 
+  refs.adminCashiersList.addEventListener("click", (event) => {
+    const editButton = event.target.closest('[data-action="edit-cashier"]');
+    if (editButton) {
+      void openAdminEditor("cashier", editButton.dataset.id);
+      return;
+    }
+
+    const toggleButton = event.target.closest('[data-action="toggle-cashier"]');
+    if (toggleButton) {
+      void toggleAdminCashier(
+        Number(toggleButton.dataset.id),
+        toggleButton.dataset.active === "1",
+      );
+      return;
+    }
+
+    const deleteButton = event.target.closest('[data-action="delete-cashier"]');
+    if (deleteButton) {
+      void deleteAdminCashier(Number(deleteButton.dataset.id));
+    }
+  });
+
   refs.quickImportModal.addEventListener("click", (event) => {
     if (event.target === refs.quickImportModal) {
       closeQuickImportModal();
@@ -3324,6 +4208,28 @@ async function bootstrap() {
   refs.adminEditorModal.addEventListener("click", (event) => {
     if (event.target === refs.adminEditorModal) {
       closeAdminEditor();
+    }
+  });
+
+  refs.cashierAuthModal.addEventListener("click", (event) => {
+    if (event.target === refs.cashierAuthModal) {
+      closeCashierAuthModal();
+    }
+  });
+
+  refs.closeCashierAuthModal.addEventListener("click", closeCashierAuthModal);
+  refs.loginCashierButton.addEventListener("click", loginCashier);
+  refs.saveAdminCashierButton.addEventListener("click", submitAdminCashier);
+  refs.cashierAuthName.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      loginCashier();
+    }
+  });
+  refs.cashierAuthPassword.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      loginCashier();
     }
   });
 
@@ -3407,7 +4313,9 @@ async function bootstrap() {
   }
 
   try {
-    const snapshot = await performJsonRequest("/api/bootstrap");
+    const snapshot = await performJsonRequest(
+      `/api/bootstrap?branch=${encodeURIComponent(getActiveCashierBranch())}`,
+    );
     applySnapshot(snapshot);
   } catch (_error) {
     if (cachedSnapshot) {
@@ -3422,6 +4330,14 @@ async function bootstrap() {
   updatePaymentView();
   await loadRegisterSummary({ silent: true });
   syncPendingQueue();
+
+  if (!state.cashier.authenticated) {
+    openCashierAuthModal();
+  }
+  if (refs.openAdminButton) {
+  refs.openAdminButton.disabled = false;
+  refs.openAdminButton.style.opacity = "1";
+}
 }
 
 document.addEventListener("DOMContentLoaded", () => {

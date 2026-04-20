@@ -9,8 +9,11 @@ const { Server } = require("socket.io");
 const { PORT, ROOT_DIR } = require("./config");
 const {
   applyQuickInventoryEntry,
+  authenticateCashier,
+  createCashier,
   createRegisterCut,
   createSale,
+  deleteCashier,
   ensureCatalogSeeded,
   exportWorkbookReport,
   getDashboardSnapshot,
@@ -22,8 +25,11 @@ const {
   getRegisterEventById,
   getRegisterSummary,
   importCatalogFromWorkbook,
+  initializeTestCashiers,
+  listCashiers,
   startRegister,
   getSaleById,
+  updateCashier,
   updateInventoryMovementAdmin,
   updateProduct,
   updateRegisterEventAdmin,
@@ -212,13 +218,14 @@ app.post("/api/admin/auth/logout", (request, response) => {
   response.json({ ok: true });
 });
 
-app.get("/api/bootstrap", (_request, response) => {
-  response.json(getDashboardSnapshot());
+app.get("/api/bootstrap", (request, response) => {
+  const branch = request.query.branch || "carrizal";
+  response.json(getDashboardSnapshot(branch));
 });
 
 app.post("/api/sales", (request, response) => {
   const sale = createSale(request.body || {});
-  const snapshot = getDashboardSnapshot();
+  const snapshot = getDashboardSnapshot(sale.branch);
   broadcastSnapshot(snapshot);
 
   response.status(201).json({
@@ -230,7 +237,7 @@ app.post("/api/sales", (request, response) => {
 app.patch("/api/products/:id", requireAdminAuth, (request, response) => {
   const productId = Number(request.params.id);
   const product = updateProduct(productId, request.body || {});
-  const snapshot = getDashboardSnapshot();
+  const snapshot = getDashboardSnapshot(request.body?.branch || "carrizal");
   broadcastSnapshot(snapshot);
 
   response.json({
@@ -266,25 +273,26 @@ app.get("/api/admin/metrics", requireAdminAuth, (_request, response) => {
   });
 });
 
-app.get("/api/admin/editor-data", requireAdminAuth, (_request, response) => {
+app.get("/api/admin/editor-data", requireAdminAuth, (request, response) => {
+  const branch = request.query.branch || "all";
   response.json({
-    sales: getRecentSales(16),
-    registerEvents: getRecentRegisterEvents(),
-    inventoryMovements: getRecentInventoryMovements(),
+    sales: getRecentSales(16, branch),
+    registerEvents: getRecentRegisterEvents(16, branch),
+    inventoryMovements: getRecentInventoryMovements(16, branch),
     generatedAt: new Date().toISOString(),
   });
 });
 
-app.get("/api/inventory/quick-import", requireAdminAuth, (_request, response) => {
+app.get("/api/inventory/quick-import", requireAdminAuth, (request, response) => {
   response.json({
-    items: getQuickImportRows(),
+    items: getQuickImportRows(request.query.branch || "carrizal"),
     generatedAt: new Date().toISOString(),
   });
 });
 
 app.post("/api/inventory/quick-import", requireAdminAuth, (request, response) => {
   const product = applyQuickInventoryEntry(request.body || {});
-  const snapshot = getDashboardSnapshot();
+  const snapshot = getDashboardSnapshot(request.body?.branch || "carrizal");
   broadcastSnapshot(snapshot);
 
   response.json({
@@ -295,14 +303,14 @@ app.post("/api/inventory/quick-import", requireAdminAuth, (request, response) =>
 
 app.get("/api/register/summary", (request, response) => {
   response.json({
-    summary: getRegisterSummary(request.query.shift),
+    summary: getRegisterSummary(request.query.shift, request.query.branch),
     generatedAt: new Date().toISOString(),
   });
 });
 
 app.post("/api/register/start", (request, response) => {
   const result = startRegister(request.body || {});
-  const snapshot = getDashboardSnapshot();
+  const snapshot = getDashboardSnapshot(request.body?.branch || "carrizal");
   broadcastSnapshot(snapshot);
 
   response.status(201).json({
@@ -313,7 +321,7 @@ app.post("/api/register/start", (request, response) => {
 
 app.post("/api/register/cut", (request, response) => {
   const result = createRegisterCut(request.body || {});
-  const snapshot = getDashboardSnapshot();
+  const snapshot = getDashboardSnapshot(request.body?.branch || "carrizal");
   broadcastSnapshot(snapshot);
 
   response.status(201).json({
@@ -354,7 +362,7 @@ app.get("/api/activity/:kind/:id", (request, response) => {
 app.patch("/api/admin/sales/:id", requireAdminAuth, (request, response) => {
   const saleId = Number(request.params.id);
   const sale = updateSaleAdmin(saleId, request.body || {});
-  const snapshot = getDashboardSnapshot();
+  const snapshot = getDashboardSnapshot(sale.branch || request.body?.branch || "carrizal");
   broadcastSnapshot(snapshot);
 
   response.json({
@@ -366,7 +374,7 @@ app.patch("/api/admin/sales/:id", requireAdminAuth, (request, response) => {
 app.patch("/api/admin/register-events/:id", requireAdminAuth, (request, response) => {
   const eventId = Number(request.params.id);
   const registerEvent = updateRegisterEventAdmin(eventId, request.body || {});
-  const snapshot = getDashboardSnapshot();
+  const snapshot = getDashboardSnapshot(registerEvent.branch || request.body?.branch || "carrizal");
   broadcastSnapshot(snapshot);
 
   response.json({
@@ -378,7 +386,7 @@ app.patch("/api/admin/register-events/:id", requireAdminAuth, (request, response
 app.patch("/api/admin/inventory-movements/:id", requireAdminAuth, (request, response) => {
   const movementId = Number(request.params.id);
   const movement = updateInventoryMovementAdmin(movementId, request.body || {});
-  const snapshot = getDashboardSnapshot();
+  const snapshot = getDashboardSnapshot(movement.branch || request.body?.branch || "carrizal");
   broadcastSnapshot(snapshot);
 
   response.json({
@@ -389,13 +397,56 @@ app.patch("/api/admin/inventory-movements/:id", requireAdminAuth, (request, resp
 
 app.post("/api/import-workbook", requireAdminAuth, async (request, response) => {
   const result = await importCatalogFromWorkbook(request.body?.workbookPath);
-  const snapshot = getDashboardSnapshot();
+  const snapshot = getDashboardSnapshot(request.body?.branch || "carrizal");
   broadcastSnapshot(snapshot);
 
   response.json({
     result,
     snapshot,
   });
+});
+
+app.post("/api/cashier/auth", (request, response) => {
+  const { name, branch, password } = request.body || {};
+  if (!name || !branch || !password) {
+    response.status(400).json({ message: "Faltan datos de autenticacion." });
+    return;
+  }
+
+  const authenticated = authenticateCashier(name, branch, password);
+  if (!authenticated) {
+    response.status(401).json({ message: "Credenciales incorrectas." });
+    return;
+  }
+
+  response.json({ authenticated: true, cashier: { name, branch } });
+});
+
+app.get("/api/admin/cashiers", requireAdminAuth, (request, response) => {
+  const branch = request.query.branch;
+  response.json({ cashiers: listCashiers(branch) });
+});
+
+app.post("/api/admin/cashiers", requireAdminAuth, (request, response) => {
+  const { name, branch, password } = request.body || {};
+  if (!name || !branch || !password) {
+    response.status(400).json({ message: "Faltan datos del cajero." });
+    return;
+  }
+
+  const cashier = createCashier(name, branch, password);
+  response.status(201).json({ cashier });
+});
+
+app.patch("/api/admin/cashiers/:id", requireAdminAuth, (request, response) => {
+  const cashierId = Number(request.params.id);
+  const cashier = updateCashier(cashierId, request.body || {});
+  response.json({ cashier });
+});
+
+app.delete("/api/admin/cashiers/:id", requireAdminAuth, (request, response) => {
+  deleteCashier(Number(request.params.id));
+  response.json({ ok: true });
 });
 
 app.get("/api/export-workbook", requireAdminAuth, async (_request, response) => {
@@ -442,6 +493,7 @@ io.on("connection", (socket) => {
 
 async function start() {
   const seedResult = await ensureCatalogSeeded();
+  initializeTestCashiers();
 
   if (seedResult.seeded) {
     console.log(`Catalogo inicial importado desde ${seedResult.workbookPath}`);
