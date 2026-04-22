@@ -379,6 +379,16 @@ async function saveQuickImportEntry() {
       body: JSON.stringify(payload),
     });
 
+    // Actualizar el item local con los datos del servidor
+    if (response.product) {
+      const currentIndex = state.quickImport.index;
+      state.quickImport.items[currentIndex] = {
+        ...state.quickImport.items[currentIndex],
+        ...response.product,
+        recordedStock: roundStock(response.product.stock),
+      };
+    }
+
     await refreshCurrentSnapshot();
     await refreshAdminWorkspace();
     state.quickImport.saving = false;

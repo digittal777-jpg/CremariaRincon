@@ -24,6 +24,7 @@ function getQuickImportRows(branch = STORE_BRANCHES[0]) {
     );
   });
 
+  const normalizedBranch = normalizeBranch(branch);
   const rows = db.prepare(`
     SELECT
       p.id,
@@ -38,7 +39,7 @@ function getQuickImportRows(branch = STORE_BRANCHES[0]) {
       p.active,
       p.display_order
     FROM products p
-    WHERE p.active = 1
+    WHERE p.active = 1 AND p.branch = ?
     ORDER BY
       CASE p.category
         WHEN 'quesos' THEN 0
@@ -49,7 +50,7 @@ function getQuickImportRows(branch = STORE_BRANCHES[0]) {
       p.stock_initialized ASC,
       p.display_order,
       p.name COLLATE NOCASE
-  `).all();
+  `).all(normalizedBranch);
 
   return rows.map((row) => {
     const { mapProduct } = require("../utils/helpers");
