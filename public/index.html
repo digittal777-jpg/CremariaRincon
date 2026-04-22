@@ -452,6 +452,10 @@
             <strong id="register-expected-cash">$0.00</strong>
           </article>
           <article class="register-summary-card">
+            <span>Se retira</span>
+            <strong id="register-withdrawals-amount">$0.00</strong>
+          </article>
+          <article class="register-summary-card">
             <span>Total vendido</span>
             <strong id="register-total-sales">$0.00</strong>
           </article>
@@ -461,6 +465,14 @@
           <label class="field">
             <span id="register-amount-label">Monto inicial de caja</span>
             <input id="register-amount-input" type="number" min="0" step="0.01" />
+          </label>
+
+          <label class="field">
+            <span>Monto que se retira</span>
+            <input id="register-withdraw-input" type="number" min="0" step="0.01" value="0" />
+            <button class="secondary-button" id="register-apply-withdraw-button" type="button">
+              Aplicar retiro
+            </button>
           </label>
 
           <label class="field">
@@ -836,6 +848,18 @@
     <div class="toast-region" id="toast-region"></div>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script src="/app.js" defer></script>
+    <!-- Módulos del frontend -->
+    <script src="/js/config.js"></script>
+    <script src="/js/state.js"></script>
+    <script src="/js/helpers.js"></script>
+    <script src="/js/storage.js"></script>
+    <script src="/js/network.js"></script>
+    <script src="/js/render.js"></script>
+    <script src="/js/render-admin.js"></script>
+    <script src="/js/quick-import.js"></script>
+    <script src="/js/actions.js"></script>
+    <script src="/js/sales.js"></script>
+    <script src="/js/auth.js"></script>
+    <script src="/js/app.js" defer></script>
   </body>
 </html>

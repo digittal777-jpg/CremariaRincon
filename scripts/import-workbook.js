@@ -2,7 +2,7 @@ const {
   getDashboardSnapshot,
   importCatalogFromWorkbook,
   resolveWorkbookPath,
-} = require("../src/store");
+} = require("../src/services");
 
 async function main() {
   const workbookPath = process.argv[2];

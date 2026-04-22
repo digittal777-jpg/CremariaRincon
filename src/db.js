@@ -10,7 +10,7 @@ function initializeSchema(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
       price REAL NOT NULL,
       category TEXT NOT NULL,
       unit TEXT NOT NULL DEFAULT 'pza',
@@ -20,8 +20,10 @@ function initializeSchema(db) {
       stock_initialized INTEGER NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1,
       display_order INTEGER NOT NULL DEFAULT 0,
+      branch TEXT NOT NULL DEFAULT 'carrizal',
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      UNIQUE(name, branch)
     );
 
     CREATE TABLE IF NOT EXISTS sales (
@@ -74,6 +76,7 @@ function initializeSchema(db) {
       branch TEXT NOT NULL DEFAULT 'carrizal',
       opening_amount REAL NOT NULL DEFAULT 0,
       counted_amount REAL NOT NULL DEFAULT 0,
+      withdrawals_amount REAL NOT NULL DEFAULT 0,
       expected_cash REAL NOT NULL DEFAULT 0,
       difference_amount REAL NOT NULL DEFAULT 0,
       cash_sales REAL NOT NULL DEFAULT 0,
@@ -111,6 +114,38 @@ function initializeSchema(db) {
     db.exec("ALTER TABLE products ADD COLUMN stock_initialized INTEGER NOT NULL DEFAULT 0");
   }
 
+  // Agregar branch a products para inventario por sucursal
+  const productBranchColumn = productColumns.find((c) => c.name === "branch");
+  if (!productBranchColumn) {
+    db.exec("ALTER TABLE products ADD COLUMN branch TEXT NOT NULL DEFAULT 'carrizal'");
+    // Migrar productos existentes a la sucursal por defecto
+    db.exec("UPDATE products SET branch = 'carrizal' WHERE branch IS NULL OR branch = ''");
+  }
+
+  // Agregar índice único para (name, branch) si no existe
+  try {
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_name_branch ON products(name, branch)");
+  } catch (e) {
+    // El índice ya existe o hay duplicados, continuar
+  }
+
+  // Migrar tabla cashiers - asegurar que tiene branch
+  const cashiersColumns = db.prepare("PRAGMA table_info(cashiers)").all();
+  const cashiersBranchColumn = cashiersColumns.find((c) => c.name === "branch");
+  if (!cashiersBranchColumn) {
+    // Primero agregar como nullable
+    db.exec("ALTER TABLE cashiers ADD COLUMN branch TEXT DEFAULT 'carrizal'");
+    // Luego actualizar filas existentes
+    db.exec("UPDATE cashiers SET branch = 'carrizal' WHERE branch IS NULL OR branch = ''");
+  }
+
+  // Asegurar índice único para cashiers (name, branch)
+  try {
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_cashiers_name_branch ON cashiers(name, branch)");
+  } catch (e) {
+    // El índice ya existe o hay duplicados, continuar
+  }
+
   const salesColumns = db.prepare("PRAGMA table_info(sales)").all();
   if (!salesColumns.some((column) => column.name === "branch")) {
     db.exec("ALTER TABLE sales ADD COLUMN branch TEXT NOT NULL DEFAULT 'carrizal'");
@@ -125,11 +160,15 @@ function initializeSchema(db) {
   if (!registerEventsColumns.some((column) => column.name === "branch")) {
     db.exec("ALTER TABLE register_events ADD COLUMN branch TEXT NOT NULL DEFAULT 'carrizal'");
   }
+  if (!registerEventsColumns.some((column) => column.name === "withdrawals_amount")) {
+    db.exec("ALTER TABLE register_events ADD COLUMN withdrawals_amount REAL NOT NULL DEFAULT 0");
+  }
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_sales_branch_created_at ON sales(branch, created_at);
     CREATE INDEX IF NOT EXISTS idx_inventory_movements_branch_created_at ON inventory_movements(branch, created_at);
     CREATE INDEX IF NOT EXISTS idx_register_events_branch_shift_created_at ON register_events(branch, shift, created_at);
+    CREATE INDEX IF NOT EXISTS idx_products_branch ON products(branch);
   `);
 }
 

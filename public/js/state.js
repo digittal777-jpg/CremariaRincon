@@ -1,0 +1,105 @@
+// Estado global de la aplicación
+const state = {
+  store: {
+    branches: [],
+    currentBranch: "carrizal",
+    currentBranchLabel: "Carrizal",
+    shifts: ["Manana", "Tarde"],
+  },
+  products: [],
+  lowStock: [],
+  recentSales: [],
+  recentActivity: [],
+  salesByHour: [],
+  shiftSummary: [],
+  summary: {
+    revenueToday: 0,
+    ticketsToday: 0,
+    averageTicket: 0,
+    unitsSoldToday: 0,
+    catalogSize: 0,
+    inventoryValue: 0,
+    lowStockCount: 0,
+    topProduct: null,
+  },
+  selectedCategory: "all",
+  visibleProductLimit: PRODUCT_RENDER_BATCH,
+  currentProduct: null,
+  cart: [],
+  paymentMethod: "Efectivo",
+  moneyInput: "0",
+  socket: null,
+  online: typeof navigator !== "undefined" ? navigator.onLine : true,
+  pendingQueue: [],
+  syncingQueue: false,
+  quickImport: {
+    mode: "initial",
+    direction: "in",
+    items: [],
+    index: 0,
+    loading: false,
+    saving: false,
+    currentValue: "",
+    supplierName: "",
+    note: "",
+  },
+  register: {
+    mode: "start",
+    summary: null,
+    events: [],  // Eventos de caja guardados offline
+    loading: false,
+    saving: false,
+    amountInput: "",
+    withdrawInput: "0",
+    note: "",
+  },
+  detailViewer: {
+    loading: false,
+    kind: "",
+    detail: null,
+  },
+  admin: {
+    branch: "all",
+    loading: false,
+    metrics: null,
+    pollTimerId: null,
+    token: "",
+    configured: false,
+    authenticated: false,
+    snapshot: null,
+    cashiers: [],
+    editorData: {
+      sales: [],
+      registerEvents: [],
+      inventoryMovements: [],
+    },
+  },
+  adminAuth: {
+    mode: "login",
+    loading: false,
+  },
+  adminEditor: {
+    kind: "",
+    id: null,
+    loading: false,
+    saving: false,
+    detail: null,
+  },
+  cashier: {
+    name: "",
+    branch: "",
+    authenticated: false,
+  },
+  cashierAuth: {
+    loading: false,
+  },
+  performance: {
+    productsRenderMs: 0,
+    snapshotRenderMs: 0,
+    renderedProductCount: 0,
+  },
+};
+
+// Referencias a elementos del DOM
+const refs = {};
+let offlineDbPromise = null;
