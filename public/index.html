@@ -102,10 +102,10 @@
             </div>
             <div class="session-toolbar-actions">
               <button class="secondary-button" id="switch-cashier-button" type="button">
-                Cambiar sucursal
+                Cambiar sucursal/cajero
               </button>
               <button class="ghost-button" id="logout-cashier-button" type="button">
-                Cerrar sesion cajero
+                Cerrar sesion
               </button>
             </div>
           </div>
@@ -230,6 +230,11 @@
           <label class="field">
             <span>Total de la linea</span>
             <input id="item-total" type="number" min="0" step="0.01" />
+          </label>
+
+          <label class="field">
+            <span>Precio por unidad/kg (mayoreo)</span>
+            <input id="item-unit-price" type="number" min="0.01" step="0.01" />
           </label>
         </div>
 
@@ -550,6 +555,9 @@
                 <button class="secondary-button" id="export-workbook-button" type="button">
                   Exportar Excel
                 </button>
+                <button class="secondary-button" id="download-db-button" type="button">
+                  Descargar base
+                </button>
                 <button class="primary-button" id="open-quick-import-button" type="button">
                   Importacion rapida
                 </button>
@@ -629,10 +637,55 @@
                 <p class="eyebrow">Inventario</p>
                 <h2>Control editable</h2>
               </div>
-              <span class="helper-text">Guarda cambios de precio, existencia, minimo, estado y nota.</span>
+              <div class="admin-inventory-actions">
+                <span class="helper-text" id="admin-inventory-status">
+                  Guarda cambios de precio, existencia, minimo, estado y nota.
+                </span>
+                <button class="secondary-button" id="toggle-admin-inventory-button" type="button">
+                  Mostrar inventario
+                </button>
+              </div>
             </div>
 
-            <div class="inventory-table-wrap">
+            <div class="admin-product-create-form">
+              <label class="field">
+                <span>Nombre</span>
+                <input id="admin-new-product-name" type="text" maxlength="80" placeholder="Ej. Jamon de puerco" />
+              </label>
+              <label class="field">
+                <span>Categoria</span>
+                <select id="admin-new-product-category">
+                  <option value="quesos">Quesos</option>
+                  <option value="carnes" selected>Carnes</option>
+                  <option value="piezas">Piezas</option>
+                  <option value="general">General</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Unidad</span>
+                <select id="admin-new-product-unit">
+                  <option value="kg" selected>kg</option>
+                  <option value="pza">pza</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Precio</span>
+                <input id="admin-new-product-price" type="number" min="0.01" step="0.01" />
+              </label>
+              <label class="field">
+                <span>Stock inicial</span>
+                <input id="admin-new-product-stock" type="number" min="0" step="0.25" value="0" />
+              </label>
+              <label class="field">
+                <span>Minimo</span>
+                <input id="admin-new-product-min-stock" type="number" min="0" step="0.25" value="0" />
+              </label>
+              <button class="primary-button" id="save-admin-product-button" type="button">
+                Agregar producto
+              </button>
+            </div>
+
+            <div class="inventory-table-wrap" id="admin-inventory-wrap" hidden>
               <table class="inventory-table">
                 <thead>
                   <tr>
@@ -644,6 +697,7 @@
                     <th>Nota</th>
                     <th>Estado</th>
                     <th>Accion</th>
+                    <th>Quitar</th>
                   </tr>
                 </thead>
                 <tbody id="inventory-body"></tbody>
@@ -706,6 +760,16 @@
               </button>
             </div>
           </section>
+
+          <section class="admin-records-panel">
+            <div class="panel-head admin-subhead">
+              <div>
+                <p class="eyebrow">Bitacora</p>
+                <h2>Cambios admin e importacion</h2>
+              </div>
+            </div>
+            <div class="admin-record-list" id="admin-audit-log-list"></div>
+          </section>
         </div>
 
         <div class="admin-editor-layout">
@@ -756,6 +820,11 @@
         </div>
 
         <div class="modal-body">
+          <label class="field">
+            <span>Usuario admin</span>
+            <input id="admin-auth-username" type="text" autocomplete="username" />
+          </label>
+
           <label class="field">
             <span id="admin-auth-password-label">Contrasena</span>
             <input id="admin-auth-password" type="password" autocomplete="current-password" />

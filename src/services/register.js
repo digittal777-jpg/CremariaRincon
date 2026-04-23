@@ -360,6 +360,29 @@ function getRecentRegisterEvents(limit = 16, branch = STORE_BRANCHES[0]) {
   }));
 }
 
+function listRegisterEventsForExport() {
+  return db.prepare(`
+    SELECT
+      id,
+      event_type,
+      shift,
+      cashier,
+      branch,
+      opening_amount,
+      counted_amount,
+      withdrawals_amount,
+      expected_cash,
+      difference_amount,
+      cash_sales,
+      non_cash_sales,
+      total_sales,
+      notes,
+      created_at
+    FROM register_events
+    ORDER BY created_at DESC, id DESC
+  `).all();
+}
+
 function updateRegisterEventAdmin(eventId, payload) {
   const current = getRegisterEventById(eventId);
   if (!current) {
@@ -423,6 +446,7 @@ module.exports = {
   getRegisterEventsForStoreDay,
   getRegisterSummary,
   getRecentRegisterEvents,
+  listRegisterEventsForExport,
   startRegister,
   updateRegisterEventAdmin,
 };

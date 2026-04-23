@@ -1,6 +1,11 @@
 const crypto = require("node:crypto");
 const { getSetting, setSetting } = require("../utils/settings");
 
+function getStoredAdminUsername() {
+  const raw = String(getSetting("admin.username") || "").trim();
+  return raw || "admin";
+}
+
 function getStoredAdminPassword() {
   const raw = getSetting("admin.password");
   if (!raw) {
@@ -30,6 +35,14 @@ function verifyAdminPassword(password) {
     Buffer.from(candidate.hash, "hex"),
     Buffer.from(stored.hash, "hex"),
   );
+}
+
+function verifyAdminCredentials(username, password) {
+  const storedUsername = getStoredAdminUsername();
+  if (String(username || "").trim().toLowerCase() !== storedUsername.toLowerCase()) {
+    return false;
+  }
+  return verifyAdminPassword(password);
 }
 
 function getAdminTokenFromRequest(request) {
@@ -85,10 +98,12 @@ function destroyAdminSession(request, adminSessions) {
 module.exports = {
   createAdminSession,
   destroyAdminSession,
+  getStoredAdminUsername,
   getStoredAdminPassword,
   hashAdminPassword,
   isAdminAuthenticated,
   requireAdminAuth,
   setSetting,
+  verifyAdminCredentials,
   verifyAdminPassword,
 };

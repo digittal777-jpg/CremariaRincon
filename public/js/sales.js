@@ -11,6 +11,7 @@ function openItemModal(product) {
   refs.itemQuantity.step = String(getProductStep(product));
   refs.itemQuantity.min = String(getProductMin(product));
   refs.itemQuantity.value = String(getProductMin(product));
+  refs.itemUnitPrice.value = roundMoney(product.price).toFixed(2);
   refs.itemTotal.value = roundMoney(product.price * getProductMin(product)).toFixed(2);
   setModalOpen(refs.itemModal, true);
   refs.itemQuantity.focus();
@@ -28,8 +29,9 @@ function syncItemTotalFromQuantity() {
   }
 
   const quantity = normalizeQuantityToStep(refs.itemQuantity.value, state.currentProduct);
+  const unitPrice = roundMoney(refs.itemUnitPrice.value || state.currentProduct.price);
   refs.itemQuantity.value = String(quantity);
-  refs.itemTotal.value = roundMoney(quantity * state.currentProduct.price).toFixed(2);
+  refs.itemTotal.value = roundMoney(quantity * unitPrice).toFixed(2);
 }
 
 function syncItemQuantityFromTotal() {
@@ -44,7 +46,9 @@ function syncItemQuantityFromTotal() {
   }
 
   const lineTotal = roundMoney(parsedValue);
-  const quantity = normalizeQuantityFromLineTotal(lineTotal, state.currentProduct);
+  const customPrice = roundMoney(refs.itemUnitPrice.value || state.currentProduct.price);
+  const customProduct = { ...state.currentProduct, price: customPrice };
+  const quantity = normalizeQuantityFromLineTotal(lineTotal, customProduct);
 
   refs.itemQuantity.value = String(quantity);
 }
@@ -56,8 +60,9 @@ function finalizeItemTotalInput() {
 
   const lineTotal = roundMoney(refs.itemTotal.value);
   if (lineTotal <= 0) {
+    const unitPrice = roundMoney(refs.itemUnitPrice.value || state.currentProduct.price);
     refs.itemTotal.value = roundMoney(
-      state.currentProduct.price * getProductMin(state.currentProduct),
+      unitPrice * getProductMin(state.currentProduct),
     ).toFixed(2);
     syncItemQuantityFromTotal();
     return;
@@ -92,8 +97,9 @@ function addCurrentProductToCart() {
 
   const quantity = roundStock(refs.itemQuantity.value);
   const lineTotal = roundMoney(refs.itemTotal.value);
+  const unitPrice = roundMoney(refs.itemUnitPrice.value || product.price);
 
-  if (quantity <= 0 || lineTotal <= 0) {
+  if (quantity <= 0 || lineTotal <= 0 || unitPrice <= 0) {
     showToast("Captura una cantidad y un monto validos.", "error");
     return;
   }
@@ -106,7 +112,7 @@ function addCurrentProductToCart() {
     categoryLabel: product.categoryLabel, // ← corregido
     unit: product.unit,
     quantity,
-    unitPrice: product.price,
+    unitPrice,
     lineTotal,
   });
 

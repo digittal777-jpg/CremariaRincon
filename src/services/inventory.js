@@ -406,6 +406,7 @@ function listInventoryMovementsForExport() {
       im.product_id,
       p.name AS product_name,
       im.movement_type,
+      im.branch,
       im.quantity_delta,
       im.stock_before,
       im.stock_after,

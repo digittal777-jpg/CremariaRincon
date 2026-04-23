@@ -5,6 +5,7 @@ const path = require("node:path");
 const express = require("express");
 const { Server } = require("socket.io");
 
+const { DB_PATH } = require("./config");
 const { PORT, ROOT_DIR, STORE_NAME } = require("./config");
 const { nowIso } = require("./db");
 
@@ -19,6 +20,10 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 let lastCpuSnapshot = { usage: process.cpuUsage(), time: process.hrtime.bigint() };
 const adminSessions = new Map();
+
+function getAdminActorName(request) {
+  return String(request.headers["x-admin-user"] || adminAuth.getStoredAdminUsername() || "admin");
+}
 
 function getProcessCpuPercent() {
   const nextUsage = process.cpuUsage();
@@ -106,6 +111,13 @@ app.patch("/api/admin/settings", (request, response, next) => {
 }, (request, response) => {
   const updates = request.body || {};
   const settings = services.updateSettings(updates);
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "settings_update",
+    entityType: "settings",
+    entityId: "app",
+    payload: updates,
+  });
   response.json({ settings });
 });
 
@@ -113,6 +125,7 @@ app.patch("/api/admin/settings", (request, response, next) => {
 app.get("/api/admin/auth/status", (request, response) => {
   response.json({
     configured: Boolean(adminAuth.getStoredAdminPassword()),
+    username: adminAuth.getStoredAdminUsername(),
     authenticated: adminAuth.isAdminAuthenticated(request, adminSessions)
   });
 });
@@ -122,22 +135,43 @@ app.post("/api/admin/auth/setup", (request, response) => {
     response.status(409).json({ message: "La contrasena de admin ya fue configurada." });
     return;
   }
+  const username = String(request.body?.username || "").trim().toLowerCase();
   const password = String(request.body?.password || "").trim();
+  if (username.length < 3) {
+    response.status(400).json({ message: "El usuario admin debe tener al menos 3 caracteres." });
+    return;
+  }
   if (password.length < 4) {
     response.status(400).json({ message: "La contrasena admin debe tener al menos 4 caracteres." });
     return;
   }
+  adminAuth.setSetting("admin.username", username);
   adminAuth.setSetting("admin.password", JSON.stringify(adminAuth.hashAdminPassword(password)));
-  response.status(201).json({ configured: true });
+  services.logAdminAction({
+    actorName: username,
+    action: "admin_setup",
+    entityType: "auth",
+    entityId: "admin",
+    payload: { username },
+  });
+  response.status(201).json({ configured: true, username });
 });
 
 app.post("/api/admin/auth/login", (request, response) => {
+  const username = String(request.body?.username || "").trim();
   const password = String(request.body?.password || "").trim();
-  if (!adminAuth.verifyAdminPassword(password)) {
+  if (!adminAuth.verifyAdminCredentials(username, password)) {
     response.status(401).json({ message: "La contrasena de admin no es correcta." });
     return;
   }
   const token = adminAuth.createAdminSession(adminSessions);
+  services.logAdminAction({
+    actorName: username,
+    action: "admin_login",
+    entityType: "auth",
+    entityId: "admin",
+    payload: { username },
+  });
   response.json({ token });
 });
 
@@ -152,6 +186,14 @@ app.patch("/api/products/:id", (request, response, next) => {
 }, (request, response) => {
   const productId = Number(request.params.id);
   const product = services.updateProduct(productId, request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "product_update",
+    entityType: "product",
+    entityId: productId,
+    branch: request.body?.branch || "carrizal",
+    payload: request.body || {},
+  });
   const snapshot = services.getDashboardSnapshot(request.body?.branch || "carrizal");
   broadcastSnapshot(snapshot);
   response.json({ product, snapshot });
@@ -187,6 +229,14 @@ app.post("/api/inventory/quick-import", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
 }, (request, response) => {
   const product = services.applyQuickInventoryEntry(request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "quick_import_apply",
+    entityType: "inventory",
+    entityId: product?.id,
+    branch: request.body?.branch || "carrizal",
+    payload: request.body || {},
+  });
   const snapshot = services.getDashboardSnapshot(request.body?.branch || "carrizal");
   broadcastSnapshot(snapshot);
   response.json({ product, snapshot });
@@ -204,8 +254,69 @@ app.post("/api/admin/products", (request, response, next) => {
 }, async (request, response) => {
   const branch = request.body?.branch || "carrizal";
   const result = await services.ensureCatalogSeeded(request.body?.workbookPath);
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "catalog_reimport",
+    entityType: "catalog",
+    entityId: branch,
+    branch,
+    payload: { workbookPath: request.body?.workbookPath || null },
+  });
   const snapshot = services.getDashboardSnapshot(branch);
   response.status(201).json({ ...result, snapshot });
+});
+
+app.post("/api/admin/products/manual", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response) => {
+  const product = services.createProduct(request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "product_create",
+    entityType: "product",
+    entityId: product?.id,
+    branch: request.body?.branch || "carrizal",
+    payload: request.body || {},
+  });
+  const snapshot = services.getDashboardSnapshot(request.body?.branch || "carrizal");
+  broadcastSnapshot(snapshot);
+  response.status(201).json({ product, snapshot });
+});
+
+app.delete("/api/admin/products/:id", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response) => {
+  const productId = Number(request.params.id);
+  const branch = request.query.branch || "carrizal";
+  const result = services.removeProduct(productId, branch);
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "product_remove",
+    entityType: "product",
+    entityId: productId,
+    branch,
+    payload: { branch },
+  });
+  const snapshot = services.getDashboardSnapshot(branch);
+  broadcastSnapshot(snapshot);
+  response.json({ result, snapshot });
+});
+
+app.get("/api/admin/audit-log", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response) => {
+  const branch = request.query.branch || "all";
+  const limit = Number(request.query.limit || 120);
+  response.json({
+    logs: services.listRecentAuditLogs(Math.max(10, Math.min(limit, 500)), branch),
+    generatedAt: nowIso(),
+  });
+});
+
+app.get("/api/admin/download-db", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (_request, response) => {
+  response.download(DB_PATH, "cremeria-rincon.sqlite");
 });
 
 // ── ADMIN CAJEROS ─────────────────────────────────────────────────────────────
@@ -304,6 +415,14 @@ app.patch("/api/admin/sales/:id", (request, response, next) => {
 }, (request, response) => {
   const saleId = Number(request.params.id);
   const sale = services.updateSaleAdmin(saleId, request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "sale_update_admin",
+    entityType: "sale",
+    entityId: saleId,
+    branch: sale?.branch || null,
+    payload: request.body || {},
+  });
   response.json({ sale });
 });
 
@@ -321,6 +440,14 @@ app.patch("/api/admin/register-events/:id", (request, response, next) => {
 }, (request, response) => {
   const eventId = Number(request.params.id);
   const event = services.updateRegisterEventAdmin(eventId, request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "register_event_update_admin",
+    entityType: "register_event",
+    entityId: eventId,
+    branch: event?.branch || null,
+    payload: request.body || {},
+  });
   response.json({ event });
 });
 
@@ -338,6 +465,14 @@ app.patch("/api/admin/inventory-movements/:id", (request, response, next) => {
 }, (request, response) => {
   const movementId = Number(request.params.id);
   const movement = services.updateInventoryMovementAdmin(movementId, request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "inventory_movement_update_admin",
+    entityType: "inventory_movement",
+    entityId: movementId,
+    branch: movement?.branch || null,
+    payload: request.body || {},
+  });
   response.json({ movement });
 });
 
@@ -385,10 +520,15 @@ app.get("/api/activity/:kind/:id", (request, response) => {
 
 app.get("/api/export-workbook", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
-}, async (_request, response) => {
-  const workbook = await services.exportWorkbookReport();
+}, async (request, response) => {
+  const branch = request.query.branch || "all";
+  const scope = request.query.scope || "store-day";
+  const workbook = await services.exportWorkbookReport({ branch, scope });
   response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  response.setHeader("Content-Disposition", "attachment; filename=" + STORE_NAME + " - Exportacion.xlsx");
+  response.setHeader(
+    "Content-Disposition",
+    "attachment; filename=" + `${STORE_NAME} - Exportacion-${branch}-${scope}.xlsx`,
+  );
   await workbook.xlsx.write(response);
   response.end();
 });

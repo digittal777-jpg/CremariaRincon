@@ -103,10 +103,23 @@ function initializeSchema(db) {
       UNIQUE(name, branch)
     );
 
+    CREATE TABLE IF NOT EXISTS admin_audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor_type TEXT NOT NULL DEFAULT 'admin',
+      actor_name TEXT,
+      action TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT,
+      branch TEXT,
+      payload_json TEXT,
+      created_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
     CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);
     CREATE INDEX IF NOT EXISTS idx_inventory_movements_product_id ON inventory_movements(product_id);
     CREATE INDEX IF NOT EXISTS idx_register_events_shift_created_at ON register_events(shift, created_at);
+    CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at ON admin_audit_logs(created_at);
   `);
 
   const productColumns = db.prepare("PRAGMA table_info(products)").all();

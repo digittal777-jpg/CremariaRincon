@@ -170,16 +170,17 @@ function createSale(payload) {
   }
 
   const saleResult = db.transaction(() => {
+    const runningStockByProductId = new Map();
     const preparedItems = incomingItems.map((item) => {
       const productId = Number(item.productId);
-      const quantity = roundStock(item.quantity);
+      const requestedQuantity = roundStock(item.quantity);
       const lineTotal = roundMoney(item.lineTotal);
 
       if (!productId) {
         throw createHttpError("Uno de los productos no es valido.");
       }
 
-      if (!Number.isFinite(quantity) || quantity <= 0) {
+      if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
         throw createHttpError("La cantidad de un producto no es valida.");
       }
 
@@ -188,7 +189,7 @@ function createSale(payload) {
       }
 
       const product = db.prepare(`
-        SELECT id, name, price, stock, stock_initialized, branch
+        SELECT id, name, price, stock, stock_initialized, branch, unit
         FROM products
         WHERE id = ? AND active = 1 AND branch = ?
       `).get(productId, branch);
@@ -197,7 +198,24 @@ function createSale(payload) {
         throw createHttpError("Uno de los productos ya no esta disponible.");
       }
 
-      const stockBefore = roundStock(product.stock);
+      const unitPrice = roundMoney(item.unitPrice || product.price);
+      if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+        throw createHttpError(`El precio de ${product.name} no es valido.`);
+      }
+
+      // En productos por kg, el total capturado es la fuente de verdad para evitar
+      // descuadres cuando quantity llegue desfasada desde cliente/offline.
+      const quantity = product.unit === "pza"
+        ? requestedQuantity
+        : roundStock(lineTotal / unitPrice);
+
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        throw createHttpError(`No pude calcular una cantidad valida para ${product.name}.`);
+      }
+
+      const stockBefore = runningStockByProductId.has(productId)
+        ? roundStock(runningStockByProductId.get(productId))
+        : roundStock(product.stock);
       const stockAfter = roundStock(stockBefore - quantity);
 
       const allowNegativeStock = getSetting("sales.allow_negative_stock") === "true";
@@ -205,11 +223,13 @@ function createSale(payload) {
         throw createHttpError(`No hay inventario suficiente para ${product.name}.`);
       }
 
+      runningStockByProductId.set(productId, stockAfter);
+
       return {
         productId,
         productName: product.name,
         quantity,
-        unitPrice: roundMoney(item.unitPrice || product.price),
+        unitPrice,
         lineTotal,
         stockBefore,
         stockAfter,
@@ -501,6 +521,7 @@ function listSalesForExport() {
       s.ticket_number,
       s.shift,
       s.cashier,
+      s.branch,
       s.payment_method,
       s.subtotal,
       s.total,

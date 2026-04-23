@@ -7,6 +7,7 @@ const register = require("./register");
 const dashboard = require("./dashboard");
 const exportService = require("./export");
 const settings = require("./settings");
+const audit = require("./audit");
 
 module.exports = {
   ...products,
@@ -17,4 +18,5 @@ module.exports = {
   ...dashboard,
   ...exportService,
   ...settings,
+  ...audit,
 };

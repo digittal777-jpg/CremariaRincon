@@ -197,6 +197,11 @@ function renderProducts() {
       `,
     )
     .join("");
+
+  state.performance.productsRenderMs = roundMetric(
+    (typeof performance !== "undefined" ? performance.now() : Date.now()) - renderStartedAt,
+  );
+  state.performance.renderedProductCount = visibleProducts.length;
 }
 
 function getCartTotal() {
@@ -425,6 +430,11 @@ function renderInventory() {
           <td>
             <button class="secondary-button" data-action="save-product" type="button">
               Guardar
+            </button>
+          </td>
+          <td>
+            <button class="ghost-button danger-button" data-action="remove-product" type="button">
+              Quitar
             </button>
           </td>
         </tr>

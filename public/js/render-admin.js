@@ -92,7 +92,10 @@ function renderAdminModal() {
     : "0 MB";
   refs.adminProductsRender.textContent = `${formatQuantity(state.performance.productsRenderMs)} ms`;
   refs.adminSnapshotRender.textContent = `${formatQuantity(state.performance.snapshotRenderMs)} ms`;
-  refs.adminVisibleProducts.textContent = `${state.performance.renderedProductCount}/${state.products.length}`;
+  const inventoryVisibleRows = refs.inventoryBody?.children?.length || 0;
+  refs.adminVisibleProducts.textContent = state.admin.inventoryExpanded
+    ? `${inventoryVisibleRows}/${state.products.length}`
+    : `Oculto/${state.products.length}`;
   refs.adminDomNodes.textContent = formatQuantity(clientMetrics.domNodes);
   refs.adminServerRuntime.textContent = serverMetrics
     ? `${formatQuantity(serverMetrics.process.uptimeSeconds)} s`
@@ -107,8 +110,18 @@ function renderAdminModal() {
   refs.adminClientHardware.textContent =
     `CPU ${formatQuantity(clientMetrics.hardwareConcurrency)} · RAM ${formatQuantity(clientMetrics.deviceMemory)} GB`;
   refs.adminClientNetwork.textContent = clientMetrics.network
-    ? `Red ${clientMetrics.network.effectiveType} · ${formatQuantity(clientMetrics.downlink)} Mbps · ${formatQuantity(clientMetrics.rtt)} ms · pendientes ${state.pendingQueue.length}`
+    ? `Red ${clientMetrics.network.effectiveType} · ${formatQuantity(clientMetrics.network.downlink)} Mbps · ${formatQuantity(clientMetrics.network.rtt)} ms · pendientes ${state.pendingQueue.length}`
     : `Red ${state.online ? "en linea" : "offline"} · pendientes ${state.pendingQueue.length}`;
+
+  if (refs.adminInventoryWrap && refs.toggleAdminInventoryButton && refs.adminInventoryStatus) {
+    refs.adminInventoryWrap.hidden = !state.admin.inventoryExpanded;
+    refs.toggleAdminInventoryButton.textContent = state.admin.inventoryExpanded
+      ? "Ocultar inventario"
+      : "Mostrar inventario";
+    refs.adminInventoryStatus.textContent = state.admin.inventoryExpanded
+      ? "Vista expandida. Puede tardar con catalogos grandes."
+      : "Vista compacta. Abre inventario solo cuando lo necesites.";
+  }
 } // FIX: llave de cierre de renderAdminModal que faltaba
 
 function renderAdminRecordLists() {
@@ -119,6 +132,7 @@ function renderAdminRecordLists() {
   const sales = state.admin.editorData.sales || [];
   const registerEvents = state.admin.editorData.registerEvents || [];
   const inventoryMovements = state.admin.editorData.inventoryMovements || [];
+  const auditLogs = state.admin.auditLogs || [];
 
   refs.adminSalesList.innerHTML = sales.length
     ? sales
@@ -167,6 +181,24 @@ function renderAdminRecordLists() {
         )
         .join("")
     : `<div class="empty-state">Sin movimientos recientes para editar.</div>`;
+
+  if (refs.adminAuditLogList) {
+    refs.adminAuditLogList.innerHTML = auditLogs.length
+      ? auditLogs
+          .map(
+            (entry) => `
+              <article class="admin-record-item">
+                <div class="admin-record-item-head">
+                  <strong>${escapeHtml(entry.action)}</strong>
+                  <span class="small-pill">${escapeHtml(entry.entityType)}</span>
+                </div>
+                <p>${escapeHtml(getBranchLabel(entry.branch || "all"))} · ${escapeHtml(entry.actorName || "admin")} · ${escapeHtml(dateTimeFormatter.format(new Date(entry.createdAt)))}</p>
+              </article>
+            `,
+          )
+          .join("")
+      : `<div class="empty-state">Sin cambios recientes en bitacora.</div>`;
+  }
 }
 
 function renderAdminCashiers() {
@@ -208,10 +240,10 @@ function renderAdminAuthModal() {
   }
 
   const isSetup = state.adminAuth.mode === "setup";
-  refs.adminAuthTitle.textContent = isSetup ? "Crear contrasena admin" : "Acceso admin";
+  refs.adminAuthTitle.textContent = isSetup ? "Crear acceso admin" : "Acceso admin";
   refs.adminAuthDescription.textContent = isSetup
-    ? "Configura la contrasena para proteger el panel admin."
-    : "Ingresa la contrasena para abrir el panel admin.";
+    ? "Crea usuario y contrasena para proteger el panel admin."
+    : "Ingresa usuario y contrasena para abrir el panel admin.";
   refs.adminAuthPasswordLabel.textContent = isSetup ? "Nueva contrasena" : "Contrasena";
   refs.adminAuthConfirmField.hidden = !isSetup;
   refs.saveAdminAuthButton.textContent = state.adminAuth.loading
@@ -220,6 +252,7 @@ function renderAdminAuthModal() {
       ? "Crear contrasena"
       : "Entrar";
   refs.saveAdminAuthButton.disabled = state.adminAuth.loading;
+  refs.adminAuthUsername.disabled = state.adminAuth.loading;
   refs.adminAuthPassword.disabled = state.adminAuth.loading;
   refs.adminAuthConfirmPassword.disabled = state.adminAuth.loading;
 }

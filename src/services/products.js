@@ -253,6 +253,172 @@ function updateProduct(productId, payload) {
   return getProductById(productId, branch);
 }
 
+function createProduct(payload) {
+  const branch = normalizeBranch(payload.branch);
+  const name = normalizeText(payload.name || "", 80);
+  const category = normalizeText(payload.category || "general", 24).toLowerCase();
+  const unit = normalizeText(payload.unit || "kg", 12).toLowerCase();
+  const typeCode = normalizeText(payload.typeCode || "", 8).toUpperCase() || null;
+  const price = roundMoney(payload.price);
+  const stock = roundStock(payload.stock || 0);
+  const minStock = Math.max(0, roundStock(payload.minStock || 0));
+  const now = nowIso();
+
+  if (!name) {
+    throw createHttpError("Captura un nombre de producto valido.");
+  }
+  if (!["quesos", "carnes", "piezas", "general"].includes(category)) {
+    throw createHttpError("Selecciona una categoria valida.");
+  }
+  if (!["kg", "pza"].includes(unit)) {
+    throw createHttpError("Selecciona una unidad valida.");
+  }
+  if (!Number.isFinite(price) || price <= 0) {
+    throw createHttpError("El precio debe ser mayor a cero.");
+  }
+  if (!Number.isFinite(stock) || stock < 0) {
+    throw createHttpError("La existencia inicial no es valida.");
+  }
+
+  const existing = db.prepare(`
+    SELECT id, active
+    FROM products
+    WHERE branch = ? AND UPPER(TRIM(name)) = UPPER(TRIM(?))
+  `).get(branch, name);
+
+  if (existing?.active) {
+    throw createHttpError("Ya existe un producto activo con ese nombre en esta sucursal.");
+  }
+
+  const maxOrderRow = db.prepare(`
+    SELECT COALESCE(MAX(display_order), 0) AS max_order
+    FROM products
+    WHERE branch = ?
+  `).get(branch);
+  const nextDisplayOrder = Number(maxOrderRow?.max_order || 0) + 1;
+
+  const result = db.transaction(() => {
+    let productId = null;
+    if (existing) {
+      db.prepare(`
+        UPDATE products
+        SET
+          price = ?,
+          category = ?,
+          unit = ?,
+          type_code = ?,
+          stock = ?,
+          min_stock = ?,
+          stock_initialized = ?,
+          active = 1,
+          updated_at = ?
+        WHERE id = ? AND branch = ?
+      `).run(
+        price,
+        category,
+        unit,
+        typeCode,
+        stock,
+        minStock,
+        stock > 0 ? 1 : 0,
+        now,
+        existing.id,
+        branch,
+      );
+      productId = existing.id;
+    } else {
+      const insert = db.prepare(`
+        INSERT INTO products (
+          name,
+          price,
+          category,
+          unit,
+          type_code,
+          stock,
+          min_stock,
+          stock_initialized,
+          active,
+          display_order,
+          branch,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+      `).run(
+        name,
+        price,
+        category,
+        unit,
+        typeCode,
+        stock,
+        minStock,
+        stock > 0 ? 1 : 0,
+        nextDisplayOrder,
+        branch,
+        now,
+        now,
+      );
+      productId = Number(insert.lastInsertRowid);
+    }
+
+    if (stock > 0) {
+      db.prepare(`
+        INSERT INTO inventory_movements (
+          product_id,
+          movement_type,
+          branch,
+          quantity_delta,
+          stock_before,
+          stock_after,
+          note,
+          reference_type,
+          reference_id,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        productId,
+        "initial",
+        branch,
+        stock,
+        0,
+        stock,
+        "Alta de producto con inventario inicial",
+        "manual",
+        null,
+        now,
+      );
+    }
+
+    return productId;
+  })();
+
+  return getProductById(result, branch);
+}
+
+function removeProduct(productId, branch = "carrizal") {
+  const normalizedBranch = normalizeBranch(branch);
+  const current = db.prepare(`
+    SELECT id, active
+    FROM products
+    WHERE id = ? AND branch = ?
+  `).get(productId, normalizedBranch);
+
+  if (!current) {
+    throw createHttpError("No encontre el producto para quitar.", 404);
+  }
+
+  if (!current.active) {
+    return { id: current.id, removed: true, alreadyInactive: true };
+  }
+
+  db.prepare(`
+    UPDATE products
+    SET active = 0, updated_at = ?
+    WHERE id = ? AND branch = ?
+  `).run(nowIso(), productId, normalizedBranch);
+
+  return { id: productId, removed: true, alreadyInactive: false };
+}
+
 function listAllProductsForExport() {
   return db.prepare(`
     SELECT
@@ -266,6 +432,7 @@ function listAllProductsForExport() {
       min_stock,
       stock_initialized,
       active,
+      branch,
       display_order,
       created_at,
       updated_at
@@ -284,10 +451,12 @@ function listAllProductsForExport() {
 }
 
 module.exports = {
+  createProduct,
   ensureCatalogSeeded,
   getProductById,
   importCatalogFromWorkbook,
   listAllProductsForExport,
   listProducts,
+  removeProduct,
   updateProduct,
 };

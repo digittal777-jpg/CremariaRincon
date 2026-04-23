@@ -48,6 +48,7 @@ async function bootstrap() {
   refs.openQuickImportButton = $("open-quick-import-button");
   refs.refreshCatalogButton = $("refresh-catalog-button");
   refs.exportWorkbookButton = $("export-workbook-button");
+  refs.downloadDbButton = $("download-db-button");
   refs.openPaymentButton = $("open-payment-button");
   refs.clearCartButton = $("clear-cart-button");
   refs.itemModal = $("item-modal");
@@ -55,6 +56,7 @@ async function bootstrap() {
   refs.itemModalMeta = $("item-modal-meta");
   refs.itemQuantity = $("item-quantity");
   refs.itemTotal = $("item-total");
+  refs.itemUnitPrice = $("item-unit-price");
   refs.paymentModal = $("payment-modal");
   refs.paymentTotal = $("payment-total");
   refs.paymentMethods = $("payment-methods");
@@ -130,6 +132,17 @@ async function bootstrap() {
   refs.adminSalesList = $("admin-sales-list");
   refs.adminRegisterEventsList = $("admin-register-events-list");
   refs.adminInventoryMovementsList = $("admin-inventory-movements-list");
+  refs.adminAuditLogList = $("admin-audit-log-list");
+  refs.adminInventoryWrap = $("admin-inventory-wrap");
+  refs.adminInventoryStatus = $("admin-inventory-status");
+  refs.toggleAdminInventoryButton = $("toggle-admin-inventory-button");
+  refs.adminNewProductName = $("admin-new-product-name");
+  refs.adminNewProductCategory = $("admin-new-product-category");
+  refs.adminNewProductUnit = $("admin-new-product-unit");
+  refs.adminNewProductPrice = $("admin-new-product-price");
+  refs.adminNewProductStock = $("admin-new-product-stock");
+  refs.adminNewProductMinStock = $("admin-new-product-min-stock");
+  refs.saveAdminProductButton = $("save-admin-product-button");
   refs.adminCashierName = $("admin-cashier-name");
   refs.adminCashierBranch = $("admin-cashier-branch");
   refs.adminCashierPassword = $("admin-cashier-password");
@@ -140,6 +153,7 @@ async function bootstrap() {
   refs.adminAuthModal = $("admin-auth-modal");
   refs.adminAuthTitle = $("admin-auth-title");
   refs.adminAuthDescription = $("admin-auth-description");
+  refs.adminAuthUsername = $("admin-auth-username");
   refs.adminAuthPasswordLabel = $("admin-auth-password-label");
   refs.adminAuthPassword = $("admin-auth-password");
   refs.adminAuthConfirmField = $("admin-auth-confirm-field");
@@ -238,6 +252,9 @@ async function bootstrap() {
   refs.openQuickImportButton.addEventListener("click", openQuickImportModal);
   refs.refreshCatalogButton.addEventListener("click", reimportCatalog);
   refs.exportWorkbookButton.addEventListener("click", exportWorkbook);
+  refs.downloadDbButton.addEventListener("click", downloadDatabase);
+  refs.toggleAdminInventoryButton.addEventListener("click", toggleAdminInventoryPanel);
+  refs.saveAdminProductButton.addEventListener("click", createAdminProduct);
 
   // Carrito y venta
   refs.openPaymentButton.addEventListener("click", openPaymentModal);
@@ -250,6 +267,12 @@ async function bootstrap() {
   $("close-admin-auth-modal").addEventListener("click", closeAdminAuthModal);
   $("cancel-admin-auth-button").addEventListener("click", closeAdminAuthModal);
   refs.saveAdminAuthButton.addEventListener("click", submitAdminAuth);
+  refs.adminAuthUsername.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitAdminAuth();
+    }
+  });
   refs.adminAuthPassword.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -274,6 +297,7 @@ async function bootstrap() {
   $("add-item-button").addEventListener("click", addCurrentProductToCart);
   refs.itemQuantity.addEventListener("input", syncItemTotalFromQuantity);
   refs.itemTotal.addEventListener("input", syncItemQuantityFromTotal);
+  refs.itemUnitPrice.addEventListener("input", syncItemTotalFromQuantity);
   refs.itemTotal.addEventListener("blur", finalizeItemTotalInput);
   refs.itemTotal.addEventListener("focus", () => refs.itemTotal.select());
 
@@ -604,11 +628,15 @@ async function bootstrap() {
 
   // Inventario
   refs.inventoryBody.addEventListener("click", (event) => {
-    const button = event.target.closest('[data-action="save-product"]');
-    if (!button) {
+    const saveButton = event.target.closest('[data-action="save-product"]');
+    if (saveButton) {
+      saveInventoryRow(saveButton.closest("tr"));
       return;
     }
-    saveInventoryRow(button.closest("tr"));
+    const removeButton = event.target.closest('[data-action="remove-product"]');
+    if (removeButton) {
+      removeAdminProduct(removeButton.closest("tr"));
+    }
   });
 
   // Keyboard shortcuts globales

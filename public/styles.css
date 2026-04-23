@@ -944,6 +944,22 @@ h3 {
   flex-wrap: wrap;
 }
 
+.admin-inventory-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.admin-product-create-form {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+  align-items: end;
+}
+
 .admin-layout {
   margin-top: 18px;
   display: grid;
@@ -1559,6 +1575,7 @@ h3 {
   .quick-import-stats,
   .quick-import-mode-bar,
   .admin-layout,
+  .admin-product-create-form,
   .admin-summary-grid,
   .admin-metrics-grid,
   .admin-editor-layout {

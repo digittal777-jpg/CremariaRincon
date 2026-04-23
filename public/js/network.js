@@ -27,6 +27,7 @@ function getAdminAuthHeaders() {
   return state.admin.token
     ? {
         Authorization: `Bearer ${state.admin.token}`,
+        "x-admin-user": state.admin.username || "admin",
       }
     : {};
 }
@@ -63,6 +64,7 @@ async function loadAdminAuthStatus() {
     headers: getAdminAuthHeaders(),
   });
   state.admin.configured = Boolean(response.configured);
+  state.admin.username = String(response.username || state.admin.username || "admin");
   state.admin.authenticated = Boolean(response.authenticated) && Boolean(state.admin.token);
   return response;
 }

@@ -60,13 +60,16 @@ const state = {
   },
   admin: {
     branch: "all",
+    inventoryExpanded: false,
     loading: false,
     metrics: null,
     pollTimerId: null,
     token: "",
+    username: "",
     configured: false,
     authenticated: false,
     snapshot: null,
+    auditLogs: [],
     cashiers: [],
     editorData: {
       sales: [],

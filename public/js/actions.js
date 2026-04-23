@@ -35,7 +35,7 @@ function applySnapshot(snapshot, options = {}) {
   renderRecentActivity();
   renderTrendChart();
   renderShiftSummary();
-  if (refs.adminModal?.classList.contains("open")) {
+  if (refs.adminModal?.classList.contains("open") && state.admin.inventoryExpanded) {
     renderInventory();
   }
   renderQuickImportModal();
@@ -95,7 +95,7 @@ function applyOptimisticProductUpdate(productId, payload) {
   renderSummary();
   requestProductsRender();
   renderLowStock();
-  if (refs.adminModal?.classList.contains("open")) {
+  if (refs.adminModal?.classList.contains("open") && state.admin.inventoryExpanded) {
     renderInventory();
   }
 }
@@ -197,7 +197,7 @@ function applyOptimisticSale(payload) {
   renderRecentActivity();
   renderTrendChart();
   renderShiftSummary();
-  if (refs.adminModal?.classList.contains("open")) {
+  if (refs.adminModal?.classList.contains("open") && state.admin.inventoryExpanded) {
     renderInventory();
   }
 }
@@ -259,6 +259,19 @@ async function loadAdminEditorData(branch = getAdminBranch()) {
   }
 }
 
+async function loadAdminAuditLogs(branch = getAdminBranch()) {
+  try {
+    const response = await requestAdminJson(
+      `/api/admin/audit-log?branch=${encodeURIComponent(branch)}&limit=180`,
+    );
+    state.admin.auditLogs = Array.isArray(response.logs) ? response.logs : [];
+  } catch (_error) {
+    state.admin.auditLogs = [];
+  } finally {
+    renderAdminRecordLists();
+  }
+}
+
 async function loadAdminConfig() {
   try {
     const response = await requestAdminJson("/api/admin/settings");
@@ -273,6 +286,7 @@ async function refreshAdminWorkspace() {
   await Promise.allSettled([
     loadAdminSnapshot(getAdminBranch()),
     loadAdminEditorData(getAdminBranch()),
+    loadAdminAuditLogs(getAdminBranch()),
     loadAdminCashiers(getAdminBranch()),
     loadAdminConfig(),
   ]);
@@ -307,6 +321,14 @@ function startAdminMetricsPolling() {
   }, 10000);
 }
 
+function toggleAdminInventoryPanel() {
+  state.admin.inventoryExpanded = !state.admin.inventoryExpanded;
+  if (state.admin.inventoryExpanded) {
+    renderInventory();
+  }
+  renderAdminModal();
+}
+
 async function openAdminModal() {
   if (!state.admin.token) {
     await openAdminAuthModal();
@@ -323,7 +345,9 @@ async function openAdminModal() {
   }
 
   setModalOpen(refs.adminModal, true);
-  renderInventory();
+  if (state.admin.inventoryExpanded) {
+    renderInventory();
+  }
   renderAdminModal();
   startAdminMetricsPolling();
   await refreshAdminWorkspace();
@@ -353,11 +377,12 @@ async function logoutAdmin() {
 async function openAdminAuthModal() {
   await loadAdminAuthStatus();
   state.adminAuth.mode = state.admin.configured ? "login" : "setup";
+  refs.adminAuthUsername.value = state.admin.username || "admin";
   refs.adminAuthPassword.value = "";
   refs.adminAuthConfirmPassword.value = "";
   setModalOpen(refs.adminAuthModal, true);
   renderAdminAuthModal();
-  window.requestAnimationFrame(() => refs.adminAuthPassword.focus());
+  window.requestAnimationFrame(() => refs.adminAuthUsername.focus());
 }
 
 function closeAdminAuthModal() {
@@ -365,9 +390,15 @@ function closeAdminAuthModal() {
 }
 
 async function submitAdminAuth() {
+  const username = refs.adminAuthUsername.value.trim().toLowerCase();
   const password = refs.adminAuthPassword.value.trim();
   const confirmPassword = refs.adminAuthConfirmPassword.value.trim();
   const isSetup = state.adminAuth.mode === "setup";
+
+  if (username.length < 3) {
+    showToast("El usuario admin debe tener al menos 3 caracteres.", "error");
+    return;
+  }
 
   if (password.length < 4) {
     showToast("La contrasena admin debe tener al menos 4 caracteres.", "error");
@@ -386,14 +417,15 @@ async function submitAdminAuth() {
     if (isSetup) {
       await performJsonRequest("/api/admin/auth/setup", {
         method: "POST",
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ username, password }),
       });
     }
 
     const loginResponse = await performJsonRequest("/api/admin/auth/login", {
       method: "POST",
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     });
+    state.admin.username = username;
     state.admin.token = loginResponse.token || "";
     state.admin.authenticated = Boolean(state.admin.token);
     writeStorageText(STORAGE_KEYS.adminToken, state.admin.token);
@@ -404,6 +436,29 @@ async function submitAdminAuth() {
   } finally {
     state.adminAuth.loading = false;
     renderAdminAuthModal();
+  }
+}
+
+async function downloadDatabase() {
+  try {
+    const response = await fetch("/api/admin/download-db", {
+      headers: getAdminAuthHeaders(),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.message || "No fue posible descargar la base de datos.");
+    }
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = "cremeria-rincon.sqlite";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(objectUrl);
+  } catch (error) {
+    showToast(error.message, "error");
   }
 }
 
@@ -579,8 +634,67 @@ async function reimportCatalog() {
   }
 }
 
+async function createAdminProduct() {
+  const payload = {
+    branch: getAdminActionBranch(),
+    name: refs.adminNewProductName.value.trim(),
+    category: refs.adminNewProductCategory.value,
+    unit: refs.adminNewProductUnit.value,
+    price: roundMoney(refs.adminNewProductPrice.value),
+    stock: roundStock(refs.adminNewProductStock.value),
+    minStock: roundStock(refs.adminNewProductMinStock.value),
+  };
+
+  if (!payload.name) {
+    showToast("Captura el nombre del producto.", "error");
+    return;
+  }
+
+  try {
+    await requestAdminJson("/api/admin/products/manual", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    refs.adminNewProductName.value = "";
+    refs.adminNewProductPrice.value = "";
+    refs.adminNewProductStock.value = "0";
+    refs.adminNewProductMinStock.value = "0";
+    await refreshCurrentSnapshot();
+    await refreshAdminWorkspace();
+    showToast("Producto agregado correctamente.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function removeAdminProduct(row) {
+  const productId = Number(row?.dataset?.productId);
+  if (!productId) {
+    showToast("No pude identificar el producto.", "error");
+    return;
+  }
+  const name = row.querySelector(".inventory-name strong")?.textContent || "este producto";
+  if (!window.confirm(`Se desactivara ${name}. ¿Deseas continuar?`)) {
+    return;
+  }
+
+  try {
+    await requestAdminJson(
+      `/api/admin/products/${productId}?branch=${encodeURIComponent(getAdminActionBranch())}`,
+      { method: "DELETE" },
+    );
+    await refreshCurrentSnapshot();
+    await refreshAdminWorkspace();
+    showToast("Producto desactivado.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
 function exportWorkbook() {
-  fetch("/api/export-workbook", {
+  const branch = getAdminBranch();
+  const scope = "store-day";
+  fetch(`/api/export-workbook?branch=${encodeURIComponent(branch)}&scope=${encodeURIComponent(scope)}`, {
     headers: getAdminAuthHeaders(),
   })
     .then(async (response) => {
@@ -595,7 +709,7 @@ function exportWorkbook() {
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = objectUrl;
-      anchor.download = "cremeria-rincon-export.xlsx";
+      anchor.download = `cremeria-rincon-export-${branch}-${scope}.xlsx`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
