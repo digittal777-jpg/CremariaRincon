@@ -819,6 +819,49 @@ h3 {
   overflow: auto;
 }
 
+.inventory-single-wrapper {
+  display: block;
+}
+
+.inventory-comparison-wrapper {
+  display: grid;
+}
+
+.comparison-tables {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.inventory-branch-column {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.inventory-branch-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(248, 242, 234, 0.5);
+  border-radius: 16px;
+  border-left: 4px solid var(--accent);
+}
+
+.inventory-branch-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
 .inventory-table {
   width: 100%;
   border-collapse: collapse;
@@ -833,6 +876,26 @@ h3 {
 }
 
 .inventory-table thead th {
+  position: sticky;
+  top: 0;
+  background: rgba(248, 242, 234, 0.98);
+  backdrop-filter: blur(12px);
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  z-index: 1;
+}
+
+.comparison-table th,
+.comparison-table td {
+  padding: 14px 10px;
+  border-bottom: 1px solid rgba(87, 63, 46, 0.08);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.comparison-table thead th {
   position: sticky;
   top: 0;
   background: rgba(248, 242, 234, 0.98);
@@ -1112,6 +1175,10 @@ h3 {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.admin-dev-actions {
+  margin-top: 14px;
 }
 
 .compact-button {
@@ -1395,6 +1462,28 @@ h3 {
   color: var(--primary-deep);
 }
 
+.detail-json-block {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 252, 248, 0.92);
+  border: 1px solid rgba(87, 63, 46, 0.08);
+}
+
+.detail-json {
+  margin: 0;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(87, 63, 46, 0.08);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
 .payment-total-box {
   padding: 18px;
   border-radius: 24px;
@@ -1621,5 +1710,9 @@ h3 {
   .inventory-table th:nth-child(8),
   .inventory-table td:nth-child(8) {
     display: none;
+  }
+
+  .comparison-tables {
+    grid-template-columns: 1fr;
   }
 }

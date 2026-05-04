@@ -1,5 +1,3 @@
-// Funciones de persistencia y almacenamiento offline
-
 function openOfflineDb() {
   if (typeof indexedDB === "undefined") {
     return Promise.resolve(null);
@@ -24,6 +22,9 @@ function openOfflineDb() {
 
   return offlineDbPromise;
 }
+
+const deferredJsonTimers = new Map();
+const deferredJsonValues = new Map();
 
 async function readOfflineRecord(key) {
   const db = await openOfflineDb();
@@ -119,6 +120,47 @@ function persistText(key, value) {
   void writeOfflineRecord(key, value);
 }
 
+function flushDeferredJsonPersist(key) {
+  if (!deferredJsonValues.has(key)) {
+    return;
+  }
+
+  const value = deferredJsonValues.get(key);
+  deferredJsonValues.delete(key);
+
+  if (deferredJsonTimers.has(key)) {
+    clearTimeout(deferredJsonTimers.get(key));
+    deferredJsonTimers.delete(key);
+  }
+
+  persistJson(key, value);
+}
+
+function persistJsonDeferred(key, value, delayMs = 250) {
+  deferredJsonValues.set(key, value);
+
+  if (deferredJsonTimers.has(key)) {
+    clearTimeout(deferredJsonTimers.get(key));
+  }
+
+  const timerId = setTimeout(() => {
+    flushDeferredJsonPersist(key);
+  }, delayMs);
+  deferredJsonTimers.set(key, timerId);
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    flushDeferredJsonPersist(STORAGE_KEYS.snapshot);
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      flushDeferredJsonPersist(STORAGE_KEYS.snapshot);
+    }
+  });
+}
+
 function buildPersistedSnapshot() {
   return {
     store: state.store,
@@ -134,7 +176,7 @@ function buildPersistedSnapshot() {
 }
 
 function saveSnapshot(snapshot) {
-  persistJson(STORAGE_KEYS.snapshot, snapshot);
+  persistJsonDeferred(STORAGE_KEYS.snapshot, snapshot, 350);
 }
 
 async function restoreSnapshot() {

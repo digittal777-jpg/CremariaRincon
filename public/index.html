@@ -44,7 +44,7 @@
             <span id="sync-status">Sin pendientes</span>
           </div>
           <button class="secondary-button" id="header-admin-button" type="button" title="Acceso directo al panel admin">
-            🔧 Admin
+            Administrativo
           </button>
           <div class="clock-card">
             <span id="live-date">--</span>
@@ -64,7 +64,7 @@
             </div>
             <div class="panel-actions">
               <button class="secondary-button" id="open-admin-button" type="button">
-                Panel admin
+                Panel administrativo
               </button>
             </div>
           </div>
@@ -329,11 +329,11 @@
         </div>
 
         <div class="quick-import-mode-bar" id="quick-import-mode-bar">
-          <button class="payment-method active" data-mode="initial" type="button">
-            Inventario inicial
+          <button class="payment-method active" data-mode="receive" type="button">
+            Entrada de Inventario
           </button>
-          <button class="payment-method" data-mode="supplier" type="button">
-            Entrada de proveedor
+          <button class="payment-method" data-mode="return" type="button">
+            Retorno de Proveedor
           </button>
         </div>
 
@@ -378,21 +378,13 @@
               </div>
 
               <div class="quick-import-fields">
-                <label class="field quick-import-provider-field" id="quick-import-direction-field">
-                  <span>Movimiento proveedor</span>
-                  <select id="quick-import-direction">
-                    <option value="in">Entrega producto</option>
-                    <option value="out">Se lleva producto</option>
-                  </select>
-                </label>
-
                 <label class="field quick-import-provider-field" id="quick-import-provider-field">
-                  <span>Proveedor</span>
+                  <span>Proveedor (opcional)</span>
                   <input id="quick-import-supplier" type="text" placeholder="Ej. Lala, Sigma, rancho..." />
                 </label>
 
                 <label class="field">
-                  <span id="quick-import-value-label">Inventario inicial a sumar</span>
+                  <span id="quick-import-value-label">Cantidad a agregar</span>
                   <input id="quick-import-value" type="number" min="0" step="0.25" />
                 </label>
 
@@ -552,12 +544,24 @@
                 <button class="secondary-button" id="refresh-catalog-button" type="button">
                   Reimportar catalogo
                 </button>
+                <label class="field" for="export-date-input">
+                  <span>Fecha Excel</span>
+                  <input id="export-date-input" type="date" />
+                </label>
                 <button class="secondary-button" id="export-workbook-button" type="button">
                   Exportar Excel
                 </button>
                 <button class="secondary-button" id="download-db-button" type="button">
                   Descargar base
                 </button>
+                <button class="secondary-button" id="install-db-button" type="button" title="Cargar una base SQLite desde este equipo">
+                  Instalar base local
+                </button>
+                <input type="file" id="install-db-input" accept=".sqlite,.sqlite3,.db" style="display: none;" />
+                <button class="secondary-button" id="install-workbook-button" type="button" title="Restaurar datos desde el Excel exportado por este sistema">
+                  Instalar Excel
+                </button>
+                <input type="file" id="install-workbook-input" accept=".xlsx" style="display: none;" />
                 <button class="primary-button" id="open-quick-import-button" type="button">
                   Importacion rapida
                 </button>
@@ -686,22 +690,72 @@
             </div>
 
             <div class="inventory-table-wrap" id="admin-inventory-wrap" hidden>
-              <table class="inventory-table">
-                <thead>
-                  <tr>
-                    <th>Producto</th>
-                    <th>Precio</th>
-                    <th>Existencia</th>
-                    <th>Minimo</th>
-                    <th>Activo</th>
-                    <th>Nota</th>
-                    <th>Estado</th>
-                    <th>Accion</th>
-                    <th>Quitar</th>
-                  </tr>
-                </thead>
-                <tbody id="inventory-body"></tbody>
-              </table>
+              <!-- Modo simple: una sucursal -->
+              <div id="inventory-single-table" class="inventory-single-wrapper">
+                <table class="inventory-table">
+                  <thead>
+                    <tr>
+                      <th>Producto</th>
+                      <th>Precio</th>
+                      <th>Existencia</th>
+                      <th>Minimo</th>
+                      <th>Activo</th>
+                      <th>Nota</th>
+                      <th>Estado</th>
+                      <th>Accion</th>
+                      <th>Quitar</th>
+                    </tr>
+                  </thead>
+                  <tbody id="inventory-body"></tbody>
+                </table>
+              </div>
+
+              <!-- Modo comparativo: dos sucursales lado a lado -->
+              <div id="inventory-comparison-wrapper" class="inventory-comparison-wrapper" hidden>
+                <div class="comparison-tables">
+                  <div class="inventory-branch-column">
+                    <div class="inventory-branch-header">
+                      <h3 id="comparison-branch-1-label">Sucursal 1</h3>
+                    </div>
+                    <table class="inventory-table comparison-table">
+                      <thead>
+                        <tr>
+                          <th>Producto</th>
+                          <th>Precio</th>
+                          <th>Existencia</th>
+                          <th>Minimo</th>
+                          <th>Activo</th>
+                          <th>Nota</th>
+                          <th>Estado</th>
+                          <th>Accion</th>
+                        </tr>
+                      </thead>
+                      <tbody id="inventory-body-branch-1"></tbody>
+                    </table>
+                  </div>
+
+                  <div class="inventory-branch-column">
+                    <div class="inventory-branch-header">
+                      <h3 id="comparison-branch-2-label">Sucursal 2</h3>
+                    </div>
+                    <table class="inventory-table comparison-table">
+                      <thead>
+                        <tr>
+                          <th>Producto</th>
+                          <th>Precio</th>
+                          <th>Existencia</th>
+                          <th>Minimo</th>
+                          <th>Activo</th>
+                          <th>Nota</th>
+                          <th>Estado</th>
+                          <th>Accion</th>
+                        </tr>
+                      </thead>
+                      <tbody id="inventory-body-branch-2"></tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -769,6 +823,29 @@
               </div>
             </div>
             <div class="admin-record-list" id="admin-audit-log-list"></div>
+          </section>
+
+          <section class="admin-metrics-panel admin-dev-panel">
+            <div class="panel-head admin-subhead">
+              <div>
+                <p class="eyebrow">Dev</p>
+                <h2>Diagnostico y soporte</h2>
+              </div>
+            </div>
+
+            <div class="admin-metrics-grid" id="admin-dev-summary"></div>
+
+            <div class="admin-record-actions admin-dev-actions">
+              <button class="secondary-button compact-button" id="dev-refresh-admin-button" type="button">
+                Recargar panel
+              </button>
+              <button class="secondary-button compact-button" id="dev-sync-offline-button" type="button">
+                Reintentar sync
+              </button>
+              <button class="ghost-button compact-button" id="dev-download-state-button" type="button">
+                Descargar debug JSON
+              </button>
+            </div>
           </section>
         </div>
 

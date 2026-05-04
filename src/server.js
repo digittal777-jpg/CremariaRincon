@@ -1,13 +1,14 @@
 ﻿const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
+const fs = require("node:fs");
 
 const express = require("express");
+const multer = require("multer");
 const { Server } = require("socket.io");
 
-const { DB_PATH } = require("./config");
 const { PORT, ROOT_DIR, STORE_NAME } = require("./config");
-const { nowIso } = require("./db");
+const { createDatabaseBackup, installDatabaseFromBuffer, nowIso } = require("./db");
 
 const services = require("./services");
 const adminAuth = require("./admin/auth");
@@ -17,6 +18,9 @@ const { getSystemMetrics } = require("./admin/metrics");
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
+
+// Configurar multer para uploads temporales en memoria
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 let lastCpuSnapshot = { usage: process.cpuUsage(), time: process.hrtime.bigint() };
 const adminSessions = new Map();
@@ -46,16 +50,11 @@ app.get("/api/health", (_request, response) => {
   response.json({ ok: true, generatedAt: new Date().toISOString() });
 });
 
-// ── DASHBOARD ────────────────────────────────────────────────────────────────
-// FIX 1: bloque huérfano → GET /api/dashboard
 app.get("/api/dashboard", (request, response) => {
   const branch = request.query.branch || "carrizal";
   response.json(services.getDashboardSnapshot(branch));
 });
 
-// ── BOOTSTRAP (SOLUCIÓN DEFINITIVA) ─────────────────────────────────────────
-// Ruta que tu cliente (app.js + actions.js) está esperando
-// Soporta tanto ?branch=carrizal (caja normal) como ?branch=all (modal admin)
 app.get("/api/bootstrap", (request, response) => {
   const branch = request.query.branch || "carrizal";
 
@@ -69,7 +68,7 @@ app.get("/api/bootstrap", (request, response) => {
 
     response.json(snapshot);
   } catch (err) {
-    console.error("❌ Error en /api/bootstrap:", err);
+    console.error("Error en /api/bootstrap:", err);
     response.status(500).json({
       message: "Error interno al generar bootstrap",
       detail: err.message
@@ -77,8 +76,6 @@ app.get("/api/bootstrap", (request, response) => {
   }
 });
 
-// ── VENTAS ───────────────────────────────────────────────────────────────────
-// FIX 2: bloque huérfano → POST /api/sales
 app.post("/api/sales", (request, response) => {
   const sale = services.createSale(request.body || {});
   const snapshot = services.getDashboardSnapshot(sale.branch);
@@ -86,8 +83,7 @@ app.post("/api/sales", (request, response) => {
   response.status(201).json({ sale, snapshot });
 });
 
-// ── PRODUCTOS (público) ───────────────────────────────────────────────────────
-// FIX 3: bloque huérfano → GET /api/products/:id
+
 app.get("/api/products/:id", (request, response) => {
   const branch = request.query.branch || "carrizal";
   const productId = Number(request.params.id);
@@ -99,7 +95,7 @@ app.get("/api/products/:id", (request, response) => {
   response.json({ product });
 });
 
-// ── ADMIN SETTINGS ────────────────────────────────────────────────────────────
+
 app.get("/api/admin/settings", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
 }, (_request, response) => {
@@ -121,7 +117,7 @@ app.patch("/api/admin/settings", (request, response, next) => {
   response.json({ settings });
 });
 
-// ── ADMIN AUTH ────────────────────────────────────────────────────────────────
+
 app.get("/api/admin/auth/status", (request, response) => {
   response.json({
     configured: Boolean(adminAuth.getStoredAdminPassword()),
@@ -180,7 +176,7 @@ app.post("/api/admin/auth/logout", (request, response) => {
   response.json({ ok: true });
 });
 
-// ── ADMIN PRODUCTS ────────────────────────────────────────────────────────────
+
 app.patch("/api/products/:id", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
 }, (request, response) => {
@@ -315,19 +311,136 @@ app.get("/api/admin/audit-log", (request, response, next) => {
 
 app.get("/api/admin/download-db", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
-}, (_request, response) => {
-  response.download(DB_PATH, "cremeria-rincon.sqlite");
+}, async (_request, response, next) => {
+  const backupPath = path.join(ROOT_DIR, "data", `download-db-${Date.now()}-${process.pid}.sqlite`);
+  const cleanupBackup = () => {
+    try {
+      if (fs.existsSync(backupPath)) {
+        fs.unlinkSync(backupPath);
+      }
+    } catch (_error) {
+      // Ignorar errores de limpieza para no romper la respuesta principal.
+    }
+  };
+
+  try {
+    await createDatabaseBackup(backupPath);
+    response.download(backupPath, "cremaria-rincon.sqlite", (error) => {
+      cleanupBackup();
+      if (error && !response.headersSent) {
+        next(error);
+      }
+    });
+  } catch (error) {
+    cleanupBackup();
+    next(error);
+  }
 });
 
-// ── ADMIN CAJEROS ─────────────────────────────────────────────────────────────
+app.post(
+  "/api/admin/install-db",
+  (request, response, next) => {
+    adminAuth.requireAdminAuth(request, response, next, adminSessions);
+  },
+  upload.single("database"),
+  async (request, response, next) => {
+    try {
+      if (!request.file) {
+        response.status(400).json({
+          message: "No se proporcionó un archivo de base de datos.",
+        });
+        return;
+      }
+
+      const buffer = request.file.buffer;
+      const result = await installDatabaseFromBuffer(buffer);
+      services.logAdminAction({
+        actorName: getAdminActorName(request),
+        action: "database_install",
+        entityType: "database",
+        entityId: request.file.originalname || "upload",
+        payload: {
+          fileName: request.file.originalname || null,
+          fileSize: request.file.size || buffer.length,
+          backupPath: result.backupPath,
+        },
+      });
+      broadcastSnapshot(services.getDashboardSnapshot("all"));
+
+      response.json({
+        message: "Base de datos instalada correctamente.",
+        backupPath: result.backupPath ? result.backupPath.replace(ROOT_DIR, "") : null,
+        installedAt: result.installedAt,
+      });
+    } catch (error) {
+      if (
+        error.message === "El archivo esta vacio o incompleto."
+        || error.message === "El archivo no es una base de datos SQLite valida."
+      ) {
+        response.status(400).json({ message: error.message });
+        return;
+      }
+
+      next(error);
+    }
+  },
+);
+
+app.post(
+  "/api/admin/install-export-workbook",
+  (request, response, next) => {
+    adminAuth.requireAdminAuth(request, response, next, adminSessions);
+  },
+  upload.single("workbook"),
+  async (request, response, next) => {
+    try {
+      if (!request.file) {
+        response.status(400).json({
+          message: "No se proporciono un archivo de Excel.",
+        });
+        return;
+      }
+
+      const result = await services.installOperationalDataFromWorkbookBuffer(request.file.buffer);
+      services.logAdminAction({
+        actorName: getAdminActorName(request),
+        action: "workbook_install",
+        entityType: "workbook",
+        entityId: request.file.originalname || "upload",
+        payload: {
+          fileName: request.file.originalname || null,
+          fileSize: request.file.size || request.file.buffer.length,
+          branches: result.branches,
+          counts: result.counts,
+          backupPath: result.backupPath,
+        },
+      });
+      broadcastSnapshot(services.getDashboardSnapshot("all"));
+
+      response.json({
+        message: "Datos del Excel instalados correctamente.",
+        branches: result.branches,
+        counts: result.counts,
+        backupPath: result.backupPath ? result.backupPath.replace(ROOT_DIR, "") : null,
+        installedAt: result.installedAt,
+      });
+    } catch (error) {
+      if (error.statusCode === 400) {
+        response.status(400).json({ message: error.message });
+        return;
+      }
+
+      next(error);
+    }
+  },
+);
+
 app.get("/api/admin/cashiers", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
 }, (request, response) => {
   const branchParam = request.query.branch;
   const branch = branchParam === "all" ? null : branchParam;
-  console.log("GET /api/admin/cashiers - branch:", branch);
   const cashiers = services.listCashiers(branch);
-  console.log("Cashiers found:", cashiers.length);
   response.json({ cashiers, generatedAt: nowIso() });
 });
 
@@ -338,7 +451,6 @@ app.post("/api/admin/cashiers", (request, response, next) => {
     const cashier = services.createCashier(request.body || {});
     response.status(201).json({ cashier });
   } catch (error) {
-    console.error("Error creating cashier:", error.message);
     response.status(400).json({ message: error.message });
   }
 });
@@ -378,7 +490,7 @@ app.post("/api/cashier/auth", (request, response) => {
   }
 });
 
-// ── CAJA ──────────────────────────────────────────────────────────────────────
+
 app.get("/api/admin/register/start", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
 }, (request, response) => {
@@ -400,7 +512,7 @@ app.get("/api/admin/register/summary", (request, response, next) => {
   response.json(summary);
 });
 
-// ── ADMIN VENTAS / EVENTOS / MOVIMIENTOS ──────────────────────────────────────
+
 app.get("/api/admin/sales/:id", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
 }, (request, response) => {
@@ -476,7 +588,7 @@ app.patch("/api/admin/inventory-movements/:id", (request, response, next) => {
   response.json({ movement });
 });
 
-// ── REGISTRO PÚBLICO ──────────────────────────────────────────────────────────
+
 app.get("/api/register/summary", (request, response) => {
   const shift = request.query.shift || "Tarde";
   const branch = request.query.branch || "carrizal";
@@ -523,26 +635,27 @@ app.get("/api/export-workbook", (request, response, next) => {
 }, async (request, response) => {
   const branch = request.query.branch || "all";
   const scope = request.query.scope || "store-day";
-  const workbook = await services.exportWorkbookReport({ branch, scope });
+  const baseDate = request.query.baseDate || null;
+  const result = await services.exportWorkbookReport({ branch, scope, baseDate });
+  const exportDateSuffix = result.exportDateKey || scope;
   response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   response.setHeader(
     "Content-Disposition",
-    "attachment; filename=" + `${STORE_NAME} - Exportacion-${branch}-${scope}.xlsx`,
+    "attachment; filename=" + `${STORE_NAME} - Exportacion-${branch}-${exportDateSuffix}.xlsx`,
   );
-  await workbook.xlsx.write(response);
+  await result.workbook.xlsx.write(response);
   response.end();
 });
 
-// ── SOCKET.IO ─────────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
-  console.log("Cliente conectado: " + socket.id);
-  socket.on("disconnect", () => { console.log("Cliente desconectado: " + socket.id); });
+  socket.on("disconnect", () => {});
 });
 
-// ── ERROR HANDLER ─────────────────────────────────────────────────────────────
 app.use((error, _request, response, _next) => {
   console.error("Error:", error.message);
-  response.status(500).json({ message: error.message || "Error interno del servidor" });
+  response
+    .status(error.statusCode || 500)
+    .json({ message: error.message || "Error interno del servidor" });
 });
 
 // ── INICIO ────────────────────────────────────────────────────────────────────

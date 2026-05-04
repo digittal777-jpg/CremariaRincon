@@ -1,5 +1,3 @@
-// Utilidades y funciones helper
-
 function $(id) {
   return document.getElementById(id);
 }
@@ -28,6 +26,28 @@ function roundStock(value) {
 
 function roundMetric(value) {
   return Math.round((toNumber(value) + Number.EPSILON) * 10) / 10;
+}
+
+function estimateSerializedBytes(value) {
+  try {
+    return new Blob([JSON.stringify(value ?? null)]).size;
+  } catch (_error) {
+    return 0;
+  }
+}
+
+function formatBytes(value) {
+  const bytes = Math.max(0, toNumber(value, 0));
+  if (bytes < 1024) {
+    return `${Math.round(bytes)} B`;
+  }
+
+  const kb = bytes / 1024;
+  if (kb < 1024) {
+    return `${roundMetric(kb)} KB`;
+  }
+
+  return `${roundMetric(kb / 1024)} MB`;
 }
 
 function formatCurrency(value) {
@@ -83,6 +103,20 @@ function getAdminBranch() {
 
 function getAdminActionBranch() {
   return getAdminBranch() === "all" ? getActiveCashierBranch() : getAdminBranch();
+}
+
+function toDateInputValue(value = new Date()) {
+  const date = new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function shiftDateInputValue(dateValue, daysDelta) {
+  const anchor = dateValue ? new Date(`${dateValue}T12:00:00`) : new Date();
+  anchor.setDate(anchor.getDate() + daysDelta);
+  return toDateInputValue(anchor);
 }
 
 function getStockStatus(stock, minStock, stockInitialized) {

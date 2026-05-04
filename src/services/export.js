@@ -1,5 +1,6 @@
 const ExcelJS = require("exceljs");
 const {
+  EXPORT_LOOKBACK_DAYS,
   SALES_PULSE_START_HOUR,
   SALES_PULSE_END_HOUR,
   STORE_NAME,
@@ -7,8 +8,10 @@ const {
 } = require("../config");
 const {
   ALL_BRANCHES,
+  createHttpError,
   STORE_BRANCHES,
   getBranchLabel,
+  getStoreDateKey,
   getStoreHourLabel,
   isSameStoreDay,
   normalizeBranch,
@@ -53,6 +56,54 @@ function filterByScope(rows, scope, baseDate, dateField = "created_at") {
     return rows;
   }
   return rows.filter((row) => isSameStoreDay(row[dateField], baseDate));
+}
+
+function createStoreDateFromKey(dateKey) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateKey || "").trim());
+  if (!match) {
+    throw createHttpError("La fecha para exportar no tiene un formato valido.", 400);
+  }
+
+  const [, year, month, day] = match;
+  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), 12, 0, 0));
+}
+
+function getPreviousStoreDateKey(baseDate = new Date(), daysBack = 0) {
+  const anchor = new Date(baseDate);
+  anchor.setUTCDate(anchor.getUTCDate() - daysBack);
+  return getStoreDateKey(anchor);
+}
+
+function resolveExportBaseDate(rawBaseDate, scope) {
+  const today = new Date();
+  if (scope === "all-time") {
+    return {
+      baseDate: rawBaseDate ? createStoreDateFromKey(rawBaseDate) : today,
+      exportDateKey: null,
+      scopeLabel: "Historico completo",
+    };
+  }
+
+  const todayKey = getStoreDateKey(today);
+  const oldestAllowedKey = getPreviousStoreDateKey(today, EXPORT_LOOKBACK_DAYS);
+  const selectedKey = rawBaseDate ? String(rawBaseDate).trim() : todayKey;
+
+  if (selectedKey > todayKey) {
+    throw createHttpError("Solo puedes exportar la fecha de hoy o dias anteriores.", 400);
+  }
+
+  if (selectedKey < oldestAllowedKey) {
+    throw createHttpError(
+      `Solo puedes exportar dentro de los ultimos ${EXPORT_LOOKBACK_DAYS} dias.`,
+      400,
+    );
+  }
+
+  return {
+    baseDate: createStoreDateFromKey(selectedKey),
+    exportDateKey: selectedKey,
+    scopeLabel: `Dia ${selectedKey}`,
+  };
 }
 
 function getBar(total, maxTotal) {
@@ -477,8 +528,7 @@ async function exportWorkbookReport(options = {}) {
 
   const generatedAt = nowIso();
   const scope = options.scope === "all-time" ? "all-time" : "store-day";
-  const scopeLabel = scope === "all-time" ? "Historico completo" : "Solo dia actual";
-  const baseDate = options.baseDate ? new Date(options.baseDate) : new Date();
+  const { baseDate, exportDateKey, scopeLabel } = resolveExportBaseDate(options.baseDate, scope);
   const selectedBranch = normalizeBranch(options.branch || ALL_BRANCHES, {
     allowAll: true,
     fallback: ALL_BRANCHES,
@@ -515,7 +565,11 @@ async function exportWorkbookReport(options = {}) {
     addSalesPulseSheet(workbook, ctx);
   }
 
-  return workbook;
+  return {
+    workbook,
+    exportDateKey,
+    scope,
+  };
 }
 
 module.exports = { exportWorkbookReport };

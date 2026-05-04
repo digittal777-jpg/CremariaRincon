@@ -127,7 +127,7 @@ function findQuickImportProduct(payload, branch = "carrizal") {
 }
 
 function applyQuickInventoryEntry(payload) {
-  const mode = normalizeText(payload.mode || "initial", 24).toLowerCase();
+  const mode = normalizeText(payload.mode || "receive", 24).toLowerCase();
   const branch = normalizeBranch(payload.branch);
   const current = findQuickImportProduct(payload, branch);
 
@@ -139,8 +139,8 @@ function applyQuickInventoryEntry(payload) {
     throw createHttpError("Selecciona un producto valido para la captura rapida.");
   }
 
-  if (!["initial", "supplier"].includes(mode)) {
-    throw createHttpError("El tipo de captura rapida no es valido.");
+  if (!["receive", "return"].includes(mode)) {
+    throw createHttpError("El tipo de movimiento de inventario no es valido.");
   }
 
   if (!current || !current.active) {
@@ -150,54 +150,40 @@ function applyQuickInventoryEntry(payload) {
   const productId = current.id;
   const stockBefore = roundStock(current.stock);
   const supplierName = normalizeText(payload.supplierName || "", 60);
-  const direction = normalizeText(payload.direction || "in", 12).toLowerCase();
   const customNote = normalizeText(payload.note || "", 120);
   const now = nowIso();
 
-  let quantityDelta = 0;
-  let stockAfter = stockBefore;
-  let movementType = "initial";
-  let referenceType = "quick-import";
-  let note = customNote;
-
-  if (mode === "initial") {
-    quantityDelta = roundStock(payload.stock);
-    if (!Number.isFinite(quantityDelta) || quantityDelta < 0) {
-      throw createHttpError("El inventario inicial a sumar debe ser un numero igual o mayor a cero.");
-    }
-
-    stockAfter = roundStock(stockBefore + quantityDelta);
-    movementType = "initial";
-    note = note || "Inventario inicial sumado";
+  // La cantidad siempre viene en payload.quantity
+  const rawQuantity = roundStock(payload.quantity);
+  if (!Number.isFinite(rawQuantity) || rawQuantity <= 0) {
+    throw createHttpError("La cantidad debe ser mayor a cero.");
   }
 
-  if (mode === "supplier") {
-    const rawQuantity = roundStock(payload.quantity);
-    if (!Number.isFinite(rawQuantity) || rawQuantity <= 0) {
-      throw createHttpError("La cantidad del proveedor debe ser mayor a cero.");
-    }
+  let quantityDelta = 0;
+  let stockAfter = stockBefore;
+  let movementType = "inventory_in";
+  let referenceType = "inventory-control";
+  let note = customNote;
 
-    if (!["in", "out"].includes(direction)) {
-      throw createHttpError("La direccion del movimiento con proveedor no es valida.");
-    }
-
-    quantityDelta = direction === "out" ? roundStock(-rawQuantity) : rawQuantity;
+  if (mode === "receive") {
+    // Entrada de inventario: suma la cantidad
+    quantityDelta = rawQuantity;
     stockAfter = roundStock(stockBefore + quantityDelta);
+    movementType = "inventory_in";
+    note = note || (supplierName ? `Entrada de inventario: ${supplierName}` : "Entrada de inventario");
+  }
+
+  if (mode === "return") {
+    // Retorno de proveedor: resta la cantidad
+    quantityDelta = roundStock(-rawQuantity);
+    stockAfter = roundStock(stockBefore + quantityDelta);
+    
     if (stockAfter < 0) {
       throw createHttpError("No puedes retirar mas producto del que existe en inventario.");
     }
 
-    movementType = direction === "out" ? "supplier_out" : "supplier";
-    referenceType = "supplier";
-    note =
-      note ||
-      (supplierName
-        ? direction === "out"
-          ? `Proveedor retiro producto: ${supplierName}`
-          : `Entrada de proveedor: ${supplierName}`
-        : direction === "out"
-          ? "Salida con proveedor"
-          : "Entrada de proveedor");
+    movementType = "inventory_out";
+    note = note || (supplierName ? `Retorno de proveedor: ${supplierName}` : "Retorno de inventario");
   }
 
   db.transaction(() => {

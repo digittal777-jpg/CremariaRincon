@@ -8,6 +8,8 @@ const STORE_NAME = "Cremeria El Rincon";
 const STORE_TIME_ZONE = process.env.POS_TIMEZONE || "America/Mexico_City";
 const STORE_SHIFTS = ["Manana", "Tarde"];
 const STORE_BRANCHES = ["carrizal", "miradores"];
+const EXPORT_LOOKBACK_DAYS = Math.max(0, Number(process.env.POS_EXPORT_LOOKBACK_DAYS || 14));
+const ENABLE_DB_INSTALL_BACKUP = process.env.POS_DB_INSTALL_BACKUP === "true";
 const STORE_BRANCH_LABELS = {
   carrizal: "Carrizal",
   miradores: "Miradores",
@@ -33,6 +35,8 @@ module.exports = {
   STORE_TIME_ZONE,
   STORE_SHIFTS,
   STORE_BRANCHES,
+  EXPORT_LOOKBACK_DAYS,
+  ENABLE_DB_INSTALL_BACKUP,
   STORE_BRANCH_LABELS,
   SALES_PULSE_START_HOUR,
   SALES_PULSE_END_HOUR,

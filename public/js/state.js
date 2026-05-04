@@ -1,4 +1,3 @@
-// Estado global de la aplicación
 const state = {
   store: {
     branches: [],
@@ -33,8 +32,7 @@ const state = {
   pendingQueue: [],
   syncingQueue: false,
   quickImport: {
-    mode: "initial",
-    direction: "in",
+    mode: "receive", // "receive" (entrada de inventario) o "return" (retorno de proveedor)
     items: [],
     index: 0,
     loading: false,

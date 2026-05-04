@@ -1,4 +1,3 @@
-// Configuración y constantes
 const currencyFormatter = new Intl.NumberFormat("es-MX", {
   style: "currency",
   currency: "MXN",

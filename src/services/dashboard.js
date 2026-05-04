@@ -15,7 +15,6 @@ const {
 
 const db = getDb();
 
-// Importar servicios necesarios
 const { listProducts, getProductById } = require("./products");
 const { listStoreDaySales, listStoreDaySaleItems, getRecentSales } = require("./sales");
 const { getRecentInventoryMovements } = require("./inventory");
@@ -26,7 +25,6 @@ function getSummary(branch = STORE_BRANCHES[0]) {
   const todaySales = listStoreDaySales(new Date(), branch);
   const todaySaleItems = listStoreDaySaleItems(new Date(), branch);
 
-  // Inventario valorizado filtrado por sucursal
   const inventoryTotals = normalizedBranch === ALL_BRANCHES
     ? db.prepare(`
       SELECT
@@ -43,7 +41,6 @@ function getSummary(branch = STORE_BRANCHES[0]) {
       WHERE active = 1 AND branch = ?
     `).get(normalizedBranch);
 
-  // Stock bajo filtrado por sucursal
   const lowStockCount = normalizedBranch === ALL_BRANCHES
     ? db.prepare(`
       SELECT COUNT(*) AS count
@@ -246,7 +243,7 @@ function getRecentActivity(limit = 18, branch = STORE_BRANCHES[0]) {
 
 function getDashboardSnapshot(branch = STORE_BRANCHES[0]) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
-  return {
+  const snapshot = {
     store: {
       name: STORE_NAME,
       timezone: STORE_TIME_ZONE,
@@ -274,6 +271,19 @@ function getDashboardSnapshot(branch = STORE_BRANCHES[0]) {
     shiftSummary: getShiftSummary(normalizedBranch),
     generatedAt: nowIso(),
   };
+
+  // Si se solicita "all" (todas las sucursales), incluir inventarios comparativos
+  if (normalizedBranch === ALL_BRANCHES) {
+    snapshot.inventoryComparison = {
+      branches: STORE_BRANCHES.map((branchCode) => ({
+        value: branchCode,
+        label: getBranchLabel(branchCode),
+        products: listProducts(branchCode),
+      })),
+    };
+  }
+
+  return snapshot;
 }
 
 module.exports = {

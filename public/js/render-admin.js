@@ -1,7 +1,3 @@
-// Renderizado del panel de administración
-
-// FIX: faltaba "function renderAdminModal() {" — el cuerpo estaba suelto,
-// causando "Illegal return statement" y que renderAdminModal no estuviera definida.
 function renderAdminModal() {
   if (!refs.adminModal) {
     return;
@@ -122,7 +118,44 @@ function renderAdminModal() {
       ? "Vista expandida. Puede tardar con catalogos grandes."
       : "Vista compacta. Abre inventario solo cuando lo necesites.";
   }
+
+  renderAdminDevPanel();
 } // FIX: llave de cierre de renderAdminModal que faltaba
+
+function renderAdminDevPanel() {
+  if (!refs.adminDevSummary) {
+    return;
+  }
+
+  const snapshotBytes = estimateSerializedBytes(buildPersistedSnapshot());
+  const queueBytes = estimateSerializedBytes(state.pendingQueue);
+  const registerBytes = estimateSerializedBytes(state.register.events);
+  const auditBytes = estimateSerializedBytes(state.admin.auditLogs);
+  const statusText = state.syncingQueue ? "Sincronizando" : state.online ? "En linea" : "Offline";
+
+  refs.adminDevSummary.innerHTML = `
+    <article class="admin-metric-card">
+      <span>Sync offline</span>
+      <strong>${statusText}</strong>
+      <p>${state.pendingQueue.length} pendientes · ${state.register.events.length} eventos caja</p>
+    </article>
+    <article class="admin-metric-card">
+      <span>Cache snapshot</span>
+      <strong>${formatBytes(snapshotBytes)}</strong>
+      <p>Cola ${formatBytes(queueBytes)} · cortes ${formatBytes(registerBytes)}</p>
+    </article>
+    <article class="admin-metric-card">
+      <span>Bitacora admin</span>
+      <strong>${state.admin.auditLogs.length} registros</strong>
+      <p>Carga estimada ${formatBytes(auditBytes)}</p>
+    </article>
+    <article class="admin-metric-card">
+      <span>Vista actual</span>
+      <strong>${escapeHtml(getBranchLabel(getAdminBranch()))}</strong>
+      <p>Productos render ${state.performance.renderedProductCount} · token ${state.admin.token ? "activo" : "sin token"}</p>
+    </article>
+  `;
+}
 
 function renderAdminRecordLists() {
   if (!refs.adminSalesList) {
@@ -187,13 +220,13 @@ function renderAdminRecordLists() {
       ? auditLogs
           .map(
             (entry) => `
-              <article class="admin-record-item">
+              <button class="admin-record-item" data-action="open-audit-log" data-id="${entry.id}" type="button">
                 <div class="admin-record-item-head">
                   <strong>${escapeHtml(entry.action)}</strong>
                   <span class="small-pill">${escapeHtml(entry.entityType)}</span>
                 </div>
                 <p>${escapeHtml(getBranchLabel(entry.branch || "all"))} · ${escapeHtml(entry.actorName || "admin")} · ${escapeHtml(dateTimeFormatter.format(new Date(entry.createdAt)))}</p>
-              </article>
+              </button>
             `,
           )
           .join("")

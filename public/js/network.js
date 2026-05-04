@@ -3,10 +3,10 @@
 async function performJsonRequest(url, options = {}) {
   // Headers siempre al FINAL para que no se sobrescriban
   const response = await fetch(url, {
-    ...options,                                 // method, body, etc.
+    ...options,
     headers: {
       "Content-Type": "application/json",
-      ...(options.headers || {}),               // Authorization del admin (se agrega encima)
+      ...(options.headers || {}),
     },
   });
 
@@ -152,13 +152,13 @@ async function syncRegisterEvents() {
   }
 
   const unsyncedEvents = state.register.events.filter((e) => !e.synced);
-  
+
   for (const event of unsyncedEvents) {
     try {
-      const url = event.eventType === "start" 
-        ? "/api/register/start" 
+      const url = event.eventType === "start"
+        ? "/api/register/start"
         : "/api/register/cut";
-      
+
       const payload = {
         shift: event.shift,
         cashier: event.cashier,

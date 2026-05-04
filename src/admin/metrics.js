@@ -1,9 +1,7 @@
 const os = require("node:os");
 
 function getProcessCpuPercent() {
-  // Esta función necesita acceso al estado global de CPU
-  // Se pasará como dependencia o se manejará en el server.js
-  return 0; // Placeholder - se implementará en server.js
+  return 0;
 }
 
 function getSystemMetrics() {

@@ -1,5 +1,3 @@
-// Funciones de renderizado de UI
-
 function showToast(message, type = "info") {
   if (!refs.toastRegion) {
     return;
@@ -16,6 +14,14 @@ function showToast(message, type = "info") {
     window.setTimeout(() => toast.remove(), 220);
   }, 2600);
 }
+
+let filteredProductsCache = {
+  source: null,
+  category: "",
+  search: "",
+  result: [],
+};
+let productsRenderQueued = false;
 
 function renderCashierSession() {
   const branchLabel = getBranchLabel(getActiveCashierBranch());
@@ -105,13 +111,29 @@ function renderCategoryFilters() {
 
 function getFilteredProducts() {
   const search = refs.searchInput.value.trim().toLowerCase();
+  if (
+    filteredProductsCache.source === state.products
+    && filteredProductsCache.category === state.selectedCategory
+    && filteredProductsCache.search === search
+  ) {
+    return filteredProductsCache.result;
+  }
 
-  return state.products.filter((product) => {
+  const result = state.products.filter((product) => {
     const matchesCategory =
       state.selectedCategory === "all" || product.category === state.selectedCategory;
     const matchesSearch = product.name.toLowerCase().includes(search);
     return matchesCategory && matchesSearch;
   });
+
+  filteredProductsCache = {
+    source: state.products,
+    category: state.selectedCategory,
+    search,
+    result,
+  };
+
+  return result;
 }
 
 function resetVisibleProducts() {
@@ -144,7 +166,13 @@ function requestProductsRender(reset = false) {
     return;
   }
 
+  if (productsRenderQueued) {
+    return;
+  }
+
+  productsRenderQueued = true;
   window.requestAnimationFrame(() => {
+    productsRenderQueued = false;
     renderProducts();
   });
 }
@@ -394,6 +422,22 @@ function renderShiftSummary() {
 }
 
 function renderInventory() {
+  const isComparison = state.admin.branch === "all" && state.admin.inventoryComparison;
+  
+  if (isComparison) {
+    renderInventoryComparison();
+  } else {
+    renderInventorySingle();
+  }
+}
+
+function renderInventorySingle() {
+  const singleWrapper = document.getElementById("inventory-single-table");
+  const comparisonWrapper = document.getElementById("inventory-comparison-wrapper");
+  
+  if (singleWrapper) singleWrapper.style.display = "";
+  if (comparisonWrapper) comparisonWrapper.hidden = true;
+
   refs.inventoryBody.innerHTML = state.products
     .map(
       (product) => `
@@ -441,6 +485,121 @@ function renderInventory() {
       `,
     )
     .join("");
+}
+
+function renderInventoryComparison() {
+  const singleWrapper = document.getElementById("inventory-single-table");
+  const comparisonWrapper = document.getElementById("inventory-comparison-wrapper");
+  
+  if (singleWrapper) singleWrapper.style.display = "none";
+  if (comparisonWrapper) comparisonWrapper.hidden = false;
+
+  const comparison = state.admin.inventoryComparison;
+  if (!comparison || !comparison.branches || comparison.branches.length < 2) {
+    return;
+  }
+
+  const [branch1, branch2] = comparison.branches;
+
+  // Actualizar etiquetas de sucursales
+  const label1 = document.getElementById("comparison-branch-1-label");
+  const label2 = document.getElementById("comparison-branch-2-label");
+  if (label1) label1.textContent = branch1.label;
+  if (label2) label2.textContent = branch2.label;
+
+  // Renderizar tabla 1
+  const body1 = document.getElementById("inventory-body-branch-1");
+  if (body1) {
+    body1.innerHTML = branch1.products
+      .map(
+        (product) => `
+          <tr data-product-id="${product.id}" data-branch="${branch1.value}">
+            <td>
+              <div class="inventory-name">
+                <strong>${escapeHtml(product.name)}</strong>
+                <small>${escapeHtml(product.categoryLabel)} · ${escapeHtml(product.unit)}</small>
+              </div>
+            </td>
+            <td>
+              <input class="inventory-input" data-field="price" type="number" min="0" step="0.01" value="${product.price}" />
+            </td>
+            <td>
+              <input class="inventory-input" data-field="stock" type="number" step="${getProductStep(product)}" value="${product.stock}" />
+            </td>
+            <td>
+              <input class="inventory-input" data-field="minStock" type="number" min="0" step="${getProductStep(product)}" value="${product.minStock}" />
+            </td>
+            <td>
+              <label class="inventory-toggle">
+                <input data-field="active" type="checkbox" ${product.active ? "checked" : ""} />
+                <span>${product.active ? "Activo" : "Inactivo"}</span>
+              </label>
+            </td>
+            <td>
+              <input class="inventory-input" data-field="note" type="text" maxlength="120" placeholder="Nota del ajuste" />
+            </td>
+            <td>
+              <span class="status-chip ${product.status}">
+                ${getStatusLabel(product.status)}
+              </span>
+            </td>
+            <td>
+              <button class="secondary-button" data-action="save-product" type="button">
+                Guardar
+              </button>
+            </td>
+          </tr>
+        `,
+      )
+      .join("");
+  }
+
+  // Renderizar tabla 2
+  const body2 = document.getElementById("inventory-body-branch-2");
+  if (body2) {
+    body2.innerHTML = branch2.products
+      .map(
+        (product) => `
+          <tr data-product-id="${product.id}" data-branch="${branch2.value}">
+            <td>
+              <div class="inventory-name">
+                <strong>${escapeHtml(product.name)}</strong>
+                <small>${escapeHtml(product.categoryLabel)} · ${escapeHtml(product.unit)}</small>
+              </div>
+            </td>
+            <td>
+              <input class="inventory-input" data-field="price" type="number" min="0" step="0.01" value="${product.price}" />
+            </td>
+            <td>
+              <input class="inventory-input" data-field="stock" type="number" step="${getProductStep(product)}" value="${product.stock}" />
+            </td>
+            <td>
+              <input class="inventory-input" data-field="minStock" type="number" min="0" step="${getProductStep(product)}" value="${product.minStock}" />
+            </td>
+            <td>
+              <label class="inventory-toggle">
+                <input data-field="active" type="checkbox" ${product.active ? "checked" : ""} />
+                <span>${product.active ? "Activo" : "Inactivo"}</span>
+              </label>
+            </td>
+            <td>
+              <input class="inventory-input" data-field="note" type="text" maxlength="120" placeholder="Nota del ajuste" />
+            </td>
+            <td>
+              <span class="status-chip ${product.status}">
+                ${getStatusLabel(product.status)}
+              </span>
+            </td>
+            <td>
+              <button class="secondary-button" data-action="save-product" type="button">
+                Guardar
+              </button>
+            </td>
+          </tr>
+        `,
+      )
+      .join("");
+  }
 }
 
 function renderRegisterSummaryPill() {
@@ -655,6 +814,45 @@ function renderDetailViewer() {
         </div>
       </div>
       ${detail.note ? `<p class="sale-notes"><strong>Nota:</strong> ${escapeHtml(detail.note)}</p>` : ""}
+    `;
+    return;
+  }
+
+  if (kind === "audit") {
+    refs.detailViewerTitle.textContent = detail.action || "Bitacora admin";
+    refs.detailViewerMeta.textContent =
+      `${detail.actorName || "admin"} Â· ${getBranchLabel(detail.branch || "all")} Â· ${dateTimeFormatter.format(new Date(detail.createdAt))}`;
+    refs.detailViewerBody.innerHTML = `
+      <div class="detail-stat-grid">
+        <article class="detail-stat-card">
+          <span>Entidad</span>
+          <strong>${escapeHtml(detail.entityType || "Sin tipo")}</strong>
+        </article>
+        <article class="detail-stat-card">
+          <span>ID entidad</span>
+          <strong>${escapeHtml(detail.entityId || "Sin ID")}</strong>
+        </article>
+        <article class="detail-stat-card">
+          <span>Actor</span>
+          <strong>${escapeHtml(detail.actorType || "admin")}</strong>
+        </article>
+        <article class="detail-stat-card">
+          <span>Fecha</span>
+          <strong>${escapeHtml(dateTimeFormatter.format(new Date(detail.createdAt)))}</strong>
+        </article>
+      </div>
+      <div class="detail-lines">
+        <div class="detail-line">
+          <div>
+            <strong>Resumen</strong>
+            <p>${escapeHtml(detail.action || "Sin accion")} Â· ${escapeHtml(detail.entityType || "sin entidad")} Â· ${escapeHtml(getBranchLabel(detail.branch || "all"))}</p>
+          </div>
+        </div>
+      </div>
+      <div class="detail-json-block">
+        <strong>Payload</strong>
+        <pre class="detail-json">${escapeHtml(JSON.stringify(detail.payload || {}, null, 2))}</pre>
+      </div>
     `;
   }
 }

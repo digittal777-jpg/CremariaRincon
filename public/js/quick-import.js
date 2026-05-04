@@ -1,5 +1,3 @@
-// Funciones de Quick Import (captura rápida de inventario)
-
 function getQuickImportItems() {
   return Array.isArray(state.quickImport.items) ? state.quickImport.items : [];
 }
@@ -76,7 +74,7 @@ function setQuickImportIndex(nextIndex) {
 }
 
 function setQuickImportMode(mode) {
-  if (!["initial", "supplier"].includes(mode)) {
+  if (!["receive", "return"].includes(mode)) {
     return;
   }
 
@@ -133,12 +131,14 @@ function getQuickImportResultValue() {
     return roundStock(item.recordedStock);
   }
 
-  if (state.quickImport.mode === "supplier") {
-    return roundStock(
-      item.recordedStock + (state.quickImport.direction === "out" ? -parsedValue : parsedValue),
-    );
+  // En ambos modos, interpretamos el valor capturado:
+  // - "receive": suma la cantidad al stock actual
+  // - "return": resta la cantidad del stock actual
+  if (state.quickImport.mode === "return") {
+    return roundStock(item.recordedStock - parsedValue);
   }
 
+  // "receive" - sumar entrada de inventario
   return roundStock(item.recordedStock + parsedValue);
 }
 
@@ -195,32 +195,29 @@ function renderQuickImportModal() {
   const items = getQuickImportItems();
   const item = getCurrentQuickImportItem();
   const hasItems = items.length > 0 && item;
-  const isSupplierMode = state.quickImport.mode === "supplier";
-  const isSupplierOut = isSupplierMode && state.quickImport.direction === "out";
+  const isReturnMode = state.quickImport.mode === "return";
   const progress = hasItems ? ((state.quickImport.index + 1) / items.length) * 100 : 0;
 
+  // Actualizar botones de modo
   refs.quickImportModeBar?.querySelectorAll("[data-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.mode === state.quickImport.mode);
   });
 
-  refs.quickImportDescription.textContent = isSupplierMode
-    ? isSupplierOut
-      ? "Descuenta rapido lo que el proveedor se lleva y avanza con Enter."
-      : "Suma lo que entrega el proveedor sobre la existencia actual y avanza con Enter."
-    : "Captura inventario inicial para sumarlo sobre lo ya descontado por ventas del dia.";
-  refs.quickImportValueLabel.textContent = isSupplierMode
-    ? isSupplierOut
-      ? "Cantidad que se lleva"
-      : "Cantidad recibida"
-    : "Inventario inicial a sumar";
-  refs.quickImportHelper.textContent = isSupplierMode
-    ? isSupplierOut
-      ? "Presiona Enter para descontar la salida del proveedor y pasar al siguiente producto."
-      : "Presiona Enter para sumar la entrada del proveedor y pasar al siguiente producto."
-    : "Presiona Enter para sumar el inventario inicial y conservar lo ya vendido hoy.";
-  refs.quickImportDirectionField.hidden = !isSupplierMode;
-  refs.quickImportProviderField.hidden = !isSupplierMode;
-  refs.quickImportDirection.value = state.quickImport.direction;
+  // Textos dinámicos según modo
+  refs.quickImportDescription.textContent = isReturnMode
+    ? "Captura la cantidad que el proveedor retira. Se descuenta del inventario actual."
+    : "Captura la cantidad de entrada. Se suma al inventario actual (compra, corrección, etc).";
+  
+  refs.quickImportValueLabel.textContent = isReturnMode
+    ? "Cantidad a descontar"
+    : "Cantidad a agregar";
+  
+  refs.quickImportHelper.textContent = isReturnMode
+    ? "Presiona Enter para descontar la salida y pasar al siguiente producto."
+    : "Presiona Enter para sumar la entrada y pasar al siguiente producto.";
+  
+  // Mostrar/ocultar campos según modo
+  refs.quickImportProviderField.hidden = false; // Siempre visible para ambos modos
   refs.quickImportSupplier.value = state.quickImport.supplierName;
   refs.quickImportNote.value = state.quickImport.note;
 
@@ -263,12 +260,10 @@ function renderQuickImportModal() {
   refs.quickImportSoldToday.textContent = formatQuickImportValue(item.soldToday, item.unit);
 
   refs.quickImportValue.step = String(getProductStep(item));
-  refs.quickImportValue.min = isSupplierMode ? String(getProductMin(item)) : "0";
-  refs.quickImportValue.placeholder = isSupplierMode
-    ? isSupplierOut
-      ? "Captura lo que se lleva"
-      : "Captura lo recibido"
-    : "Captura el inventario inicial";
+  refs.quickImportValue.min = "0";
+  refs.quickImportValue.placeholder = isReturnMode
+    ? "Captura cantidad a descontar"
+    : "Captura cantidad a agregar";
   refs.quickImportValue.value = state.quickImport.currentValue;
 
   refs.quickImportPrevButton.disabled = state.quickImport.index === 0 || state.quickImport.saving;
@@ -320,10 +315,7 @@ async function saveQuickImportEntry() {
     return;
   }
 
-  const isSupplierMode = state.quickImport.mode === "supplier";
-  const isSupplierOut = isSupplierMode && state.quickImport.direction === "out";
   const numericValue = Number(rawValue);
-
   if (!Number.isFinite(numericValue)) {
     showToast("El valor capturado no es valido.", "error");
     focusQuickImportValue();
@@ -331,20 +323,17 @@ async function saveQuickImportEntry() {
   }
 
   const parsedValue = roundStock(numericValue);
+  const isReturnMode = state.quickImport.mode === "return";
 
   // VALIDACIONES
-  if (isSupplierMode && parsedValue <= 0) {
-    showToast("La cantidad del proveedor debe ser mayor a cero.", "error");
+  if (parsedValue <= 0) {
+    showToast("La cantidad debe ser mayor a cero.", "error");
     focusQuickImportValue();
     return;
   }
-  if (isSupplierOut && parsedValue > roundStock(item.recordedStock || 0)) {
-    showToast("No puedes descontar más de lo que existe.", "error");
-    focusQuickImportValue();
-    return;
-  }
-  if (!isSupplierMode && parsedValue < 0) {
-    showToast("La existencia no puede ser negativa.", "error");
+
+  if (isReturnMode && parsedValue > roundStock(item.recordedStock || 0)) {
+    showToast("No puedes descontar mas de lo que existe en inventario.", "error");
     focusQuickImportValue();
     return;
   }
@@ -357,18 +346,12 @@ async function saveQuickImportEntry() {
   const payload = {
     productId: safeItem.id,
     productName: safeItem.name,
-    mode: state.quickImport.mode,
+    mode: state.quickImport.mode, // "receive" o "return"
+    quantity: parsedValue,
     branch: getAdminActionBranch(),
     note: state.quickImport.note.trim(),
     supplierName: state.quickImport.supplierName.trim(),
   };
-
-  if (isSupplierMode) {
-    payload.quantity = parsedValue;
-    payload.direction = state.quickImport.direction;
-  } else {
-    payload.stock = parsedValue;
-  }
 
   state.quickImport.saving = true;
   renderQuickImportModal();
@@ -395,7 +378,7 @@ async function saveQuickImportEntry() {
 
     if (state.quickImport.index >= getQuickImportItems().length - 1) {
       closeQuickImportModal();
-      showToast("Captura rapida completada.", "success");
+      showToast("Captura completada.", "success");
       return;
     }
 

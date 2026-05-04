@@ -1,5 +1,3 @@
-// Lógica de acciones y eventos de la aplicación
-
 function requireCashierSession(message = "Inicia sesion de cajero para continuar.") {
   if (state.cashier.authenticated) {
     return true;
@@ -8,6 +6,60 @@ function requireCashierSession(message = "Inicia sesion de cajero para continuar
   showToast(message, "info");
   openCashierAuthModal();
   return false;
+}
+
+let adminWorkspaceRefreshPromise = null;
+let pendingAdminWorkspaceOptions = null;
+
+function normalizeAdminWorkspaceOptions(options = {}) {
+  return {
+    branch: options.branch || getAdminBranch(),
+    snapshot: options.snapshot !== false,
+    editorData: options.editorData !== false,
+    auditLogs: options.auditLogs !== false,
+    cashiers: options.cashiers !== false,
+    config: options.config !== false,
+  };
+}
+
+function mergeAdminWorkspaceOptions(baseOptions, nextOptions) {
+  if (!baseOptions) {
+    return normalizeAdminWorkspaceOptions(nextOptions);
+  }
+
+  const base = normalizeAdminWorkspaceOptions(baseOptions);
+  const next = normalizeAdminWorkspaceOptions(nextOptions);
+  return {
+    branch: next.branch || base.branch,
+    snapshot: base.snapshot || next.snapshot,
+    editorData: base.editorData || next.editorData,
+    auditLogs: base.auditLogs || next.auditLogs,
+    cashiers: base.cashiers || next.cashiers,
+    config: base.config || next.config,
+  };
+}
+
+function getAdminWorkspaceTasks(options = {}) {
+  const normalized = normalizeAdminWorkspaceOptions(options);
+  const tasks = [];
+
+  if (normalized.snapshot) {
+    tasks.push(loadAdminSnapshot(normalized.branch));
+  }
+  if (normalized.editorData) {
+    tasks.push(loadAdminEditorData(normalized.branch));
+  }
+  if (normalized.auditLogs) {
+    tasks.push(loadAdminAuditLogs(normalized.branch));
+  }
+  if (normalized.cashiers) {
+    tasks.push(loadAdminCashiers(normalized.branch));
+  }
+  if (normalized.config) {
+    tasks.push(loadAdminConfig());
+  }
+
+  return tasks;
 }
 
 function applySnapshot(snapshot, options = {}) {
@@ -43,8 +95,10 @@ function applySnapshot(snapshot, options = {}) {
   state.performance.snapshotRenderMs = roundMetric(
     (typeof performance !== "undefined" ? performance.now() : Date.now()) - renderStartedAt,
   );
-  renderAdminModal();
-  renderAdminRecordLists();
+  if (refs.adminModal?.classList.contains("open")) {
+    renderAdminModal();
+    renderAdminRecordLists();
+  }
 }
 
 function rebuildInventoryDerivedState() {
@@ -212,6 +266,7 @@ async function refreshCurrentSnapshot(branch = getActiveCashierBranch()) {
 
 function applyAdminSnapshot(snapshot) {
   state.admin.snapshot = snapshot || null;
+  state.admin.inventoryComparison = snapshot?.inventoryComparison || null;
   if (snapshot?.store?.currentBranch) {
     state.admin.branch = snapshot.store.currentBranch;
   }
@@ -282,17 +337,40 @@ async function loadAdminConfig() {
   }
 }
 
-async function refreshAdminWorkspace() {
-  await Promise.allSettled([
-    loadAdminSnapshot(getAdminBranch()),
-    loadAdminEditorData(getAdminBranch()),
-    loadAdminAuditLogs(getAdminBranch()),
-    loadAdminCashiers(getAdminBranch()),
-    loadAdminConfig(),
-  ]);
+async function refreshAdminWorkspace(options = {}) {
+  const normalized = normalizeAdminWorkspaceOptions(options);
+  if (adminWorkspaceRefreshPromise) {
+    pendingAdminWorkspaceOptions = mergeAdminWorkspaceOptions(
+      pendingAdminWorkspaceOptions,
+      normalized,
+    );
+    await adminWorkspaceRefreshPromise;
+    if (pendingAdminWorkspaceOptions) {
+      return refreshAdminWorkspace(pendingAdminWorkspaceOptions);
+    }
+    return;
+  }
+
+  adminWorkspaceRefreshPromise = Promise.allSettled(
+    getAdminWorkspaceTasks(normalized),
+  ).finally(() => {
+    adminWorkspaceRefreshPromise = null;
+  });
+
+  await adminWorkspaceRefreshPromise;
+
+  if (pendingAdminWorkspaceOptions) {
+    const nextOptions = pendingAdminWorkspaceOptions;
+    pendingAdminWorkspaceOptions = null;
+    await refreshAdminWorkspace(nextOptions);
+  }
 }
 
 async function loadAdminMetrics() {
+  if (typeof document !== "undefined" && document.hidden) {
+    return;
+  }
+
   state.admin.loading = true;
   renderAdminModal();
 
@@ -318,7 +396,7 @@ function startAdminMetricsPolling() {
   void loadAdminMetrics();
   state.admin.pollTimerId = window.setInterval(() => {
     void loadAdminMetrics();
-  }, 10000);
+  }, 15000);
 }
 
 function toggleAdminInventoryPanel() {
@@ -452,7 +530,7 @@ async function downloadDatabase() {
     const objectUrl = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = objectUrl;
-    anchor.download = "cremeria-rincon.sqlite";
+    anchor.download = "cremaria-rincon.sqlite";
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -460,6 +538,266 @@ async function downloadDatabase() {
   } catch (error) {
     showToast(error.message, "error");
   }
+}
+
+async function installDatabase(event) {
+  const file = event.target.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  // Validar extensión
+  if (!file.name.endsWith(".sqlite")) {
+    showToast("El archivo debe tener extensión .sqlite", "error");
+    refs.installDbInput.value = "";
+    return;
+  }
+
+  // Validar tamaño (máximo 100MB para evitar problemas)
+  const maxSizeBytes = 100 * 1024 * 1024;
+  if (file.size > maxSizeBytes) {
+    showToast("El archivo es muy grande (máximo 100MB)", "error");
+    refs.installDbInput.value = "";
+    return;
+  }
+
+  try {
+    showToast("Instalando base de datos...", "info");
+
+    const formData = new FormData();
+    formData.append("database", file);
+
+    const response = await fetch("/api/admin/install-db", {
+      method: "POST",
+      headers: getAdminAuthHeaders(),
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(
+        data.message || "No fue posible instalar la base de datos.",
+      );
+    }
+
+    showToast("Base de datos instalada correctamente. Recargando...", "success");
+    refs.installDbInput.value = "";
+
+    // Esperar un momento y recargar la página
+    setTimeout(() => {
+      window.location.reload();
+    }, 1500);
+  } catch (error) {
+    showToast(error.message, "error");
+    refs.installDbInput.value = "";
+  }
+}
+
+async function installDatabaseFromPc(event) {
+  const file = event.target.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  const lowerName = file.name.toLowerCase();
+  const allowedExtensions = [".sqlite", ".sqlite3", ".db"];
+  if (!allowedExtensions.some((extension) => lowerName.endsWith(extension))) {
+    showToast("El archivo debe ser SQLite (.sqlite, .sqlite3 o .db)", "error");
+    refs.installDbInput.value = "";
+    return;
+  }
+
+  const maxSizeBytes = 100 * 1024 * 1024;
+  if (file.size > maxSizeBytes) {
+    showToast("El archivo es muy grande (maximo 100MB)", "error");
+    refs.installDbInput.value = "";
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `Se reemplazara la base actual con "${file.name}". Deseas continuar?`,
+  );
+  if (!confirmed) {
+    refs.installDbInput.value = "";
+    return;
+  }
+
+  const previousLabel = refs.installDbButton.textContent;
+  refs.installDbButton.disabled = true;
+  refs.installDbButton.textContent = "Instalando...";
+
+  try {
+    showToast(`Instalando ${file.name}...`, "info");
+
+    const formData = new FormData();
+    formData.append("database", file);
+
+    const response = await fetch("/api/admin/install-db", {
+      method: "POST",
+      headers: getAdminAuthHeaders(),
+      body: formData,
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.message || "No fue posible instalar la base de datos.");
+    }
+
+    const successMessage = data.backupPath
+      ? `Base instalada correctamente. Respaldo guardado en ${data.backupPath}.`
+      : "Base instalada correctamente.";
+    showToast(successMessage, "success");
+    refs.installDbInput.value = "";
+
+    setTimeout(() => {
+      window.location.reload();
+    }, 1200);
+  } catch (error) {
+    showToast(error.message, "error");
+    refs.installDbInput.value = "";
+  } finally {
+    refs.installDbButton.disabled = false;
+    refs.installDbButton.textContent = previousLabel;
+  }
+}
+
+async function installExportWorkbookFromPc(event) {
+  const file = event.target.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  const lowerName = file.name.toLowerCase();
+  if (!lowerName.endsWith(".xlsx")) {
+    showToast("El archivo debe ser un Excel .xlsx exportado por el sistema.", "error");
+    refs.installWorkbookInput.value = "";
+    return;
+  }
+
+  const maxSizeBytes = 100 * 1024 * 1024;
+  if (file.size > maxSizeBytes) {
+    showToast("El archivo es muy grande (maximo 100MB).", "error");
+    refs.installWorkbookInput.value = "";
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `Se reemplazaran los datos operativos de las sucursales incluidas en "${file.name}". Deseas continuar?`,
+  );
+  if (!confirmed) {
+    refs.installWorkbookInput.value = "";
+    return;
+  }
+
+  const previousLabel = refs.installWorkbookButton.textContent;
+  refs.installWorkbookButton.disabled = true;
+  refs.installWorkbookButton.textContent = "Instalando...";
+
+  try {
+    showToast(`Leyendo ${file.name}...`, "info");
+
+    const formData = new FormData();
+    formData.append("workbook", file);
+
+    const response = await fetch("/api/admin/install-export-workbook", {
+      method: "POST",
+      headers: getAdminAuthHeaders(),
+      body: formData,
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.message || "No fue posible instalar el Excel exportado.");
+    }
+
+    const branchText = Array.isArray(data.branches) && data.branches.length > 0
+      ? data.branches.map((branch) => getBranchLabel(branch)).join(", ")
+      : "las sucursales incluidas";
+    const successMessage = data.backupPath
+      ? `Excel instalado para ${branchText}. Respaldo guardado en ${data.backupPath}.`
+      : `Excel instalado para ${branchText}.`;
+    showToast(successMessage, "success");
+    refs.installWorkbookInput.value = "";
+
+    setTimeout(() => {
+      window.location.reload();
+    }, 1200);
+  } catch (error) {
+    showToast(error.message, "error");
+    refs.installWorkbookInput.value = "";
+  } finally {
+    refs.installWorkbookButton.disabled = false;
+    refs.installWorkbookButton.textContent = previousLabel;
+  }
+}
+
+async function openAdminAuditLogDetail(auditLogId) {
+  const entry = state.admin.auditLogs.find((item) => Number(item.id) === Number(auditLogId));
+  if (!entry) {
+    showToast("No pude encontrar esa entrada de bitacora.", "error");
+    return;
+  }
+
+  state.detailViewer.loading = false;
+  state.detailViewer.kind = "audit";
+  state.detailViewer.detail = entry;
+  setModalOpen(refs.detailViewerModal, true);
+  renderDetailViewer();
+}
+
+async function refreshAdminDevPanelData() {
+  try {
+    await Promise.all([
+      refreshCurrentSnapshot(),
+      refreshAdminWorkspace(),
+      loadRegisterSummary({ silent: true }),
+    ]);
+    showToast("Panel admin recargado.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function retryOfflineSyncFromDev() {
+  try {
+    await syncAllOfflineData();
+    showToast("Se relanzo la sincronizacion offline.", "success");
+  } catch (error) {
+    showToast(error.message || "No fue posible relanzar la sincronizacion.", "error");
+  }
+}
+
+function downloadDebugStateFromDev() {
+  const debugPayload = {
+    generatedAt: new Date().toISOString(),
+    branch: getAdminBranch(),
+    online: state.online,
+    syncingQueue: state.syncingQueue,
+    pendingQueue: state.pendingQueue,
+    registerEvents: state.register.events,
+    performance: state.performance,
+    summary: state.summary,
+    admin: {
+      branch: state.admin.branch,
+      authenticated: state.admin.authenticated,
+      auditLogs: state.admin.auditLogs,
+      editorData: state.admin.editorData,
+      metrics: state.admin.metrics,
+    },
+    snapshot: buildPersistedSnapshot(),
+  };
+
+  const blob = new Blob([JSON.stringify(debugPayload, null, 2)], {
+    type: "application/json",
+  });
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = `cremeria-rincon-debug-${toDateInputValue()}.json`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
 }
 
 async function openAdminEditor(kind, id) {
@@ -694,7 +1032,16 @@ async function removeAdminProduct(row) {
 function exportWorkbook() {
   const branch = getAdminBranch();
   const scope = "store-day";
-  fetch(`/api/export-workbook?branch=${encodeURIComponent(branch)}&scope=${encodeURIComponent(scope)}`, {
+  const selectedDate = refs.exportDateInput?.value || toDateInputValue();
+  const minDate = refs.exportDateInput?.min || shiftDateInputValue(toDateInputValue(), -14);
+  const maxDate = refs.exportDateInput?.max || toDateInputValue();
+
+  if (selectedDate < minDate || selectedDate > maxDate) {
+    showToast(`Solo puedes exportar fechas entre ${minDate} y ${maxDate}.`, "error");
+    return;
+  }
+
+  fetch(`/api/export-workbook?branch=${encodeURIComponent(branch)}&scope=${encodeURIComponent(scope)}&baseDate=${encodeURIComponent(selectedDate)}`, {
     headers: getAdminAuthHeaders(),
   })
     .then(async (response) => {
@@ -709,7 +1056,7 @@ function exportWorkbook() {
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = objectUrl;
-      anchor.download = `cremeria-rincon-export-${branch}-${scope}.xlsx`;
+      anchor.download = `cremeria-rincon-export-${branch}-${selectedDate}.xlsx`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -720,14 +1067,14 @@ function exportWorkbook() {
     });
 }
 
-async function saveInventoryRow(row) {
+async function saveInventoryRow(row, branchOverride) {
   const productId = Number(row.dataset.productId);
   const payload = {
     price: roundMoney(row.querySelector('[data-field="price"]').value),
     stock: roundStock(row.querySelector('[data-field="stock"]').value),
     minStock: roundStock(row.querySelector('[data-field="minStock"]').value),
     active: row.querySelector('[data-field="active"]').checked,
-    branch: getAdminActionBranch(),
+    branch: branchOverride || getAdminActionBranch(),
     note: row.querySelector('[data-field="note"]').value.trim(),
   };
 

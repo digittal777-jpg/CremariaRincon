@@ -1,5 +1,3 @@
-// Funciones de ventas, caja y registro
-
 function openItemModal(product) {
   if (!requireCashierSession("Inicia sesion de cajero antes de agregar productos.")) {
     return;

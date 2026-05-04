@@ -9,6 +9,7 @@ Punto de venta profesional hecho con Node.js para registrar ventas, monitorear i
 - Panel en tiempo real con ventas recientes, resumen del dia y ventas por hora.
 - Base de datos local en SQLite.
 - Importacion inicial del catalogo desde tu archivo de Excel.
+- Restauracion operativa desde el Excel exportado por el propio POS.
 
 ## Requisitos
 
@@ -74,3 +75,20 @@ npm.cmd run import:excel
 - La base de datos se guarda en `data/cremaria-rincon.sqlite`.
 - La primera vez que arranca, el sistema importa el catalogo automaticamente si encuentra el Excel en `POS_WORKBOOK_PATH`, en la raiz del proyecto o en `Downloads`.
 - Los productos arrancan como `Pendiente` hasta que captures inventario o registres movimiento en ellos.
+
+## Restaurar desde Excel exportado
+
+Desde el panel admin puedes usar el boton `Instalar Excel` para cargar un `.xlsx`
+generado por `Exportar Excel`.
+
+Tambien puedes hacerlo desde terminal:
+
+```powershell
+npm.cmd run install:excel-export -- ".\mi-exportacion.xlsx"
+```
+
+Notas:
+
+- Reemplaza los datos operativos de las sucursales incluidas en el Excel.
+- Conserva credenciales, configuraciones y bitacora admin porque esas no viajan en la exportacion.
+- La mejor restauracion completa sigue siendo `Instalar base local` cuando tengas el archivo SQLite.

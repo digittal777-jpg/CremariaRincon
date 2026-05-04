@@ -1,10 +1,57 @@
 const fs = require("node:fs");
+const path = require("node:path");
 
 const Database = require("better-sqlite3");
 
-const { DATA_DIR, DB_PATH } = require("./config");
+const { DATA_DIR, DB_PATH, ENABLE_DB_INSTALL_BACKUP } = require("./config");
 
 let databaseInstance;
+const SQLITE_MAGIC_HEADER = Buffer.from("SQLite format 3\u0000", "utf8");
+
+function openDatabaseConnection() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const db = new Database(DB_PATH);
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+  db.pragma("synchronous = NORMAL");
+  initializeSchema(db);
+  return db;
+}
+
+function ensureDatabaseConnection() {
+  if (!databaseInstance) {
+    databaseInstance = openDatabaseConnection();
+  }
+
+  return databaseInstance;
+}
+
+const databaseFacade = new Proxy(
+  {},
+  {
+    get(_target, property) {
+      const currentDb = ensureDatabaseConnection();
+      const value = currentDb[property];
+      return typeof value === "function" ? value.bind(currentDb) : value;
+    },
+    set(_target, property, value) {
+      ensureDatabaseConnection()[property] = value;
+      return true;
+    },
+    has(_target, property) {
+      return property in ensureDatabaseConnection();
+    },
+    ownKeys() {
+      return Reflect.ownKeys(ensureDatabaseConnection());
+    },
+    getOwnPropertyDescriptor(_target, property) {
+      const descriptor = Object.getOwnPropertyDescriptor(ensureDatabaseConnection(), property);
+      return descriptor
+        ? { ...descriptor, configurable: true }
+        : undefined;
+    },
+  },
+);
 
 function initializeSchema(db) {
   db.exec(`
@@ -127,36 +174,27 @@ function initializeSchema(db) {
     db.exec("ALTER TABLE products ADD COLUMN stock_initialized INTEGER NOT NULL DEFAULT 0");
   }
 
-  // Agregar branch a products para inventario por sucursal
   const productBranchColumn = productColumns.find((c) => c.name === "branch");
   if (!productBranchColumn) {
     db.exec("ALTER TABLE products ADD COLUMN branch TEXT NOT NULL DEFAULT 'carrizal'");
-    // Migrar productos existentes a la sucursal por defecto
     db.exec("UPDATE products SET branch = 'carrizal' WHERE branch IS NULL OR branch = ''");
   }
 
-  // Agregar índice único para (name, branch) si no existe
   try {
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_name_branch ON products(name, branch)");
   } catch (e) {
-    // El índice ya existe o hay duplicados, continuar
   }
 
-  // Migrar tabla cashiers - asegurar que tiene branch
   const cashiersColumns = db.prepare("PRAGMA table_info(cashiers)").all();
   const cashiersBranchColumn = cashiersColumns.find((c) => c.name === "branch");
   if (!cashiersBranchColumn) {
-    // Primero agregar como nullable
     db.exec("ALTER TABLE cashiers ADD COLUMN branch TEXT DEFAULT 'carrizal'");
-    // Luego actualizar filas existentes
     db.exec("UPDATE cashiers SET branch = 'carrizal' WHERE branch IS NULL OR branch = ''");
   }
 
-  // Asegurar índice único para cashiers (name, branch)
   try {
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_cashiers_name_branch ON cashiers(name, branch)");
   } catch (e) {
-    // El índice ya existe o hay duplicados, continuar
   }
 
   const salesColumns = db.prepare("PRAGMA table_info(sales)").all();
@@ -186,16 +224,116 @@ function initializeSchema(db) {
 }
 
 function getDb() {
+  return databaseFacade;
+}
+
+function closeDatabaseConnection() {
   if (!databaseInstance) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    databaseInstance = new Database(DB_PATH);
-    databaseInstance.pragma("journal_mode = WAL");
-    databaseInstance.pragma("foreign_keys = ON");
-    databaseInstance.pragma("synchronous = NORMAL");
-    initializeSchema(databaseInstance);
+    return;
   }
 
-  return databaseInstance;
+  try {
+    databaseInstance.pragma("wal_checkpoint(TRUNCATE)");
+  } catch (_error) {
+    // Si el checkpoint falla, igual intentamos cerrar para no bloquear el reemplazo del archivo.
+  }
+
+  databaseInstance.close();
+  databaseInstance = undefined;
+}
+
+function reloadDatabaseConnection() {
+  closeDatabaseConnection();
+  return ensureDatabaseConnection();
+}
+
+function cleanupSqliteSidecars(basePath = DB_PATH) {
+  for (const suffix of ["-wal", "-shm"]) {
+    const sidecarPath = `${basePath}${suffix}`;
+    if (fs.existsSync(sidecarPath)) {
+      fs.unlinkSync(sidecarPath);
+    }
+  }
+}
+
+function validateSqliteBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < SQLITE_MAGIC_HEADER.length) {
+    throw new Error("El archivo esta vacio o incompleto.");
+  }
+
+  if (!buffer.subarray(0, SQLITE_MAGIC_HEADER.length).equals(SQLITE_MAGIC_HEADER)) {
+    throw new Error("El archivo no es una base de datos SQLite valida.");
+  }
+}
+
+function verifyReadableDatabase(databasePath) {
+  const tempDb = new Database(databasePath, { fileMustExist: true });
+  try {
+    tempDb.pragma("quick_check");
+    tempDb.prepare("SELECT name FROM sqlite_master LIMIT 1").get();
+  } finally {
+    tempDb.close();
+  }
+}
+
+async function installDatabaseFromBuffer(buffer) {
+  validateSqliteBuffer(buffer);
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+
+  const stamp = `${Date.now()}-${process.pid}`;
+  const tempPath = path.join(DATA_DIR, `incoming-db-${stamp}.sqlite`);
+  let backupPath = null;
+  let connectionClosed = false;
+
+  try {
+    fs.writeFileSync(tempPath, buffer);
+    verifyReadableDatabase(tempPath);
+
+    if (ENABLE_DB_INSTALL_BACKUP && fs.existsSync(DB_PATH)) {
+      backupPath = path.join(DATA_DIR, `cremaria-rincon.backup-${stamp}.sqlite`);
+      await createDatabaseBackup(backupPath);
+    }
+
+    closeDatabaseConnection();
+    connectionClosed = true;
+    cleanupSqliteSidecars();
+    fs.writeFileSync(DB_PATH, buffer);
+    reloadDatabaseConnection();
+
+    return {
+      backupPath,
+      installedAt: nowIso(),
+    };
+  } catch (error) {
+    if (backupPath && fs.existsSync(backupPath)) {
+      try {
+        cleanupSqliteSidecars();
+        fs.copyFileSync(backupPath, DB_PATH);
+      } catch (_restoreError) {
+        // Conservamos el error original; si la restauración falla, la siguiente recarga lo expondrá.
+      }
+    }
+
+    if (connectionClosed) {
+      try {
+        reloadDatabaseConnection();
+      } catch (_reloadError) {
+        // Si también falla la recarga, dejamos el error original para que el caller lo reporte.
+      }
+    }
+
+    throw error;
+  } finally {
+    if (fs.existsSync(tempPath)) {
+      fs.unlinkSync(tempPath);
+    }
+  }
+}
+
+async function createDatabaseBackup(targetPath) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  await ensureDatabaseConnection().backup(targetPath);
+  return targetPath;
 }
 
 function nowIso() {
@@ -229,7 +367,11 @@ function getTodayBounds(baseDate = new Date()) {
 }
 
 module.exports = {
+  closeDatabaseConnection,
+  createDatabaseBackup,
   getDb,
+  installDatabaseFromBuffer,
   nowIso,
+  reloadDatabaseConnection,
   getTodayBounds,
 };

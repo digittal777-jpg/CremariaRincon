@@ -1,5 +1,3 @@
-// Punto de entrada principal - Inicialización de la aplicación
-
 function updateClock() {
   const now = new Date();
   refs.liveDate.textContent = dateFormatter.format(now);
@@ -17,7 +15,6 @@ function registerServiceWorker() {
 }
 
 async function bootstrap() {
-  // Referencias a elementos del DOM
   refs.summaryCards = $("summary-cards");
   refs.productsGrid = $("products-grid");
   refs.categoryFilters = $("category-filters");
@@ -47,8 +44,13 @@ async function bootstrap() {
   refs.registerSummaryPill = $("register-summary-pill");
   refs.openQuickImportButton = $("open-quick-import-button");
   refs.refreshCatalogButton = $("refresh-catalog-button");
+  refs.exportDateInput = $("export-date-input");
   refs.exportWorkbookButton = $("export-workbook-button");
   refs.downloadDbButton = $("download-db-button");
+  refs.installDbButton = $("install-db-button");
+  refs.installDbInput = $("install-db-input");
+  refs.installWorkbookButton = $("install-workbook-button");
+  refs.installWorkbookInput = $("install-workbook-input");
   refs.openPaymentButton = $("open-payment-button");
   refs.clearCartButton = $("clear-cart-button");
   refs.itemModal = $("item-modal");
@@ -78,8 +80,6 @@ async function bootstrap() {
   refs.quickImportStockBefore = $("quick-import-stock-before");
   refs.quickImportSoldToday = $("quick-import-sold-today");
   refs.quickImportStockResult = $("quick-import-stock-result");
-  refs.quickImportDirectionField = $("quick-import-direction-field");
-  refs.quickImportDirection = $("quick-import-direction");
   refs.quickImportProviderField = $("quick-import-provider-field");
   refs.quickImportSupplier = $("quick-import-supplier");
   refs.quickImportValueLabel = $("quick-import-value-label");
@@ -133,7 +133,12 @@ async function bootstrap() {
   refs.adminRegisterEventsList = $("admin-register-events-list");
   refs.adminInventoryMovementsList = $("admin-inventory-movements-list");
   refs.adminAuditLogList = $("admin-audit-log-list");
+  refs.adminDevSummary = $("admin-dev-summary");
+  refs.devRefreshAdminButton = $("dev-refresh-admin-button");
+  refs.devSyncOfflineButton = $("dev-sync-offline-button");
+  refs.devDownloadStateButton = $("dev-download-state-button");
   refs.adminInventoryWrap = $("admin-inventory-wrap");
+  refs.inventoryBodyWrapper = $("admin-inventory-wrap");
   refs.adminInventoryStatus = $("admin-inventory-status");
   refs.toggleAdminInventoryButton = $("toggle-admin-inventory-button");
   refs.adminNewProductName = $("admin-new-product-name");
@@ -175,6 +180,13 @@ async function bootstrap() {
   refs.cashierAuthPassword = $("cashier-auth-password");
   refs.loginCashierButton = $("login-cashier-button");
   refs.closeCashierAuthModal = $("close-cashier-auth-modal");
+
+  if (refs.exportDateInput) {
+    const todayValue = toDateInputValue();
+    refs.exportDateInput.max = todayValue;
+    refs.exportDateInput.min = shiftDateInputValue(todayValue, -14);
+    refs.exportDateInput.value = todayValue;
+  }
 
   // Restaurar estado persistido
   await restorePreferences();
@@ -253,6 +265,10 @@ async function bootstrap() {
   refs.refreshCatalogButton.addEventListener("click", reimportCatalog);
   refs.exportWorkbookButton.addEventListener("click", exportWorkbook);
   refs.downloadDbButton.addEventListener("click", downloadDatabase);
+  refs.installDbButton.addEventListener("click", () => refs.installDbInput.click());
+  refs.installDbInput.addEventListener("change", installDatabaseFromPc);
+  refs.installWorkbookButton.addEventListener("click", () => refs.installWorkbookInput.click());
+  refs.installWorkbookInput.addEventListener("change", installExportWorkbookFromPc);
   refs.toggleAdminInventoryButton.addEventListener("click", toggleAdminInventoryPanel);
   refs.saveAdminProductButton.addEventListener("click", createAdminProduct);
 
@@ -311,11 +327,6 @@ async function bootstrap() {
   refs.quickImportPrevButton.addEventListener("click", goToPreviousQuickImportItem);
   refs.quickImportSkipButton.addEventListener("click", skipQuickImportItem);
   refs.quickImportSaveButton.addEventListener("click", saveQuickImportEntry);
-  refs.quickImportDirection.addEventListener("change", () => {
-    state.quickImport.direction = refs.quickImportDirection.value;
-    updateQuickImportResult();
-    renderQuickImportModal();
-  });
   refs.quickImportModeBar.addEventListener("click", (event) => {
     const button = event.target.closest("[data-mode]");
     if (!button) {
@@ -562,12 +573,23 @@ async function bootstrap() {
     }
   });
 
+  refs.adminAuditLogList.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="open-audit-log"]');
+    if (!button) {
+      return;
+    }
+    void openAdminAuditLogDetail(button.dataset.id);
+  });
+
   // Cerrar modales con botones
   $("close-detail-viewer-modal").addEventListener("click", closeDetailViewer);
   refs.closeCashierAuthModal.addEventListener("click", closeCashierAuthModal);
   refs.loginCashierButton.addEventListener("click", loginCashier);
   refs.saveAdminCashierButton.addEventListener("click", submitAdminCashier);
   refs.saveAdminConfigButton.addEventListener("click", submitAdminConfig);
+  refs.devRefreshAdminButton?.addEventListener("click", refreshAdminDevPanelData);
+  refs.devSyncOfflineButton?.addEventListener("click", retryOfflineSyncFromDev);
+  refs.devDownloadStateButton?.addEventListener("click", downloadDebugStateFromDev);
 
   // Teclado en auth cajero
   refs.cashierAuthName.addEventListener("keydown", (event) => {
@@ -626,18 +648,25 @@ async function bootstrap() {
     }
   });
 
-  // Inventario
-  refs.inventoryBody.addEventListener("click", (event) => {
-    const saveButton = event.target.closest('[data-action="save-product"]');
-    if (saveButton) {
-      saveInventoryRow(saveButton.closest("tr"));
-      return;
-    }
-    const removeButton = event.target.closest('[data-action="remove-product"]');
-    if (removeButton) {
-      removeAdminProduct(removeButton.closest("tr"));
-    }
-  });
+  // Inventario (modo simple y comparación) - Delegado en contenedor padre
+  if (refs.inventoryBodyWrapper) {
+    refs.inventoryBodyWrapper.addEventListener("click", (event) => {
+      const saveButton = event.target.closest('[data-action="save-product"]');
+      if (saveButton) {
+        const row = saveButton.closest("tr");
+        if (row) {
+          // Detectar si es modo comparación (tiene data-branch)
+          const branch = row.dataset.branch;
+          saveInventoryRow(row, branch);
+        }
+        return;
+      }
+      const removeButton = event.target.closest('[data-action="remove-product"]');
+      if (removeButton) {
+        removeAdminProduct(removeButton.closest("tr"));
+      }
+    });
+  }
 
   // Keyboard shortcuts globales
   document.addEventListener("keydown", (event) => {
@@ -662,7 +691,7 @@ async function bootstrap() {
   registerConnectionEvents();
   registerServiceWorker();
 
-  // Cargar snapshot inicial
+  // Cargar snapshot inicial con mejor manejo offline
   const cachedSnapshot = await restoreSnapshot();
   if (cachedSnapshot) {
     applySnapshot(cachedSnapshot, { skipPersist: true });
@@ -672,17 +701,43 @@ async function bootstrap() {
     }
   }
 
-  try {
-    const snapshot = await performJsonRequest(
-      `/api/bootstrap?branch=${encodeURIComponent(getActiveCashierBranch())}`,
-    );
-    applySnapshot(snapshot);
-  } catch (_error) {
-    if (cachedSnapshot) {
-      refs.socketStatus.textContent = "Sin conexion";
-      showToast("Trabajando con el ultimo estado guardado localmente.", "info");
-    } else {
-      throw _error;
+  // Intentar cargar desde servidor con reintentos
+  let bootstrapLoaded = false;
+  let bootstrapRetries = 0;
+  const maxBootstrapRetries = 3;
+
+  while (!bootstrapLoaded && bootstrapRetries < maxBootstrapRetries) {
+    try {
+      const snapshot = await performJsonRequest(
+        `/api/bootstrap?branch=${encodeURIComponent(getActiveCashierBranch())}`,
+        {
+          timeout: 15000,
+          retries: 2,
+        }
+      );
+      applySnapshot(snapshot);
+      bootstrapLoaded = true;
+      
+      if (refs.socketStatus.textContent === "Sin conexion") {
+        refs.socketStatus.textContent = "Conectado";
+      }
+    } catch (error) {
+      bootstrapRetries++;
+      
+      if (bootstrapRetries < maxBootstrapRetries) {
+        // Esperar antes de reintentar
+        await new Promise(resolve => setTimeout(resolve, 1000 * bootstrapRetries));
+        continue;
+      }
+
+      // Si no hay snapshot cacheado, mostrar error
+      if (!cachedSnapshot) {
+        throw error;
+      } else {
+        // Con snapshot cacheado, apenas mostrar aviso
+        refs.socketStatus.textContent = "Sin conexion";
+        showToast("Trabajando con el ultimo estado guardado localmente.", "info");
+      }
     }
   }
 
@@ -690,7 +745,12 @@ async function bootstrap() {
   connectSocket();
   updatePaymentView();
   await loadRegisterSummary({ silent: true });
-  syncPendingQueue();
+  
+  // Iniciar sincronización si hay pendientes
+  if (state.pendingQueue.length > 0) {
+    syncPendingQueue().catch(() => {});
+  }
+  
   if (refs.openAdminButton) {
     refs.openAdminButton.disabled = false;
     refs.openAdminButton.style.opacity = "1";

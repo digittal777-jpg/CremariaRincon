@@ -11,15 +11,11 @@ function hashCashierPassword(password, salt = crypto.randomBytes(16).toString("h
 
 function verifyCashierPassword(name, branch, password) {
   const normalizedBranch = normalizeBranch(branch);
-  console.log("verifyCashierPassword - name:", name, "branch:", branch, "normalized:", normalizedBranch);
-  
   const stored = db.prepare(`
     SELECT password_hash
     FROM cashiers
     WHERE name = ? AND branch = ? AND active = 1
   `).get(name, normalizedBranch);
-
-  console.log("Stored record:", stored ? "found" : "not found");
 
   if (!stored) {
     return false;
@@ -39,9 +35,7 @@ function verifyCashierPassword(name, branch, password) {
 }
 
 function authenticateCashier(name, branch, password) {
-  console.log("authenticateCashier - name:", name, "branch:", branch);
   if (!verifyCashierPassword(name, branch, password)) {
-    console.log("Password verification failed");
     return null;
   }
 
@@ -51,8 +45,6 @@ function authenticateCashier(name, branch, password) {
     FROM cashiers
     WHERE name = ? AND branch = ? AND active = 1
   `).get(name, normalizedBranch);
-
-  console.log("Auth row:", row);
 
   return row
     ? {

@@ -1,5 +1,3 @@
-// Funciones de autenticación de cajeros
-
 function openCashierAuthModal() {
   refs.cashierAuthName.value = state.cashier.name || "";
   refs.cashierAuthBranch.value = state.cashier.branch || getActiveCashierBranch();
