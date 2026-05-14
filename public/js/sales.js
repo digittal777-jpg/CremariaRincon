@@ -16,6 +16,10 @@ function openItemModal(product) {
   refs.itemQuantity.select();
 }
 
+function createClientEventId(prefix = "register") {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
 function closeItemModal() {
   state.currentProduct = null;
   setModalOpen(refs.itemModal, false);
@@ -172,6 +176,11 @@ function openPaymentModal() {
     return;
   }
 
+  if (state.register.summary?.cashierLocked) {
+    showToast("Este cajero ya hizo corte final hoy. Venta bloqueada hasta el siguiente dia.", "error");
+    return;
+  }
+
   if (state.cart.length === 0) {
     showToast("Agrega productos antes de cobrar.", "error");
     return;
@@ -227,7 +236,14 @@ async function submitSale() {
     return;
   }
 
+  const latestSummary = await loadRegisterSummary({ silent: true });
+  if (latestSummary?.cashierLocked) {
+    showToast("Este cajero ya hizo corte final hoy. No puedes registrar mas ventas.", "error");
+    return;
+  }
+
   const payload = {
+    clientSaleId: createClientEventId("sale"),
     shift: refs.shiftSelect.value,
     cashier: state.cashier.name || "Mostrador",
     branch: getActiveCashierBranch(),
@@ -247,7 +263,7 @@ async function submitSale() {
   refs.confirmSaleButton.textContent = "Guardando...";
 
   try {
-    const response = await requestJson("/api/sales", {
+    const response = await requestCashierJson("/api/sales", {
       method: "POST",
       body: JSON.stringify(payload),
       queueable: true,
@@ -280,6 +296,13 @@ async function submitSale() {
 }
 
 async function loadRegisterSummary(options = {}) {
+  if (!state.cashier.authenticated) {
+    state.register.summary = getEmptyRegisterSummary();
+    renderRegisterSummaryPill();
+    renderCashierSession();
+    return state.register.summary;
+  }
+
   if (!refs.shiftSelect) {
     return null;
   }
@@ -291,8 +314,8 @@ async function loadRegisterSummary(options = {}) {
   }
 
   try {
-    const response = await performJsonRequest(
-      `/api/register/summary?shift=${encodeURIComponent(shift)}&branch=${encodeURIComponent(getActiveCashierBranch())}`,
+    const response = await requestCashierJson(
+      `/api/register/summary?shift=${encodeURIComponent(shift)}&branch=${encodeURIComponent(getActiveCashierBranch())}&cashier=${encodeURIComponent(state.cashier.name || "Mostrador")}`,
     );
     const serverSummary = response?.summary
       ? response.summary
@@ -306,6 +329,7 @@ async function loadRegisterSummary(options = {}) {
     
     state.register.summary = combinedSummary;
     renderRegisterSummaryPill();
+    renderCashierSession();
     return state.register.summary;
   } catch (error) {
     // Si hay error, usar solo eventos offline
@@ -314,6 +338,7 @@ async function loadRegisterSummary(options = {}) {
       const emptySummary = getEmptyRegisterSummary();
       state.register.summary = calculateRegisterSummaryWithOffline(emptySummary, offlineEvents);
       renderRegisterSummaryPill();
+      renderCashierSession();
       return state.register.summary;
     }
     
@@ -356,6 +381,9 @@ async function openRegisterModal(mode) {
   state.register.withdrawInput = "0";
   setModalOpen(refs.registerModal, true);
   const summary = await loadRegisterSummary();
+  if (summary?.cashierLocked && mode !== "start") {
+    showToast("Este cajero ya hizo corte final hoy y no puede registrar nuevos cortes.", "error");
+  }
   if (mode === "start") {
     state.register.amountInput = "";
     state.register.withdrawInput = "0";
@@ -410,7 +438,13 @@ async function saveRegisterAction() {
     cashier: state.cashier.name || "Mostrador",
     branch: getActiveCashierBranch(),
     notes: state.register.note.trim(),
+    clientEventId: createClientEventId("register"),
   };
+
+  if (state.register.summary?.cashierLocked) {
+    showToast("Este cajero ya hizo corte final hoy y no puede registrar nuevos cortes.", "error");
+    return;
+  }
 
   let url = "/api/register/start";
   if (state.register.mode === "start") {
@@ -419,6 +453,10 @@ async function saveRegisterAction() {
     const withdrawAmount = roundMoney(state.register.withdrawInput);
     if (!Number.isFinite(withdrawAmount) || withdrawAmount < 0) {
       showToast("El monto de retiro no es valido.", "error");
+      return;
+    }
+    if (withdrawAmount > 0 && !payload.notes) {
+      showToast("Agrega una nota de motivo cuando registres un retiro.", "error");
       return;
     }
     url = "/api/register/cut";
@@ -433,7 +471,7 @@ async function saveRegisterAction() {
   try {
     // Caja se maneja con su propio log offline (state.register.events),
     // para evitar duplicados no debe entrar tambien a la cola general.
-    const response = await performJsonRequest(url, {
+    const response = await requestCashierJson(url, {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -442,11 +480,14 @@ async function saveRegisterAction() {
     }
     state.register.summary = response.summary || state.register.summary;
     renderRegisterSummaryPill();
+    renderCashierSession();
     closeRegisterModal();
     showToast(
       state.register.mode === "start"
         ? "Inicio de caja guardado."
-        : `Corte guardado. Diferencia ${formatCurrency(response.differenceAmount || 0)}.`,
+        : response.overWithdrawalAmount > 0
+          ? `Corte guardado. Diferencia ${formatCurrency(response.differenceAmount || 0)} · Retiro excedido ${formatCurrency(response.overWithdrawalAmount)}.`
+          : `Corte guardado. Diferencia ${formatCurrency(response.differenceAmount || 0)}.`,
       "success",
     );
   } catch (error) {
@@ -454,6 +495,8 @@ async function saveRegisterAction() {
     if (isNetworkError(error)) {
       // Guardar evento offline
       const offlineEvent = addOfflineRegisterEvent({
+        cashierToken: state.cashier.token,
+        clientEventId: payload.clientEventId,
         eventType: state.register.mode,
         shift: payload.shift,
         cashier: payload.cashier,
@@ -495,6 +538,7 @@ async function saveRegisterAction() {
       
       saveRegisterEvents();
       renderRegisterSummaryPill();
+      renderCashierSession();
       closeRegisterModal();
       showToast("Corte guardado offline. Se sincronizara al reconectar.", "info");
     } else {

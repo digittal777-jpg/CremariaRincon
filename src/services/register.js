@@ -4,15 +4,17 @@ const {
   STORE_BRANCHES,
   STORE_SHIFTS,
   createHttpError,
-  getBranchLabel,
+  isSameStoreDay,
   normalizeBranch,
   normalizeText,
   roundMoney,
-  roundStock,
 } = require("../utils/helpers");
-const { STORE_TIME_ZONE } = require("../config.js");
 
 const db = getDb();
+
+function normalizeClientEventId(value) {
+  return normalizeText(value || "", 120) || null;
+}
 
 function getRegisterEventsForStoreDay(shift, baseDate = new Date(), branch = STORE_BRANCHES[0]) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
@@ -24,6 +26,8 @@ function getRegisterEventsForStoreDay(shift, baseDate = new Date(), branch = STO
         shift,
         cashier,
         branch,
+        client_event_id,
+        over_withdrawal_amount,
         opening_amount,
         counted_amount,
         withdrawals_amount,
@@ -45,6 +49,8 @@ function getRegisterEventsForStoreDay(shift, baseDate = new Date(), branch = STO
         shift,
         cashier,
         branch,
+        client_event_id,
+        over_withdrawal_amount,
         opening_amount,
         counted_amount,
         withdrawals_amount,
@@ -63,33 +69,55 @@ function getRegisterEventsForStoreDay(shift, baseDate = new Date(), branch = STO
   return rows.filter((row) => isSameStoreDay(row.created_at, baseDate));
 }
 
+function getCashierFinalCutForStoreDay(shift, branch, cashier, baseDate = new Date()) {
+  const safeShift = normalizeText(shift || STORE_SHIFTS[0], 24) || STORE_SHIFTS[0];
+  const safeBranch = normalizeBranch(branch, { allowAll: true });
+  const safeCashier = normalizeText(cashier || "", 60);
+  if (!safeCashier) {
+    return null;
+  }
 
-function isSameStoreDay(value, baseDate = new Date()) {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: STORE_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
+  const rows = safeBranch === ALL_BRANCHES
+    ? db.prepare(`
+      SELECT
+        id,
+        created_at
+      FROM register_events
+      WHERE shift = ? AND cashier = ? AND event_type = 'final_cut'
+      ORDER BY created_at DESC, id DESC
+    `).all(safeShift, safeCashier)
+    : db.prepare(`
+      SELECT
+        id,
+        created_at
+      FROM register_events
+      WHERE shift = ? AND branch = ? AND cashier = ? AND event_type = 'final_cut'
+      ORDER BY created_at DESC, id DESC
+    `).all(safeShift, safeBranch, safeCashier);
 
-  const partsValue = Object.fromEntries(
-    formatter.formatToParts(new Date(value))
-      .filter((p) => p.type !== "literal")
-      .map((p) => [p.type, p.value])
-  );
-  const partsBase = Object.fromEntries(
-    formatter.formatToParts(new Date(baseDate))
-      .filter((p) => p.type !== "literal")
-      .map((p) => [p.type, p.value])
-  );
-
-  return `${partsValue.year}-${partsValue.month}-${partsValue.day}` ===
-         `${partsBase.year}-${partsBase.month}-${partsBase.day}`;
+  return rows.find((row) => isSameStoreDay(row.created_at, baseDate)) || null;
 }
 
-function getRegisterSummary(shift, branch = STORE_BRANCHES[0]) {
+function assertCashierCanOperate({ shift, branch, cashier, errorMessage }) {
+  const safeCashier = normalizeText(cashier || "", 60);
+  if (!safeCashier) {
+    return null;
+  }
+
+  const finalCut = getCashierFinalCutForStoreDay(shift, branch, safeCashier, new Date());
+  if (finalCut) {
+    throw createHttpError(
+      errorMessage || "Este cajero ya hizo corte final hoy y no puede operar hasta el siguiente dia.",
+    );
+  }
+
+  return null;
+}
+
+function getRegisterSummary(shift, branch = STORE_BRANCHES[0], options = {}) {
   const normalizedShift = normalizeText(shift || STORE_SHIFTS[0], 24) || STORE_SHIFTS[0];
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const cashier = normalizeText(options.cashier || "", 60) || null;
   if (!STORE_SHIFTS.includes(normalizedShift)) {
     throw createHttpError("Selecciona un turno valido para la caja.");
   }
@@ -121,6 +149,9 @@ function getRegisterSummary(shift, branch = STORE_BRANCHES[0]) {
       .reduce((sum, sale) => sum + roundMoney(sale.total), 0),
   );
   const nonCashSales = roundMoney(totalSales - cashSales);
+  const cashierFinalCut = cashier
+    ? getCashierFinalCutForStoreDay(normalizedShift, normalizedBranch, cashier, new Date())
+    : null;
 
   return {
     shift: normalizedShift,
@@ -137,6 +168,8 @@ function getRegisterSummary(shift, branch = STORE_BRANCHES[0]) {
     lastStartCashier: startEvent?.cashier || null,
     quickCuts: events.filter((event) => event.event_type === "quick_cut").length,
     finalCuts: events.filter((event) => event.event_type === "final_cut").length,
+    cashierLocked: Boolean(cashierFinalCut),
+    cashierFinalCutAt: cashierFinalCut?.created_at || null,
   };
 }
 
@@ -148,6 +181,8 @@ function getRegisterEventById(eventId) {
       shift,
       cashier,
       branch,
+      client_event_id,
+      over_withdrawal_amount,
       opening_amount,
       counted_amount,
       withdrawals_amount,
@@ -172,6 +207,8 @@ function getRegisterEventById(eventId) {
     shift: row.shift,
     cashier: row.cashier,
     branch: row.branch,
+    clientEventId: row.client_event_id || "",
+    overWithdrawalAmount: roundMoney(row.over_withdrawal_amount || 0),
     openingAmount: roundMoney(row.opening_amount),
     countedAmount: roundMoney(row.counted_amount),
     withdrawalsAmount: roundMoney(row.withdrawals_amount || 0),
@@ -185,13 +222,33 @@ function getRegisterEventById(eventId) {
   };
 }
 
+function getRegisterEventByClientEventId(clientEventId) {
+  const safeClientEventId = normalizeClientEventId(clientEventId);
+  if (!safeClientEventId) {
+    return null;
+  }
+
+  const row = db.prepare(`
+    SELECT id
+    FROM register_events
+    WHERE client_event_id = ?
+  `).get(safeClientEventId);
+
+  if (!row) {
+    return null;
+  }
+
+  return getRegisterEventById(row.id);
+}
+
 function startRegister(payload) {
-  const summary = getRegisterSummary(payload.shift, payload.branch);
+  const summary = getRegisterSummary(payload.shift, payload.branch, { cashier: payload.cashier });
   const shift = summary.shift;
   const branch = normalizeBranch(payload.branch);
   const cashier = normalizeText(payload.cashier || "Mostrador", 60) || "Mostrador";
   const openingAmount = roundMoney(payload.openingAmount);
   const notes = normalizeText(payload.notes || "", 180) || null;
+  const clientEventId = normalizeClientEventId(payload.clientEventId);
 
   if (!STORE_BRANCHES.includes(branch)) {
     throw createHttpError("Selecciona una sucursal valida.");
@@ -201,6 +258,26 @@ function startRegister(payload) {
     throw createHttpError("El monto inicial de caja debe ser cero o mayor.");
   }
 
+  if (clientEventId) {
+    const existing = getRegisterEventByClientEventId(clientEventId);
+    if (existing) {
+      if (existing.eventType !== "start") {
+        throw createHttpError("El clientEventId ya fue usado en otro tipo de evento de caja.");
+      }
+      return {
+        eventId: existing.id,
+        summary: getRegisterSummary(existing.shift, existing.branch, { cashier: existing.cashier }),
+      };
+    }
+  }
+
+  assertCashierCanOperate({
+    shift,
+    branch,
+    cashier,
+    errorMessage: "Este cajero ya hizo corte final hoy y no puede iniciar caja hasta el siguiente dia.",
+  });
+
   const now = nowIso();
   const insert = db.prepare(`
     INSERT INTO register_events (
@@ -208,6 +285,8 @@ function startRegister(payload) {
       shift,
       cashier,
       branch,
+      client_event_id,
+      over_withdrawal_amount,
       opening_amount,
       counted_amount,
       withdrawals_amount,
@@ -218,12 +297,14 @@ function startRegister(payload) {
       total_sales,
       notes,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     "start",
     shift,
     cashier,
     branch,
+    clientEventId,
+    0,
     openingAmount,
     openingAmount,
     0,
@@ -238,7 +319,7 @@ function startRegister(payload) {
 
   return {
     eventId: Number(insert.lastInsertRowid),
-    summary: getRegisterSummary(shift, branch),
+    summary: getRegisterSummary(shift, branch, { cashier }),
   };
 }
 
@@ -248,7 +329,7 @@ function createRegisterCut(payload) {
     throw createHttpError("El tipo de corte no es valido.");
   }
 
-  const summary = getRegisterSummary(payload.shift, payload.branch);
+  const summary = getRegisterSummary(payload.shift, payload.branch, { cashier: payload.cashier });
   const cashier = normalizeText(payload.cashier || "Mostrador", 60) || "Mostrador";
   const branch = normalizeBranch(payload.branch);
   const countedAmount = roundMoney(
@@ -256,6 +337,7 @@ function createRegisterCut(payload) {
   );
   const withdrawalsAmount = roundMoney(payload.withdrawalsAmount || 0);
   const notes = normalizeText(payload.notes || "", 180) || null;
+  const clientEventId = normalizeClientEventId(payload.clientEventId);
 
   if (!STORE_BRANCHES.includes(branch)) {
     throw createHttpError("Selecciona una sucursal valida.");
@@ -267,8 +349,34 @@ function createRegisterCut(payload) {
   if (!Number.isFinite(withdrawalsAmount) || withdrawalsAmount < 0) {
     throw createHttpError("El monto retirado debe ser cero o mayor.");
   }
+  if (withdrawalsAmount > 0 && !notes) {
+    throw createHttpError("Captura un motivo en la nota cuando registres un retiro.");
+  }
+
+  if (clientEventId) {
+    const existing = getRegisterEventByClientEventId(clientEventId);
+    if (existing) {
+      if (existing.eventType !== eventType) {
+        throw createHttpError("El clientEventId ya fue usado en otro tipo de evento de caja.");
+      }
+      return {
+        eventId: existing.id,
+        differenceAmount: existing.differenceAmount,
+        overWithdrawalAmount: existing.overWithdrawalAmount || 0,
+        summary: getRegisterSummary(existing.shift, existing.branch, { cashier: existing.cashier }),
+      };
+    }
+  }
+
+  assertCashierCanOperate({
+    shift: summary.shift,
+    branch,
+    cashier,
+    errorMessage: "Este cajero ya hizo corte final hoy y no puede registrar mas cortes.",
+  });
 
   const now = nowIso();
+  const overWithdrawalAmount = roundMoney(Math.max(0, withdrawalsAmount - summary.expectedCash));
   const expectedCashAfterWithdraw = roundMoney(summary.expectedCash - withdrawalsAmount);
   const differenceAmount = roundMoney(countedAmount - expectedCashAfterWithdraw);
   const insert = db.prepare(`
@@ -277,6 +385,8 @@ function createRegisterCut(payload) {
       shift,
       cashier,
       branch,
+      client_event_id,
+      over_withdrawal_amount,
       opening_amount,
       counted_amount,
       withdrawals_amount,
@@ -287,12 +397,14 @@ function createRegisterCut(payload) {
       total_sales,
       notes,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     eventType,
     summary.shift,
     cashier,
     branch,
+    clientEventId,
+    overWithdrawalAmount,
     summary.openingAmount,
     countedAmount,
     withdrawalsAmount,
@@ -308,7 +420,8 @@ function createRegisterCut(payload) {
   return {
     eventId: Number(insert.lastInsertRowid),
     differenceAmount,
-    summary: getRegisterSummary(summary.shift, branch),
+    overWithdrawalAmount,
+    summary: getRegisterSummary(summary.shift, branch, { cashier }),
   };
 }
 
@@ -368,6 +481,8 @@ function listRegisterEventsForExport() {
       shift,
       cashier,
       branch,
+      client_event_id,
+      over_withdrawal_amount,
       opening_amount,
       counted_amount,
       withdrawals_amount,
@@ -441,8 +556,11 @@ function updateRegisterEventAdmin(eventId, payload) {
 }
 
 module.exports = {
+  assertCashierCanOperate,
   createRegisterCut,
+  getCashierFinalCutForStoreDay,
   getRegisterEventById,
+  getRegisterEventByClientEventId,
   getRegisterEventsForStoreDay,
   getRegisterSummary,
   getRecentRegisterEvents,

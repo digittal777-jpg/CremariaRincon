@@ -1,7 +1,7 @@
-// Funciones de red y comunicación con el servidor
+// Funciones de red y comunicacion con el servidor
 
 async function performJsonRequest(url, options = {}) {
-  // Headers siempre al FINAL para que no se sobrescriban
+  // Headers siempre al final para que no se sobrescriban.
   const response = await fetch(url, {
     ...options,
     headers: {
@@ -13,7 +13,9 @@ async function performJsonRequest(url, options = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(data.message || "No fue posible completar la acción.");
+    const error = new Error(data.message || "No fue posible completar la accion.");
+    error.statusCode = response.status;
+    throw error;
   }
 
   return data;
@@ -32,6 +34,14 @@ function getAdminAuthHeaders() {
     : {};
 }
 
+function getCashierAuthHeaders(token = state.cashier.token) {
+  return token
+    ? {
+        "x-cashier-token": token,
+      }
+    : {};
+}
+
 async function requestJson(url, options = {}) {
   try {
     return await performJsonRequest(url, options);
@@ -41,8 +51,33 @@ async function requestJson(url, options = {}) {
         url,
         method: options.method || "GET",
         body: options.body || null,
+        headers: options.headers || {},
       });
       throw new Error("Operacion guardada en modo offline. Se sincronizara al reconectar.");
+    }
+
+    throw error;
+  }
+}
+
+async function requestCashierJson(url, options = {}) {
+  try {
+    return await requestJson(url, {
+      ...options,
+      headers: {
+        ...getCashierAuthHeaders(),
+        ...(options.headers || {}),
+      },
+    });
+  } catch (error) {
+    if (error.statusCode === 401 || error.statusCode === 403) {
+      if (typeof clearCashierSessionState === "function") {
+        clearCashierSessionState();
+      }
+      if (typeof renderCashierSession === "function") {
+        renderCashierSession();
+      }
+      throw new Error("La sesion del cajero vencio. Vuelve a iniciar sesion.");
     }
 
     throw error;
@@ -69,10 +104,48 @@ async function loadAdminAuthStatus() {
   return response;
 }
 
+async function loadCashierAuthStatus() {
+  const response = await performJsonRequest("/api/cashier/auth/status", {
+    headers: getCashierAuthHeaders(),
+  });
+
+  if (response.authenticated && response.cashier) {
+    state.cashier.id = Number(response.cashier.id || 0) || null;
+    state.cashier.name = String(response.cashier.name || "");
+    state.cashier.branch = String(response.cashier.branch || "");
+    state.cashier.authenticated = Boolean(
+      state.cashier.token
+      && state.cashier.name
+      && state.cashier.branch,
+    );
+    persistCashierSession();
+    if (typeof renderCashierSession === "function") {
+      renderCashierSession();
+    }
+    return response;
+  }
+
+  if (typeof clearCashierSessionState === "function") {
+    clearCashierSessionState();
+  } else {
+    state.cashier.id = null;
+    state.cashier.token = "";
+    state.cashier.name = "";
+    state.cashier.branch = "";
+    state.cashier.authenticated = false;
+    persistCashierSession();
+  }
+  if (typeof renderCashierSession === "function") {
+    renderCashierSession();
+  }
+  return response;
+}
+
 function enqueueOperation(operation) {
   state.pendingQueue.push({
     id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     queuedAt: new Date().toISOString(),
+    headers: {},
     ...operation,
   });
   saveQueue();
@@ -110,17 +183,41 @@ async function syncPendingQueue() {
 
   while (state.pendingQueue.length > 0) {
     const operation = state.pendingQueue[0];
+    let fallbackHeaders = {};
+    if (Object.keys(operation.headers || {}).length === 0) {
+      try {
+        const payload = JSON.parse(operation.body || "{}");
+        if (
+          payload.cashier
+          && payload.branch
+          && payload.cashier === state.cashier.name
+          && payload.branch === state.cashier.branch
+        ) {
+          fallbackHeaders = getCashierAuthHeaders();
+        }
+      } catch (_error) {
+        fallbackHeaders = {};
+      }
+    }
+
+    const operationHeaders = Object.keys(operation.headers || {}).length > 0
+      ? operation.headers
+      : fallbackHeaders;
 
     try {
       await performJsonRequest(operation.url, {
         method: operation.method,
         body: operation.body,
+        headers: operationHeaders,
       });
       state.pendingQueue.shift();
       saveQueue();
       renderSyncStatus();
     } catch (error) {
-      if (isNetworkError(error)) {
+      if (isNetworkError(error) || error.statusCode === 401 || error.statusCode === 403) {
+        if (error.statusCode === 401 || error.statusCode === 403) {
+          showToast("Hay ventas pendientes, pero la sesion del cajero necesita reactivarse.", "error");
+        }
         break;
       }
 
@@ -151,7 +248,7 @@ async function syncRegisterEvents() {
     return;
   }
 
-  const unsyncedEvents = state.register.events.filter((e) => !e.synced);
+  const unsyncedEvents = state.register.events.filter((event) => !event.synced);
 
   for (const event of unsyncedEvents) {
     try {
@@ -164,21 +261,33 @@ async function syncRegisterEvents() {
         cashier: event.cashier,
         branch: event.branch,
         notes: event.notes || "",
+        clientEventId: event.clientEventId || "",
         openingAmount: event.openingAmount,
         eventType: event.eventType,
         countedAmount: event.countedAmount,
         withdrawalsAmount: event.withdrawalsAmount || 0,
       };
 
+      const eventHeaders = event.cashierToken
+        ? getCashierAuthHeaders(event.cashierToken)
+        : event.cashier === state.cashier.name && event.branch === state.cashier.branch
+          ? getCashierAuthHeaders(state.cashier.token || "")
+          : {};
+
       await performJsonRequest(url, {
         method: "POST",
         body: JSON.stringify(payload),
+        headers: eventHeaders,
       });
 
       // Marcar como sincronizado
       event.synced = true;
       event.syncedAt = new Date().toISOString();
     } catch (error) {
+      if (error.statusCode === 401 || error.statusCode === 403) {
+        showToast("Hay cortes guardados offline, pero la sesion del cajero vencio.", "error");
+        break;
+      }
       console.error("Error sincronizando evento de caja:", error);
       // Continuar con otros eventos
     }
@@ -198,7 +307,9 @@ async function syncAllOfflineData() {
   if (state.online) {
     try {
       await refreshCurrentSnapshot();
-      await loadRegisterSummary({ silent: true });
+      if (state.cashier.authenticated) {
+        await loadRegisterSummary({ silent: true });
+      }
     } catch (_error) {
       // Mantener UI operativa aunque falle el refresco.
     }
@@ -210,6 +321,9 @@ function registerConnectionEvents() {
     state.online = true;
     refs.socketStatus.textContent = "Reconectando...";
     renderSyncStatus();
+    if (state.cashier.token) {
+      void loadCashierAuthStatus().catch(() => {});
+    }
     syncAllOfflineData();
   });
 
@@ -237,14 +351,41 @@ function connectSocket() {
     refs.socketStatus.textContent = state.online ? "Reconectando..." : "Sin conexion";
   });
 
-  state.socket.on("dashboard:snapshot", (snapshot) => {
+  state.socket.on("dashboard:snapshot", () => {
     if (!state.online) {
       return;
     }
 
     void refreshCurrentSnapshot().catch(() => {});
     if (refs.adminModal?.classList.contains("open") && state.admin.token) {
-      void refreshAdminWorkspace().catch(() => {});
+      void refreshAdminWorkspace(getAdminWorkspaceLiveOptions(getAdminBranch())).catch(() => {});
+    }
+  });
+
+  state.socket.on("merchandise-request:updated", (event) => {
+    if (!event) {
+      return;
+    }
+
+    if (
+      state.cashier.authenticated
+      && state.cashier.branch === event.branch
+      && state.cashier.name === event.requestedBy
+    ) {
+      void loadMyMerchandiseRequests({ silent: true }).catch(() => {});
+    }
+
+    if (refs.adminModal?.classList.contains("open") && state.admin.token) {
+      void loadAdminMerchandiseRequests(getAdminBranch()).catch(() => {});
+    }
+
+    if (
+      refs.merchandiseRequestDetailModal?.classList.contains("open")
+      && state.merchandise.detailAdminMode
+      && Number(state.merchandise.detailRequest?.id) === Number(event.id)
+      && state.admin.token
+    ) {
+      void openAdminMerchandiseRequestDetail(event.id).catch(() => {});
     }
   });
 }

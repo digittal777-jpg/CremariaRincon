@@ -43,6 +43,7 @@ async function bootstrap() {
   refs.openFinalCutButton = $("open-final-cut-button");
   refs.registerSummaryPill = $("register-summary-pill");
   refs.openQuickImportButton = $("open-quick-import-button");
+  refs.openMerchandiseRequestButton = $("open-merchandise-request-button");
   refs.refreshCatalogButton = $("refresh-catalog-button");
   refs.exportDateInput = $("export-date-input");
   refs.exportWorkbookButton = $("export-workbook-button");
@@ -90,6 +91,31 @@ async function bootstrap() {
   refs.quickImportPrevButton = $("quick-import-prev-button");
   refs.quickImportSkipButton = $("quick-import-skip-button");
   refs.quickImportSaveButton = $("quick-import-save-button");
+  refs.myMerchandiseRequestsList = $("my-merchandise-requests-list");
+  refs.merchandiseRequestModal = $("merchandise-request-modal");
+  refs.merchandiseRequestSearch = $("merchandise-request-search");
+  refs.merchandiseRequestProducts = $("merchandise-request-products");
+  refs.merchandiseRequestItems = $("merchandise-request-items");
+  refs.merchandiseRequestSupplier = $("merchandise-request-supplier");
+  refs.merchandiseRequestNote = $("merchandise-request-note");
+  refs.merchandiseRequestTotalLabel = $("merchandise-request-total-label");
+  refs.merchandiseRequestTotal = $("merchandise-request-total");
+  refs.merchandiseRequestSaveButton = $("save-merchandise-request-button");
+  refs.merchandiseRequestItemModal = $("merchandise-request-item-modal");
+  refs.merchandiseRequestItemModeBar = $("merchandise-request-item-mode-bar");
+  refs.merchandiseRequestItemName = $("merchandise-request-item-name");
+  refs.merchandiseRequestItemMeta = $("merchandise-request-item-meta");
+  refs.merchandiseRequestItemQuantity = $("merchandise-request-item-quantity");
+  refs.merchandiseRequestItemUnitPrice = $("merchandise-request-item-unit-price");
+  refs.merchandiseRequestItemTotal = $("merchandise-request-item-total");
+  refs.merchandiseRequestItemAddButton = $("add-merchandise-request-item-button");
+  refs.merchandiseRequestDetailModal = $("merchandise-request-detail-modal");
+  refs.merchandiseRequestDetailTitle = $("merchandise-request-detail-title");
+  refs.merchandiseRequestDetailMeta = $("merchandise-request-detail-meta");
+  refs.merchandiseRequestDetailBody = $("merchandise-request-detail-body");
+  refs.merchandiseRequestDetailCloseButton = $("close-merchandise-request-detail-button");
+  refs.merchandiseRequestDetailApproveButton = $("approve-merchandise-request-button");
+  refs.merchandiseRequestDetailRejectButton = $("reject-merchandise-request-button");
   refs.registerModal = $("register-modal");
   refs.registerModalEyebrow = $("register-modal-eyebrow");
   refs.registerModalTitle = $("register-modal-title");
@@ -153,6 +179,17 @@ async function bootstrap() {
   refs.adminCashierPassword = $("admin-cashier-password");
   refs.saveAdminCashierButton = $("save-admin-cashier-button");
   refs.adminCashiersList = $("admin-cashiers-list");
+  refs.adminMerchandiseRequestsList = $("admin-merchandise-requests-list");
+  refs.adminMerchandiseRequestsStatus = $("admin-merchandise-requests-status");
+  refs.adminWeightedAuditDate = $("admin-weighted-audit-date");
+  refs.adminWeightedAuditShift = $("admin-weighted-audit-shift");
+  refs.adminWeightedAuditStatus = $("admin-weighted-audit-status");
+  refs.adminWeightedAuditSessions = $("admin-weighted-audit-sessions");
+  refs.adminWeightedAuditItems = $("admin-weighted-audit-items");
+  refs.loadWeightedAuditButton = $("load-weighted-audit-button");
+  refs.createWeightedAuditButton = $("create-weighted-audit-button");
+  refs.saveWeightedAuditItemsButton = $("save-weighted-audit-items-button");
+  refs.completeWeightedAuditButton = $("complete-weighted-audit-button");
   refs.configAllowNegativeStock = $("config-allow-negative-stock");
   refs.saveAdminConfigButton = $("save-admin-config-button");
   refs.adminAuthModal = $("admin-auth-modal");
@@ -187,6 +224,12 @@ async function bootstrap() {
     refs.exportDateInput.min = shiftDateInputValue(todayValue, -14);
     refs.exportDateInput.value = todayValue;
   }
+  if (refs.adminWeightedAuditDate) {
+    refs.adminWeightedAuditDate.value = toDateInputValue();
+  }
+  state.admin.weightedAudit.dateKey = refs.adminWeightedAuditDate?.value || toDateInputValue();
+  state.admin.weightedAudit.shift =
+    refs.adminWeightedAuditShift?.value || refs.shiftSelect?.value || "Tarde";
 
   // Restaurar estado persistido
   await restorePreferences();
@@ -194,6 +237,15 @@ async function bootstrap() {
   await restoreQueue();
   await restoreRegisterEvents();
   await restoreCashierSession();
+  try {
+    if (state.cashier.token) {
+      await loadCashierAuthStatus();
+    }
+  } catch (error) {
+    if (error.statusCode === 401 || error.statusCode === 403) {
+      clearCashierSessionState();
+    }
+  }
   state.admin.token = readStorageText(STORAGE_KEYS.adminToken, "");
   try {
     await loadAdminAuthStatus();
@@ -210,12 +262,17 @@ async function bootstrap() {
   renderCart();
   renderCashierSession();
   renderQuickImportModal();
+  renderMyMerchandiseRequests();
+  renderMerchandiseRequestModal();
+  renderMerchandiseRequestItemModal();
+  renderMerchandiseRequestDetailModal();
   renderRegisterModal();
   renderRegisterSummaryPill();
   renderRecentActivity();
   renderDetailViewer();
   renderAdminModal();
   renderAdminRecordLists();
+  renderAdminMerchandiseRequests();
   renderAdminAuthModal();
   renderAdminEditorModal();
   renderCashierAuthModal();
@@ -237,13 +294,31 @@ async function bootstrap() {
     const branch = refs.adminBranchSelect.value;
     try {
       state.admin.branch = branch;
-      await refreshAdminWorkspace();
+      await refreshAdminWorkspace(getAdminWorkspaceFullOptions(branch, true));
       showToast(`Vista admin cambiada a ${getBranchLabel(branch)}`, "info");
     } catch (_error) {
       showToast("Error al cambiar sucursal", "error");
     }
   });
   refs.adminLogoutButton.addEventListener("click", logoutAdmin);
+  refs.loadWeightedAuditButton?.addEventListener("click", () => {
+    void loadAdminWeightedAuditSessions();
+  });
+  refs.createWeightedAuditButton?.addEventListener("click", () => {
+    void createAdminWeightedAuditSession();
+  });
+  refs.saveWeightedAuditItemsButton?.addEventListener("click", () => {
+    void saveAdminWeightedAuditItems();
+  });
+  refs.completeWeightedAuditButton?.addEventListener("click", () => {
+    void closeAdminWeightedAuditSession();
+  });
+  refs.adminWeightedAuditShift?.addEventListener("change", () => {
+    state.admin.weightedAudit.shift = refs.adminWeightedAuditShift.value;
+  });
+  refs.adminWeightedAuditDate?.addEventListener("change", () => {
+    state.admin.weightedAudit.dateKey = refs.adminWeightedAuditDate.value;
+  });
 
   // Turno
   refs.shiftSelect.addEventListener("change", () => {
@@ -262,6 +337,7 @@ async function bootstrap() {
 
   // Quick Import
   refs.openQuickImportButton.addEventListener("click", openQuickImportModal);
+  refs.openMerchandiseRequestButton.addEventListener("click", openMerchandiseRequestModal);
   refs.refreshCatalogButton.addEventListener("click", reimportCatalog);
   refs.exportWorkbookButton.addEventListener("click", exportWorkbook);
   refs.downloadDbButton.addEventListener("click", downloadDatabase);
@@ -370,6 +446,76 @@ async function bootstrap() {
     }
   });
 
+  // Modal Solicitud de mercaderia
+  $("close-merchandise-request-modal").addEventListener("click", closeMerchandiseRequestModal);
+  $("cancel-merchandise-request-button").addEventListener("click", closeMerchandiseRequestModal);
+  refs.merchandiseRequestSaveButton.addEventListener("click", submitMerchandiseRequest);
+  refs.merchandiseRequestSearch.addEventListener("input", () => {
+    state.merchandise.search = refs.merchandiseRequestSearch.value;
+    renderMerchandiseRequestModal();
+  });
+  refs.merchandiseRequestSupplier.addEventListener("input", () => {
+    state.merchandise.supplierName = refs.merchandiseRequestSupplier.value;
+  });
+  refs.merchandiseRequestNote.addEventListener("input", () => {
+    state.merchandise.notes = refs.merchandiseRequestNote.value;
+  });
+  refs.merchandiseRequestProducts.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="open-merchandise-product"]');
+    if (!button) {
+      return;
+    }
+    openMerchandiseRequestItemModal(button.dataset.productId);
+  });
+  refs.merchandiseRequestItems.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="remove-merchandise-item"]');
+    if (!button) {
+      return;
+    }
+    removeMerchandiseRequestItem(Number(button.dataset.index));
+  });
+
+  // Modal Item Solicitud
+  $("close-merchandise-request-item-modal").addEventListener("click", closeMerchandiseRequestItemModal);
+  $("cancel-merchandise-request-item-button").addEventListener("click", closeMerchandiseRequestItemModal);
+  refs.merchandiseRequestItemAddButton.addEventListener("click", addMerchandiseRequestItem);
+  refs.merchandiseRequestItemQuantity.addEventListener("input", () => {
+    state.merchandise.currentQuantity = refs.merchandiseRequestItemQuantity.value;
+    syncMerchandiseRequestItemTotal();
+  });
+  refs.merchandiseRequestItemTotal.addEventListener("input", syncMerchandiseRequestQuantityFromTotal);
+  refs.merchandiseRequestItemTotal.addEventListener("blur", finalizeMerchandiseRequestItemTotalInput);
+  refs.merchandiseRequestItemTotal.addEventListener("focus", () => refs.merchandiseRequestItemTotal.select());
+  refs.merchandiseRequestItemModeBar.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-mode]");
+    if (!button) {
+      return;
+    }
+    setMerchandiseRequestItemMode(button.dataset.mode);
+  });
+  refs.merchandiseRequestItemQuantity.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addMerchandiseRequestItem();
+    }
+  });
+  refs.merchandiseRequestItemTotal.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addMerchandiseRequestItem();
+    }
+  });
+  refs.merchandiseRequestItemModal.querySelectorAll("[data-merchandise-step]").forEach((button) => {
+    button.addEventListener("click", () => {
+      adjustMerchandiseRequestItemQuantity(Number(button.dataset.merchandiseStep));
+    });
+  });
+
+  // Modal detalle de solicitud
+  refs.merchandiseRequestDetailCloseButton.addEventListener("click", closeMerchandiseRequestDetailModal);
+  refs.merchandiseRequestDetailApproveButton.addEventListener("click", approveCurrentMerchandiseRequest);
+  refs.merchandiseRequestDetailRejectButton.addEventListener("click", rejectCurrentMerchandiseRequest);
+
   // Modal Register
   $("close-register-modal").addEventListener("click", closeRegisterModal);
   $("cancel-register-button").addEventListener("click", closeRegisterModal);
@@ -473,6 +619,24 @@ async function bootstrap() {
     }
   });
 
+  refs.merchandiseRequestModal.addEventListener("click", (event) => {
+    if (event.target === refs.merchandiseRequestModal) {
+      closeMerchandiseRequestModal();
+    }
+  });
+
+  refs.merchandiseRequestItemModal.addEventListener("click", (event) => {
+    if (event.target === refs.merchandiseRequestItemModal) {
+      closeMerchandiseRequestItemModal();
+    }
+  });
+
+  refs.merchandiseRequestDetailModal.addEventListener("click", (event) => {
+    if (event.target === refs.merchandiseRequestDetailModal) {
+      closeMerchandiseRequestDetailModal();
+    }
+  });
+
   refs.registerModal.addEventListener("click", (event) => {
     if (event.target === refs.registerModal) {
       closeRegisterModal();
@@ -526,6 +690,14 @@ async function bootstrap() {
     void openActivityDetail(button.dataset.kind, button.dataset.id);
   });
 
+  refs.myMerchandiseRequestsList.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="open-my-merchandise-request"]');
+    if (!button) {
+      return;
+    }
+    openMyMerchandiseRequestDetail(button.dataset.requestId);
+  });
+
   // Admin - listas de registros
   refs.adminSalesList.addEventListener("click", (event) => {
     const button = event.target.closest('[data-action="edit-admin-record"]');
@@ -571,6 +743,22 @@ async function bootstrap() {
     if (deleteButton) {
       void deleteAdminCashier(Number(deleteButton.dataset.id));
     }
+  });
+
+  refs.adminMerchandiseRequestsList.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="open-admin-merchandise-request"]');
+    if (!button) {
+      return;
+    }
+    void openAdminMerchandiseRequestDetail(button.dataset.requestId);
+  });
+
+  refs.adminWeightedAuditSessions?.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="open-weighted-audit-session"]');
+    if (!button) {
+      return;
+    }
+    void openAdminWeightedAuditSession(button.dataset.id);
   });
 
   refs.adminAuditLogList.addEventListener("click", (event) => {
@@ -679,6 +867,9 @@ async function bootstrap() {
       closeItemModal();
       closePaymentModal();
       closeQuickImportModal();
+      closeMerchandiseRequestModal();
+      closeMerchandiseRequestItemModal();
+      closeMerchandiseRequestDetailModal();
       closeRegisterModal();
       closeDetailViewer();
       closeAdminModal();
@@ -744,11 +935,18 @@ async function bootstrap() {
   // Inicializar socket y sincronización
   connectSocket();
   updatePaymentView();
-  await loadRegisterSummary({ silent: true });
+  if (state.cashier.authenticated) {
+    await loadRegisterSummary({ silent: true });
+    await loadMyMerchandiseRequests({ silent: true });
+  } else {
+    state.register.summary = getEmptyRegisterSummary();
+    renderRegisterSummaryPill();
+    renderCashierSession();
+  }
   
-  // Iniciar sincronización si hay pendientes
-  if (state.pendingQueue.length > 0) {
-    syncPendingQueue().catch(() => {});
+  // Iniciar sincronización si hay pendientes de ventas o caja
+  if (state.pendingQueue.length > 0 || state.register.events.length > 0) {
+    syncAllOfflineData().catch(() => {});
   }
   
   if (refs.openAdminButton) {

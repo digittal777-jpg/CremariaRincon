@@ -3,7 +3,7 @@ function renderAdminModal() {
     return;
   }
 
-  if (!refs.adminModal.classList.contains("open") && !state.admin.loading) {
+  if (!refs.adminModal.classList.contains("open")) {
     return;
   }
 
@@ -75,7 +75,7 @@ function renderAdminModal() {
       : `<div class="shift-chip">Sin tickets registrados en esta vista.</div>`;
   }
 
-  refs.adminMetricsStatus.textContent = state.admin.loading
+  refs.adminMetricsStatus.textContent = state.admin.metricsLoading
     ? "Actualizando..."
     : serverMetrics
       ? `Actualizado ${timeFormatter.format(new Date(serverMetrics.generatedAt))}`
@@ -120,6 +120,7 @@ function renderAdminModal() {
   }
 
   renderAdminDevPanel();
+  renderAdminWeightedAuditPanel();
 } // FIX: llave de cierre de renderAdminModal que faltaba
 
 function renderAdminDevPanel() {
@@ -159,6 +160,9 @@ function renderAdminDevPanel() {
 
 function renderAdminRecordLists() {
   if (!refs.adminSalesList) {
+    return;
+  }
+  if (!refs.adminModal?.classList.contains("open")) {
     return;
   }
 
@@ -236,6 +240,9 @@ function renderAdminRecordLists() {
 
 function renderAdminCashiers() {
   if (!refs.adminCashiersList) {
+    return;
+  }
+  if (!refs.adminModal?.classList.contains("open")) {
     return;
   }
 
@@ -442,4 +449,110 @@ function renderCashierAuthModal() {
 
   refs.loginCashierButton.disabled = state.cashierAuth.loading;
   refs.loginCashierButton.textContent = state.cashierAuth.loading ? "Iniciando..." : "Iniciar sesion";
+}
+
+function renderAdminWeightedAuditPanel() {
+  if (!refs.adminWeightedAuditSessions || !refs.adminWeightedAuditItems || !refs.adminWeightedAuditStatus) {
+    return;
+  }
+  if (!refs.adminModal?.classList.contains("open")) {
+    return;
+  }
+
+  const weightedState = state.admin.weightedAudit || {};
+  const sessions = Array.isArray(weightedState.sessions) ? weightedState.sessions : [];
+  const currentSession = weightedState.currentSession || null;
+  const statusText = weightedState.loading
+    ? "Cargando auditorias..."
+    : currentSession
+      ? `${currentSession.auditedDateKey} · ${currentSession.shift} · ${currentSession.status === "completed" ? "cerrada" : "pendiente"}`
+      : "Sin auditoria cargada";
+  refs.adminWeightedAuditStatus.textContent = statusText;
+
+  refs.adminWeightedAuditSessions.innerHTML = sessions.length
+    ? sessions.map((session) => `
+        <button
+          class="admin-record-item ${currentSession?.id === session.id ? "active" : ""}"
+          data-action="open-weighted-audit-session"
+          data-id="${session.id}"
+          type="button"
+        >
+          <div class="admin-record-item-head">
+            <strong>${escapeHtml(session.auditedDateKey)} · ${escapeHtml(session.shift)}</strong>
+            <span class="small-pill">${escapeHtml(getBranchLabel(session.branch))}</span>
+          </div>
+          <p>${session.summary?.countedItems || 0}/${session.summary?.totalItems || 0} conteos · Incidentes ${session.summary?.incidentItems || 0}</p>
+        </button>
+      `).join("")
+    : `<div class="empty-state">No hay sesiones para los filtros actuales.</div>`;
+
+  if (!currentSession) {
+    refs.adminWeightedAuditItems.innerHTML = `
+      <div class="empty-state">
+        Crea o abre una sesion para capturar conteos fisicos de productos kg.
+      </div>
+    `;
+    if (refs.saveWeightedAuditItemsButton) {
+      refs.saveWeightedAuditItemsButton.disabled = true;
+    }
+    if (refs.completeWeightedAuditButton) {
+      refs.completeWeightedAuditButton.disabled = true;
+    }
+    return;
+  }
+
+  const isCompleted = currentSession.status === "completed";
+  const items = Array.isArray(currentSession.items) ? currentSession.items : [];
+  refs.adminWeightedAuditItems.innerHTML = `
+    <div class="detail-lines">
+      <div class="detail-line">
+        <div>
+          <strong>Resumen de auditoria</strong>
+          <p>Productos ${currentSession.summary?.totalItems || 0} · Contados ${currentSession.summary?.countedItems || 0} · Incidentes ${currentSession.summary?.incidentItems || 0}</p>
+        </div>
+      </div>
+    </div>
+    <div class="inventory-table-wrap">
+      <table class="inventory-table">
+        <thead>
+          <tr>
+            <th>Producto</th>
+            <th>Stock POS</th>
+            <th>Conteo fisico</th>
+            <th>Diferencia</th>
+            <th>Motivo</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map((item) => `
+            <tr data-weighted-item-row data-item-id="${item.id}" data-product-id="${item.productId}">
+              <td>
+                <div class="inventory-name">
+                  <strong>${escapeHtml(item.productName)}</strong>
+                  <small>${escapeHtml(item.unit)}</small>
+                </div>
+              </td>
+              <td>${escapeHtml(formatQuantity(item.posStock))}</td>
+              <td>
+                <input class="inventory-input" data-field="countedStock" type="number" min="0" step="0.001" value="${item.countedStock == null ? "" : item.countedStock}" ${isCompleted ? "disabled" : ""} />
+              </td>
+              <td>${item.difference == null ? "-" : escapeHtml(formatQuantity(item.difference))}</td>
+              <td>
+                <input class="inventory-input" data-field="reason" type="text" maxlength="240" value="${escapeHtml(item.reason || "")}" placeholder="Obligatorio si hay diferencia" ${isCompleted ? "disabled" : ""} />
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  if (refs.saveWeightedAuditItemsButton) {
+    refs.saveWeightedAuditItemsButton.disabled = Boolean(weightedState.loading || weightedState.saving || isCompleted);
+    refs.saveWeightedAuditItemsButton.textContent = weightedState.saving ? "Guardando..." : "Guardar conteos";
+  }
+  if (refs.completeWeightedAuditButton) {
+    refs.completeWeightedAuditButton.disabled = Boolean(weightedState.loading || weightedState.saving || isCompleted);
+    refs.completeWeightedAuditButton.textContent = isCompleted ? "Auditoria cerrada" : "Cerrar auditoria";
+  }
 }

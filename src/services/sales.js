@@ -19,6 +19,10 @@ const {
 
 const db = getDb();
 
+function normalizeClientSaleId(value) {
+  return normalizeText(value || "", 120) || null;
+}
+
 function listStoreDaySales(baseDate = new Date(), branch = STORE_BRANCHES[0]) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
   const rows = normalizedBranch === ALL_BRANCHES
@@ -92,6 +96,7 @@ function getSaleById(saleId) {
     SELECT
       id,
       ticket_number,
+      client_sale_id,
       shift,
       cashier,
       branch,
@@ -127,6 +132,7 @@ function getSaleById(saleId) {
   return {
     id: sale.id,
     ticketNumber: sale.ticket_number,
+    clientSaleId: sale.client_sale_id || "",
     shift: sale.shift,
     cashier: sale.cashier,
     branch: sale.branch,
@@ -149,7 +155,34 @@ function getSaleById(saleId) {
   };
 }
 
+function getSaleByClientSaleId(clientSaleId) {
+  const safeClientSaleId = normalizeClientSaleId(clientSaleId);
+  if (!safeClientSaleId) {
+    return null;
+  }
+
+  const row = db.prepare(`
+    SELECT id
+    FROM sales
+    WHERE client_sale_id = ?
+  `).get(safeClientSaleId);
+
+  if (!row) {
+    return null;
+  }
+
+  return getSaleById(row.id);
+}
+
 function createSale(payload) {
+  const clientSaleId = normalizeClientSaleId(payload.clientSaleId);
+  if (clientSaleId) {
+    const existingSale = getSaleByClientSaleId(clientSaleId);
+    if (existingSale) {
+      return existingSale;
+    }
+  }
+
   const shift = normalizeText(payload.shift || "Tarde", 24) || "Tarde";
   const cashier = normalizeText(payload.cashier || "Mostrador", 60) || "Mostrador";
   const branch = normalizeBranch(payload.branch);
@@ -165,200 +198,222 @@ function createSale(payload) {
     throw createHttpError("Selecciona una sucursal valida.");
   }
 
+  const { assertCashierCanOperate } = require("./register");
+  assertCashierCanOperate({
+    shift,
+    branch,
+    cashier,
+    errorMessage: "Este cajero ya hizo corte final hoy y no puede registrar mas ventas hasta el siguiente dia.",
+  });
+
   if (incomingItems.length === 0) {
     throw createHttpError("Agrega al menos un producto al carrito.");
   }
 
-  const saleResult = db.transaction(() => {
-    const runningStockByProductId = new Map();
-    const preparedItems = incomingItems.map((item) => {
-      const productId = Number(item.productId);
-      const requestedQuantity = roundStock(item.quantity);
-      const lineTotal = roundMoney(item.lineTotal);
+  let saleResult;
+  try {
+    saleResult = db.transaction(() => {
+      const runningStockByProductId = new Map();
+      const preparedItems = incomingItems.map((item) => {
+        const productId = Number(item.productId);
+        const requestedQuantity = roundStock(item.quantity);
+        const lineTotal = roundMoney(item.lineTotal);
 
-      if (!productId) {
-        throw createHttpError("Uno de los productos no es valido.");
+        if (!productId) {
+          throw createHttpError("Uno de los productos no es valido.");
+        }
+
+        if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
+          throw createHttpError("La cantidad de un producto no es valida.");
+        }
+
+        if (!Number.isFinite(lineTotal) || lineTotal <= 0) {
+          throw createHttpError("El monto de un producto debe ser mayor a cero.");
+        }
+
+        const product = db.prepare(`
+          SELECT id, name, price, stock, stock_initialized, branch, unit
+          FROM products
+          WHERE id = ? AND active = 1 AND branch = ?
+        `).get(productId, branch);
+
+        if (!product) {
+          throw createHttpError("Uno de los productos ya no esta disponible.");
+        }
+
+        const unitPrice = roundMoney(item.unitPrice || product.price);
+        if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+          throw createHttpError(`El precio de ${product.name} no es valido.`);
+        }
+
+        // En productos por kg, el total capturado es la fuente de verdad para evitar
+        // descuadres cuando quantity llegue desfasada desde cliente/offline.
+        const quantity = product.unit === "pza"
+          ? requestedQuantity
+          : roundStock(lineTotal / unitPrice);
+
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+          throw createHttpError(`No pude calcular una cantidad valida para ${product.name}.`);
+        }
+
+        const stockBefore = runningStockByProductId.has(productId)
+          ? roundStock(runningStockByProductId.get(productId))
+          : roundStock(product.stock);
+        const stockAfter = roundStock(stockBefore - quantity);
+
+        const allowNegativeStock = getSetting("sales.allow_negative_stock") === "true";
+        if (product.stock_initialized && stockAfter < 0 && !allowNegativeStock) {
+          throw createHttpError(`No hay inventario suficiente para ${product.name}.`);
+        }
+
+        runningStockByProductId.set(productId, stockAfter);
+
+        return {
+          productId,
+          productName: product.name,
+          quantity,
+          unitPrice,
+          lineTotal,
+          stockBefore,
+          stockAfter,
+        };
+      });
+
+      const subtotal = roundMoney(
+        preparedItems.reduce((sum, item) => sum + item.lineTotal, 0),
+      );
+      const total = subtotal;
+      const itemCount = roundStock(
+        preparedItems.reduce((sum, item) => sum + item.quantity, 0),
+      );
+
+      const receivedAmount =
+        paymentMethod === "Efectivo"
+          ? roundMoney(payload.receivedAmount)
+          : total;
+      const changeAmount =
+        paymentMethod === "Efectivo"
+          ? roundMoney(receivedAmount - total)
+          : 0;
+
+      if (paymentMethod === "Efectivo" && receivedAmount < total) {
+        throw createHttpError("El pago recibido no alcanza para completar la venta.");
       }
 
-      if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
-        throw createHttpError("La cantidad de un producto no es valida.");
-      }
+      const now = nowIso();
+      const ticketPrefix = buildTicketPrefix(now);
+      const ticketsToday = db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM sales
+        WHERE ticket_number LIKE ?
+      `).get(`${ticketPrefix}%`).count;
+      const ticketNumber = `${ticketPrefix}-${String(Number(ticketsToday) + 1).padStart(4, "0")}`;
 
-      if (!Number.isFinite(lineTotal) || lineTotal <= 0) {
-        throw createHttpError("El monto de un producto debe ser mayor a cero.");
-      }
-
-      const product = db.prepare(`
-        SELECT id, name, price, stock, stock_initialized, branch, unit
-        FROM products
-        WHERE id = ? AND active = 1 AND branch = ?
-      `).get(productId, branch);
-
-      if (!product) {
-        throw createHttpError("Uno de los productos ya no esta disponible.");
-      }
-
-      const unitPrice = roundMoney(item.unitPrice || product.price);
-      if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
-        throw createHttpError(`El precio de ${product.name} no es valido.`);
-      }
-
-      // En productos por kg, el total capturado es la fuente de verdad para evitar
-      // descuadres cuando quantity llegue desfasada desde cliente/offline.
-      const quantity = product.unit === "pza"
-        ? requestedQuantity
-        : roundStock(lineTotal / unitPrice);
-
-      if (!Number.isFinite(quantity) || quantity <= 0) {
-        throw createHttpError(`No pude calcular una cantidad valida para ${product.name}.`);
-      }
-
-      const stockBefore = runningStockByProductId.has(productId)
-        ? roundStock(runningStockByProductId.get(productId))
-        : roundStock(product.stock);
-      const stockAfter = roundStock(stockBefore - quantity);
-
-      const allowNegativeStock = getSetting("sales.allow_negative_stock") === "true";
-      if (product.stock_initialized && stockAfter < 0 && !allowNegativeStock) {
-        throw createHttpError(`No hay inventario suficiente para ${product.name}.`);
-      }
-
-      runningStockByProductId.set(productId, stockAfter);
-
-      return {
-        productId,
-        productName: product.name,
-        quantity,
-        unitPrice,
-        lineTotal,
-        stockBefore,
-        stockAfter,
-      };
-    });
-
-    const subtotal = roundMoney(
-      preparedItems.reduce((sum, item) => sum + item.lineTotal, 0),
-    );
-    const total = subtotal;
-    const itemCount = roundStock(
-      preparedItems.reduce((sum, item) => sum + item.quantity, 0),
-    );
-
-    const receivedAmount =
-      paymentMethod === "Efectivo"
-        ? roundMoney(payload.receivedAmount)
-        : total;
-    const changeAmount =
-      paymentMethod === "Efectivo"
-        ? roundMoney(receivedAmount - total)
-        : 0;
-
-    if (paymentMethod === "Efectivo" && receivedAmount < total) {
-      throw createHttpError("El pago recibido no alcanza para completar la venta.");
-    }
-
-    const now = nowIso();
-    const ticketPrefix = buildTicketPrefix(new Date());
-    const ticketsToday = db.prepare(`
-      SELECT COUNT(*) AS count
-      FROM sales
-      WHERE ticket_number LIKE ?
-    `).get(`${ticketPrefix}%`).count;
-    const ticketNumber = `${ticketPrefix}-${String(Number(ticketsToday) + 1).padStart(4, "0")}`;
-
-    const saleInsert = db.prepare(`
-      INSERT INTO sales (
-        ticket_number,
+      const saleInsert = db.prepare(`
+        INSERT INTO sales (
+          ticket_number,
+          client_sale_id,
+          shift,
+          cashier,
+          branch,
+          payment_method,
+          subtotal,
+          total,
+          received_amount,
+          change_amount,
+          notes,
+          item_count,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        ticketNumber,
+        clientSaleId,
         shift,
         cashier,
         branch,
-        payment_method,
+        paymentMethod,
         subtotal,
         total,
-        received_amount,
-        change_amount,
+        receivedAmount,
+        changeAmount,
         notes,
-        item_count,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      ticketNumber,
-      shift,
-      cashier,
-      branch,
-      paymentMethod,
-      subtotal,
-      total,
-      receivedAmount,
-      changeAmount,
-      notes,
-      itemCount,
-      now,
-    );
-
-    const saleId = Number(saleInsert.lastInsertRowid);
-    const insertSaleItem = db.prepare(`
-      INSERT INTO sale_items (
-        sale_id,
-        product_id,
-        product_name,
-        quantity,
-        unit_price,
-        line_total,
-        stock_before,
-        stock_after
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const updateProductStock = db.prepare(`
-      UPDATE products
-      SET stock = ?, stock_initialized = 1, updated_at = ?
-      WHERE id = ? AND branch = ?
-    `);
-    const insertMovement = db.prepare(`
-      INSERT INTO inventory_movements (
-        product_id,
-        movement_type,
-        branch,
-        quantity_delta,
-        stock_before,
-        stock_after,
-        note,
-        reference_type,
-        reference_id,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    preparedItems.forEach((item) => {
-      insertSaleItem.run(
-        saleId,
-        item.productId,
-        item.productName,
-        item.quantity,
-        item.unitPrice,
-        item.lineTotal,
-        item.stockBefore,
-        item.stockAfter,
-      );
-
-      updateProductStock.run(item.stockAfter, now, item.productId, branch);
-
-      insertMovement.run(
-        item.productId,
-        "sale",
-        branch,
-        -item.quantity,
-        item.stockBefore,
-        item.stockAfter,
-        `Venta ${ticketNumber}`,
-        "sale",
-        saleId,
+        itemCount,
         now,
       );
-    });
 
-    return saleId;
-  })();
+      const saleId = Number(saleInsert.lastInsertRowid);
+      const insertSaleItem = db.prepare(`
+        INSERT INTO sale_items (
+          sale_id,
+          product_id,
+          product_name,
+          quantity,
+          unit_price,
+          line_total,
+          stock_before,
+          stock_after
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const updateProductStock = db.prepare(`
+        UPDATE products
+        SET stock = ?, stock_initialized = 1, updated_at = ?
+        WHERE id = ? AND branch = ?
+      `);
+      const insertMovement = db.prepare(`
+        INSERT INTO inventory_movements (
+          product_id,
+          movement_type,
+          branch,
+          quantity_delta,
+          stock_before,
+          stock_after,
+          note,
+          reference_type,
+          reference_id,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      preparedItems.forEach((item) => {
+        insertSaleItem.run(
+          saleId,
+          item.productId,
+          item.productName,
+          item.quantity,
+          item.unitPrice,
+          item.lineTotal,
+          item.stockBefore,
+          item.stockAfter,
+        );
+
+        updateProductStock.run(item.stockAfter, now, item.productId, branch);
+
+        insertMovement.run(
+          item.productId,
+          "sale",
+          branch,
+          -item.quantity,
+          item.stockBefore,
+          item.stockAfter,
+          `Venta ${ticketNumber}`,
+          "sale",
+          saleId,
+          now,
+        );
+      });
+
+      return saleId;
+    })();
+  } catch (error) {
+    if (clientSaleId && String(error.code || "").startsWith("SQLITE_CONSTRAINT")) {
+      const existingSale = getSaleByClientSaleId(clientSaleId);
+      if (existingSale) {
+        return existingSale;
+      }
+    }
+
+    throw error;
+  }
 
   return getSaleById(saleResult);
 }

@@ -23,6 +23,7 @@ const { listAllProductsForExport } = require("./products");
 const { listInventoryMovementsForExport } = require("./inventory");
 const { listRegisterEventsForExport } = require("./register");
 const { listSalesForExport } = require("./sales");
+const { listWeightedAuditRowsForExport } = require("./weightedAudit");
 
 function styleSheetHeader(sheet, title, subtitle, mergeTo = 8) {
   const endCol = String.fromCharCode(64 + mergeTo);
@@ -318,6 +319,19 @@ function addRegisterSheet(workbook, ctx, suffix = "") {
     "Total retiros",
     roundMoney(ctx.registerEvents.reduce((sum, row) => sum + roundMoney(row.withdrawals_amount || 0), 0)),
   ]);
+  sheet.addRow([
+    "Retiros excedidos",
+    ctx.registerEvents.filter((row) => roundMoney(row.over_withdrawal_amount || 0) > 0).length,
+  ]);
+  sheet.addRow([
+    "Monto retiro excedido",
+    roundMoney(
+      ctx.registerEvents.reduce(
+        (sum, row) => sum + roundMoney(row.over_withdrawal_amount || 0),
+        0,
+      ),
+    ),
+  ]);
   sheet.addRow([]);
 
   const eventsHeader = sheet.addRow([
@@ -328,6 +342,7 @@ function addRegisterSheet(workbook, ctx, suffix = "") {
     "Apertura",
     "Contado",
     "Retiro",
+    "Retiro excedido",
     "Esperado",
     "Diferencia",
     "Ventas efectivo",
@@ -345,6 +360,7 @@ function addRegisterSheet(workbook, ctx, suffix = "") {
       roundMoney(row.opening_amount),
       roundMoney(row.counted_amount),
       roundMoney(row.withdrawals_amount || 0),
+      roundMoney(row.over_withdrawal_amount || 0),
       roundMoney(row.expected_cash),
       roundMoney(row.difference_amount),
       roundMoney(row.cash_sales),
@@ -353,7 +369,7 @@ function addRegisterSheet(workbook, ctx, suffix = "") {
     ]);
   });
 
-  autoFitColumns(sheet, [8, 12, 10, 16, 12, 12, 12, 12, 12, 14, 14, 22]);
+  autoFitColumns(sheet, [8, 12, 10, 16, 12, 12, 12, 12, 12, 12, 14, 14, 22]);
 }
 
 function addInventorySheet(workbook, ctx, suffix = "") {
@@ -468,6 +484,89 @@ function addSalesPulseSheet(workbook, ctx, suffix = "") {
   autoFitColumns(sheet, [10, 10, 14, 26, 10, 10]);
 }
 
+function addWeightedAuditSheet(workbook, ctx, suffix = "") {
+  const sheet = workbook.addWorksheet(`Auditoria Pesado${suffix}`);
+  styleSheetHeader(
+    sheet,
+    `${STORE_NAME} - Auditoria de pesado${suffix}`,
+    `Generado: ${ctx.generatedAt}`,
+    14,
+  );
+  sheet.addRow([]);
+  const summaryHeader = sheet.addRow(["Indicador", "Valor"]);
+  styleTableHeader(summaryHeader);
+
+  const rows = ctx.weightedAuditRows || [];
+  const sessionIds = new Set(rows.map((row) => row.session_id));
+  const shortageKg = roundStock(
+    rows
+      .filter((row) => Number(row.difference) < 0)
+      .reduce((sum, row) => sum + Math.abs(roundStock(row.difference)), 0),
+  );
+  const surplusKg = roundStock(
+    rows
+      .filter((row) => Number(row.difference) > 0)
+      .reduce((sum, row) => sum + roundStock(row.difference), 0),
+  );
+  const incidentItems = rows.filter((row) => Number(row.difference) !== 0).length;
+  const estimatedValue = roundMoney(
+    rows.reduce(
+      (sum, row) => sum + roundMoney((row.difference || 0) * roundMoney(row.unit_price || 0)),
+      0,
+    ),
+  );
+
+  [
+    ["Sesiones de auditoria", sessionIds.size],
+    ["Renglones auditados", rows.length],
+    ["Productos con diferencia", incidentItems],
+    ["Kg faltante", shortageKg],
+    ["Kg sobrante", surplusKg],
+    ["Valor estimado variacion", estimatedValue],
+  ].forEach((entry) => sheet.addRow(entry));
+
+  sheet.addRow([]);
+  const detailHeader = sheet.addRow([
+    "Sesion",
+    "Fecha auditada",
+    "Estado",
+    "Turno",
+    "Producto",
+    "Stock POS",
+    "Conteo fisico",
+    "Diferencia",
+    "Direccion",
+    "Motivo",
+    "Precio kg",
+    "Valor diferencia",
+    "Creada por",
+    "Completada por",
+  ]);
+  styleTableHeader(detailHeader);
+
+  rows.forEach((row) => {
+    const diff = row.difference == null ? null : roundStock(row.difference);
+    sheet.addRow([
+      row.session_id,
+      row.audited_date_key,
+      row.status,
+      row.shift,
+      row.product_name,
+      roundStock(row.pos_stock),
+      row.counted_stock == null ? "" : roundStock(row.counted_stock),
+      diff == null ? "" : diff,
+      row.direction || "",
+      row.reason || "",
+      roundMoney(row.unit_price || 0),
+      diff == null ? "" : roundMoney(diff * roundMoney(row.unit_price || 0)),
+      row.created_by || "",
+      row.completed_by || "",
+    ]);
+  });
+
+  autoFitColumns(sheet, [10, 14, 12, 10, 26, 12, 12, 12, 12, 32, 12, 14, 16, 16]);
+}
+
 function saleBranchForExport(row) {
   const b = row.branch;
   if (b && STORE_BRANCHES.includes(String(b).toLowerCase())) {
@@ -496,6 +595,17 @@ function toBranchContext(baseRows, branchCode, scope, baseDate, generatedAt, sco
     baseDate,
     "created_at",
   );
+  const weightedAuditRows = baseRows.weightedAuditRows.filter((row) => {
+    if (row.branch !== branchCode) {
+      return false;
+    }
+
+    if (scope === "all-time") {
+      return true;
+    }
+
+    return String(row.audited_date_key || "") === getStoreDateKey(baseDate);
+  });
 
   const salesHeadersMap = new Map();
   salesRows.forEach((row) => {
@@ -515,6 +625,7 @@ function toBranchContext(baseRows, branchCode, scope, baseDate, generatedAt, sco
     salesItems,
     movements,
     registerEvents,
+    weightedAuditRows,
   };
 }
 
@@ -539,6 +650,7 @@ async function exportWorkbookReport(options = {}) {
     salesRows: listSalesForExport(),
     movements: listInventoryMovementsForExport(),
     registerEvents: listRegisterEventsForExport(),
+    weightedAuditRows: listWeightedAuditRowsForExport(),
   };
 
   if (selectedBranch === ALL_BRANCHES) {
@@ -553,6 +665,7 @@ async function exportWorkbookReport(options = {}) {
       addInventorySheet(workbook, ctx, suffix);
       addMovementsSheet(workbook, ctx, suffix);
       addSalesPulseSheet(workbook, ctx, suffix);
+      addWeightedAuditSheet(workbook, ctx, suffix);
     });
   } else {
     const ctx = toBranchContext(baseRows, selectedBranch, scope, baseDate, generatedAt, scopeLabel);
@@ -563,6 +676,7 @@ async function exportWorkbookReport(options = {}) {
     addInventorySheet(workbook, ctx);
     addMovementsSheet(workbook, ctx);
     addSalesPulseSheet(workbook, ctx);
+    addWeightedAuditSheet(workbook, ctx);
   }
 
   return {

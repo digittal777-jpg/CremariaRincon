@@ -1,8 +1,11 @@
 const path = require("node:path");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
-const DATA_DIR = path.join(ROOT_DIR, "data");
-const DB_PATH = path.join(DATA_DIR, "cremaria-rincon.sqlite");
+const DEFAULT_DATA_DIR = path.join(ROOT_DIR, "data");
+const DB_PATH = process.env.POS_DB_PATH
+  ? path.resolve(ROOT_DIR, process.env.POS_DB_PATH)
+  : path.join(DEFAULT_DATA_DIR, "cremaria-rincon.sqlite");
+const DATA_DIR = path.dirname(DB_PATH);
 const PORT = Number(process.env.PORT || 3100);
 const STORE_NAME = "Cremeria El Rincon";
 const STORE_TIME_ZONE = process.env.POS_TIMEZONE || "America/Mexico_City";

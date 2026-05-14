@@ -373,7 +373,7 @@ async function saveQuickImportEntry() {
     }
 
     await refreshCurrentSnapshot();
-    await refreshAdminWorkspace();
+    await refreshAdminWorkspace({ ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true });
     state.quickImport.saving = false;
 
     if (state.quickImport.index >= getQuickImportItems().length - 1) {

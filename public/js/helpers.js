@@ -105,18 +105,66 @@ function getAdminActionBranch() {
   return getAdminBranch() === "all" ? getActiveCashierBranch() : getAdminBranch();
 }
 
-function toDateInputValue(value = new Date()) {
-  const date = new Date(value);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+const storeDateInputFormatters = new Map();
+const storeHourFormatters = new Map();
+
+function getStoreTimeZone() {
+  return state.store?.timezone || "America/Mexico_City";
+}
+
+function getStoreDateInputFormatter(timeZone = getStoreTimeZone()) {
+  if (!storeDateInputFormatters.has(timeZone)) {
+    storeDateInputFormatters.set(
+      timeZone,
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }),
+    );
+  }
+
+  return storeDateInputFormatters.get(timeZone);
+}
+
+function getStoreHourFormatter(timeZone = getStoreTimeZone()) {
+  if (!storeHourFormatters.has(timeZone)) {
+    storeHourFormatters.set(
+      timeZone,
+      new Intl.DateTimeFormat("en-GB", {
+        timeZone,
+        hour: "2-digit",
+        hour12: false,
+      }),
+    );
+  }
+
+  return storeHourFormatters.get(timeZone);
+}
+
+function toDateInputValue(value = new Date(), timeZone = getStoreTimeZone()) {
+  return getStoreDateInputFormatter(timeZone).format(new Date(value));
+}
+
+function createDateFromDateInputValue(dateValue) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateValue || "").trim());
+  if (!match) {
+    return new Date();
+  }
+
+  const [, year, month, day] = match;
+  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), 12, 0, 0));
 }
 
 function shiftDateInputValue(dateValue, daysDelta) {
-  const anchor = dateValue ? new Date(`${dateValue}T12:00:00`) : new Date();
-  anchor.setDate(anchor.getDate() + daysDelta);
+  const anchor = dateValue ? createDateFromDateInputValue(dateValue) : new Date();
+  anchor.setUTCDate(anchor.getUTCDate() + daysDelta);
   return toDateInputValue(anchor);
+}
+
+function getStoreHourLabel(value, timeZone = getStoreTimeZone()) {
+  return `${getStoreHourFormatter(timeZone).format(new Date(value))}:00`;
 }
 
 function getStockStatus(stock, minStock, stockInitialized) {
@@ -296,5 +344,7 @@ function getEmptyRegisterSummary() {
     lastStartCashier: null,
     quickCuts: 0,
     finalCuts: 0,
+    cashierLocked: false,
+    cashierFinalCutAt: null,
   };
 }

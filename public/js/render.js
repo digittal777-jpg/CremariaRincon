@@ -51,6 +51,20 @@ function renderCashierSession() {
   if (refs.logoutCashierButton) {
     refs.logoutCashierButton.disabled = !state.cashier.authenticated;
   }
+
+  const isLocked = Boolean(state.register.summary?.cashierLocked);
+  if (refs.openPaymentButton) {
+    refs.openPaymentButton.disabled = isLocked;
+  }
+  if (refs.openStartRegisterButton) {
+    refs.openStartRegisterButton.disabled = isLocked;
+  }
+  if (refs.openQuickCutButton) {
+    refs.openQuickCutButton.disabled = isLocked;
+  }
+  if (refs.openFinalCutButton) {
+    refs.openFinalCutButton.disabled = isLocked;
+  }
 }
 
 function renderSummary() {
@@ -608,6 +622,12 @@ function renderRegisterSummaryPill() {
   }
 
   const summary = state.register.summary;
+  const cashierName = state.cashier.name || "este cajero";
+  if (summary?.cashierLocked) {
+    refs.registerSummaryPill.textContent = `${cashierName} bloqueado por corte final de hoy.`;
+    return;
+  }
+
   if (!summary || !summary.lastStartAt) {
     refs.registerSummaryPill.textContent = `Caja sin iniciar para ${refs.shiftSelect?.value || "este turno"}`;
     return;
@@ -625,6 +645,7 @@ function renderRegisterModal() {
   const summary = state.register.summary || getEmptyRegisterSummary();
   const isStartMode = state.register.mode === "start";
   const isQuickCutMode = state.register.mode === "quick_cut";
+  const isLocked = Boolean(summary.cashierLocked);
 
   refs.registerModalEyebrow.textContent = isStartMode ? "Inicio de caja" : "Corte de caja";
   refs.registerModalTitle.textContent = isStartMode
@@ -634,7 +655,9 @@ function renderRegisterModal() {
       : "Corte final";
   refs.registerModalDescription.textContent = isStartMode
     ? "Registra con cuanto arranca la caja del turno actual."
-    : "Revisa el resumen del turno y guarda el corte con el efectivo contado.";
+    : isLocked
+      ? "Este cajero ya hizo corte final hoy y no puede registrar nuevos cortes."
+      : "Revisa el resumen del turno y guarda el corte con el efectivo contado.";
   refs.registerAmountLabel.textContent = isStartMode
     ? "Monto inicial de caja"
     : "Efectivo contado";
@@ -648,7 +671,7 @@ function renderRegisterModal() {
       : isQuickCutMode
         ? "Guardar corte rapido"
         : "Guardar corte final";
-  refs.saveRegisterButton.disabled = state.register.loading || state.register.saving;
+  refs.saveRegisterButton.disabled = state.register.loading || state.register.saving || isLocked;
   refs.registerAmountInput.disabled = state.register.loading || state.register.saving;
   refs.registerWithdrawInput.disabled = state.register.loading || state.register.saving || isStartMode;
   refs.registerApplyWithdrawButton.disabled =

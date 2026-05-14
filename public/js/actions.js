@@ -10,15 +10,113 @@ function requireCashierSession(message = "Inicia sesion de cajero para continuar
 
 let adminWorkspaceRefreshPromise = null;
 let pendingAdminWorkspaceOptions = null;
+const ADMIN_WORKSPACE_TTLS_MS = {
+  snapshot: 5000,
+  editorData: 8000,
+  auditLogs: 60000,
+  cashiers: 60000,
+  requests: 10000,
+  config: 300000,
+  weightedAudit: 15000,
+};
+const ADMIN_WORKSPACE_SECTION_KEYS = [
+  "snapshot",
+  "editorData",
+  "auditLogs",
+  "cashiers",
+  "requests",
+  "config",
+  "weightedAudit",
+];
+
+function getAdminWorkspaceProfile(profile = "full") {
+  if (profile === "live") {
+    return {
+      snapshot: true,
+      editorData: true,
+      auditLogs: false,
+      cashiers: false,
+      requests: true,
+      config: false,
+      weightedAudit: false,
+    };
+  }
+
+  return {
+    snapshot: true,
+    editorData: true,
+    auditLogs: true,
+    cashiers: true,
+    requests: true,
+    config: true,
+    weightedAudit: true,
+  };
+}
+
+function getAdminWorkspaceFullOptions(branch = getAdminBranch(), force = true) {
+  return {
+    profile: "full",
+    branch,
+    force: Boolean(force),
+  };
+}
+
+function getAdminWorkspaceLiveOptions(branch = getAdminBranch()) {
+  return {
+    profile: "live",
+    branch,
+  };
+}
+
+function markAdminWorkspaceLoaded(sectionKey) {
+  if (!state.admin.workspaceLoadedAt) {
+    state.admin.workspaceLoadedAt = {};
+  }
+  state.admin.workspaceLoadedAt[sectionKey] = Date.now();
+}
+
+function shouldRefreshAdminWorkspaceSection(sectionKey, options) {
+  if (options.force || options.ignoreFresh) {
+    return true;
+  }
+
+  const ttlMs = ADMIN_WORKSPACE_TTLS_MS[sectionKey] || 0;
+  const loadedAt = Number(state.admin.workspaceLoadedAt?.[sectionKey] || 0);
+  if (!loadedAt) {
+    return true;
+  }
+
+  return Date.now() - loadedAt > ttlMs;
+}
 
 function normalizeAdminWorkspaceOptions(options = {}) {
+  const hasExplicitSections = ADMIN_WORKSPACE_SECTION_KEYS.some((key) =>
+    Object.prototype.hasOwnProperty.call(options, key),
+  );
+  const profile = String(options.profile || (hasExplicitSections ? "custom" : "full"));
+  const profileDefaults = profile === "custom"
+    ? {
+        snapshot: false,
+        editorData: false,
+        auditLogs: false,
+        cashiers: false,
+        requests: false,
+        config: false,
+        weightedAudit: false,
+      }
+    : getAdminWorkspaceProfile(profile);
   return {
+    profile,
     branch: options.branch || getAdminBranch(),
-    snapshot: options.snapshot !== false,
-    editorData: options.editorData !== false,
-    auditLogs: options.auditLogs !== false,
-    cashiers: options.cashiers !== false,
-    config: options.config !== false,
+    force: options.force === true,
+    ignoreFresh: options.ignoreFresh === true,
+    snapshot: options.snapshot === undefined ? profileDefaults.snapshot : options.snapshot !== false,
+    editorData: options.editorData === undefined ? profileDefaults.editorData : options.editorData !== false,
+    auditLogs: options.auditLogs === undefined ? profileDefaults.auditLogs : options.auditLogs !== false,
+    cashiers: options.cashiers === undefined ? profileDefaults.cashiers : options.cashiers !== false,
+    requests: options.requests === undefined ? profileDefaults.requests : options.requests !== false,
+    config: options.config === undefined ? profileDefaults.config : options.config !== false,
+    weightedAudit: options.weightedAudit === undefined ? profileDefaults.weightedAudit : options.weightedAudit !== false,
   };
 }
 
@@ -30,12 +128,17 @@ function mergeAdminWorkspaceOptions(baseOptions, nextOptions) {
   const base = normalizeAdminWorkspaceOptions(baseOptions);
   const next = normalizeAdminWorkspaceOptions(nextOptions);
   return {
+    profile: base.profile === "full" || next.profile === "full" ? "full" : next.profile,
     branch: next.branch || base.branch,
+    force: base.force || next.force,
+    ignoreFresh: base.ignoreFresh || next.ignoreFresh,
     snapshot: base.snapshot || next.snapshot,
     editorData: base.editorData || next.editorData,
     auditLogs: base.auditLogs || next.auditLogs,
     cashiers: base.cashiers || next.cashiers,
+    requests: base.requests || next.requests,
     config: base.config || next.config,
+    weightedAudit: base.weightedAudit || next.weightedAudit,
   };
 }
 
@@ -43,20 +146,26 @@ function getAdminWorkspaceTasks(options = {}) {
   const normalized = normalizeAdminWorkspaceOptions(options);
   const tasks = [];
 
-  if (normalized.snapshot) {
+  if (normalized.snapshot && shouldRefreshAdminWorkspaceSection("snapshot", normalized)) {
     tasks.push(loadAdminSnapshot(normalized.branch));
   }
-  if (normalized.editorData) {
+  if (normalized.editorData && shouldRefreshAdminWorkspaceSection("editorData", normalized)) {
     tasks.push(loadAdminEditorData(normalized.branch));
   }
-  if (normalized.auditLogs) {
+  if (normalized.auditLogs && shouldRefreshAdminWorkspaceSection("auditLogs", normalized)) {
     tasks.push(loadAdminAuditLogs(normalized.branch));
   }
-  if (normalized.cashiers) {
+  if (normalized.cashiers && shouldRefreshAdminWorkspaceSection("cashiers", normalized)) {
     tasks.push(loadAdminCashiers(normalized.branch));
   }
-  if (normalized.config) {
+  if (normalized.requests && shouldRefreshAdminWorkspaceSection("requests", normalized)) {
+    tasks.push(loadAdminMerchandiseRequests(normalized.branch));
+  }
+  if (normalized.config && shouldRefreshAdminWorkspaceSection("config", normalized)) {
     tasks.push(loadAdminConfig());
+  }
+  if (normalized.weightedAudit && shouldRefreshAdminWorkspaceSection("weightedAudit", normalized)) {
+    tasks.push(loadAdminWeightedAuditSessions(normalized.branch));
   }
 
   return tasks;
@@ -75,6 +184,7 @@ function applySnapshot(snapshot, options = {}) {
   state.summary = snapshot.summary || state.summary;
   state.admin.editorData.sales = state.recentSales.slice(0, 16);
   syncQuickImportItemsFromProducts();
+  syncMerchandiseRequestProductsFromSnapshot();
   if (!options.skipPersist) {
     saveSnapshot(buildPersistedSnapshot());
   }
@@ -226,7 +336,7 @@ function applyOptimisticSale(payload) {
     state.summary.revenueToday / Math.max(state.summary.ticketsToday, 1),
   );
 
-  const currentHourLabel = `${String(new Date().getHours()).padStart(2, "0")}:00`;
+  const currentHourLabel = getStoreHourLabel(new Date());
   state.salesByHour = state.salesByHour.map((slot) =>
     slot.label === currentHourLabel
       ? { ...slot, total: roundMoney(slot.total + total) }
@@ -278,6 +388,7 @@ async function loadAdminSnapshot(branch = getAdminBranch()) {
     `/api/bootstrap?branch=${encodeURIComponent(branch)}`,
   );
   applyAdminSnapshot(snapshot);
+  markAdminWorkspaceLoaded("snapshot");
   return snapshot;
 }
 
@@ -287,6 +398,7 @@ async function loadAdminCashiers(branch = getAdminBranch()) {
   try {
     const response = await requestAdminJson(`/api/admin/cashiers${query}`);
     state.admin.cashiers = Array.isArray(response.cashiers) ? response.cashiers : [];
+    markAdminWorkspaceLoaded("cashiers");
   } catch (_error) {
     state.admin.cashiers = [];
   }
@@ -303,6 +415,7 @@ async function loadAdminEditorData(branch = getAdminBranch()) {
       registerEvents: Array.isArray(response.registerEvents) ? response.registerEvents : [],
       inventoryMovements: Array.isArray(response.inventoryMovements) ? response.inventoryMovements : [],
     };
+    markAdminWorkspaceLoaded("editorData");
   } catch (_error) {
     state.admin.editorData = {
       sales: [],
@@ -320,6 +433,7 @@ async function loadAdminAuditLogs(branch = getAdminBranch()) {
       `/api/admin/audit-log?branch=${encodeURIComponent(branch)}&limit=180`,
     );
     state.admin.auditLogs = Array.isArray(response.logs) ? response.logs : [];
+    markAdminWorkspaceLoaded("auditLogs");
   } catch (_error) {
     state.admin.auditLogs = [];
   } finally {
@@ -332,8 +446,188 @@ async function loadAdminConfig() {
     const response = await requestAdminJson("/api/admin/settings");
     const settings = response.settings || {};
     refs.configAllowNegativeStock.checked = settings["sales.allow_negative_stock"] === "true";
+    markAdminWorkspaceLoaded("config");
   } catch (error) {
     showToast("Error al cargar configuraciones.", "error");
+  }
+}
+
+function getAdminWeightedAuditFilters(branchOverride = getAdminBranch()) {
+  const fallbackDate = toDateInputValue();
+  const dateKey = String(
+    refs.adminWeightedAuditDate?.value
+      || state.admin.weightedAudit.dateKey
+      || fallbackDate,
+  ).trim();
+  const shift = String(
+    refs.adminWeightedAuditShift?.value
+      || state.admin.weightedAudit.shift
+      || refs.shiftSelect?.value
+      || "Tarde",
+  ).trim();
+
+  state.admin.weightedAudit.dateKey = dateKey;
+  state.admin.weightedAudit.shift = shift;
+  if (refs.adminWeightedAuditDate && refs.adminWeightedAuditDate.value !== dateKey) {
+    refs.adminWeightedAuditDate.value = dateKey;
+  }
+  if (refs.adminWeightedAuditShift && refs.adminWeightedAuditShift.value !== shift) {
+    refs.adminWeightedAuditShift.value = shift;
+  }
+
+  return {
+    branch: branchOverride || getAdminBranch(),
+    dateKey,
+    shift,
+  };
+}
+
+async function loadAdminWeightedAuditSessions(branchOverride = getAdminBranch()) {
+  const filters = getAdminWeightedAuditFilters(branchOverride);
+  state.admin.weightedAudit.loading = true;
+  renderAdminWeightedAuditPanel();
+
+  try {
+    const response = await requestAdminJson(
+      `/api/admin/weighted-audit/sessions?branch=${encodeURIComponent(filters.branch)}&shift=${encodeURIComponent(filters.shift)}&dateKey=${encodeURIComponent(filters.dateKey)}&limit=60`,
+    );
+    state.admin.weightedAudit.sessions = Array.isArray(response.sessions) ? response.sessions : [];
+    markAdminWorkspaceLoaded("weightedAudit");
+
+    const currentId = state.admin.weightedAudit.currentSession?.id;
+    if (currentId && !state.admin.weightedAudit.sessions.some((item) => item.id === currentId)) {
+      state.admin.weightedAudit.currentSession = null;
+    }
+  } catch (_error) {
+    state.admin.weightedAudit.sessions = [];
+  } finally {
+    state.admin.weightedAudit.loading = false;
+    renderAdminWeightedAuditPanel();
+  }
+}
+
+async function openAdminWeightedAuditSession(sessionId) {
+  const id = Number(sessionId);
+  if (!Number.isInteger(id) || id <= 0) {
+    showToast("No pude identificar la sesion de auditoria.", "error");
+    return;
+  }
+
+  state.admin.weightedAudit.loading = true;
+  renderAdminWeightedAuditPanel();
+  try {
+    const response = await requestAdminJson(`/api/admin/weighted-audit/sessions/${id}`);
+    state.admin.weightedAudit.currentSession = response.session || null;
+    renderAdminWeightedAuditPanel();
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.admin.weightedAudit.loading = false;
+    renderAdminWeightedAuditPanel();
+  }
+}
+
+async function createAdminWeightedAuditSession() {
+  const branch = getAdminBranch();
+  if (branch === "all") {
+    showToast("Selecciona una sucursal especifica para abrir auditoria de pesado.", "info");
+    return;
+  }
+
+  const filters = getAdminWeightedAuditFilters(branch);
+  state.admin.weightedAudit.saving = true;
+  renderAdminWeightedAuditPanel();
+  try {
+    const response = await requestAdminJson("/api/admin/weighted-audit/sessions", {
+      method: "POST",
+      body: JSON.stringify({
+        branch,
+        shift: filters.shift,
+        dateKey: filters.dateKey,
+        createdBy: state.admin.username || "admin",
+      }),
+    });
+    state.admin.weightedAudit.currentSession = response.session || null;
+    await loadAdminWeightedAuditSessions(branch);
+    showToast("Sesion de auditoria de pesado lista.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.admin.weightedAudit.saving = false;
+    renderAdminWeightedAuditPanel();
+  }
+}
+
+async function saveAdminWeightedAuditItems() {
+  const session = state.admin.weightedAudit.currentSession;
+  if (!session) {
+    showToast("Abre una sesion de auditoria primero.", "info");
+    return;
+  }
+
+  const rows = [...(refs.adminWeightedAuditItems?.querySelectorAll("[data-weighted-item-row]") || [])];
+  const payloadItems = rows
+    .map((row) => ({
+      itemId: Number(row.dataset.itemId),
+      productId: Number(row.dataset.productId),
+      countedStock: row.querySelector('[data-field="countedStock"]')?.value,
+      reason: row.querySelector('[data-field="reason"]')?.value || "",
+    }))
+    .filter((item) => String(item.countedStock || "").trim() !== "");
+
+  if (payloadItems.length === 0) {
+    showToast("Captura al menos un conteo fisico para guardar.", "info");
+    return;
+  }
+
+  state.admin.weightedAudit.saving = true;
+  renderAdminWeightedAuditPanel();
+  try {
+    const response = await requestAdminJson(
+      `/api/admin/weighted-audit/sessions/${session.id}/items`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ items: payloadItems }),
+      },
+    );
+    state.admin.weightedAudit.currentSession = response.session || session;
+    await loadAdminWeightedAuditSessions(getAdminBranch());
+    showToast("Conteos de pesado guardados.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.admin.weightedAudit.saving = false;
+    renderAdminWeightedAuditPanel();
+  }
+}
+
+async function closeAdminWeightedAuditSession() {
+  const session = state.admin.weightedAudit.currentSession;
+  if (!session) {
+    showToast("No hay sesion de auditoria abierta.", "info");
+    return;
+  }
+
+  state.admin.weightedAudit.saving = true;
+  renderAdminWeightedAuditPanel();
+  try {
+    const response = await requestAdminJson(
+      `/api/admin/weighted-audit/sessions/${session.id}/complete`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          completedBy: state.admin.username || "admin",
+        }),
+      },
+    );
+    state.admin.weightedAudit.currentSession = response.session || session;
+    await loadAdminWeightedAuditSessions(getAdminBranch());
+    showToast("Auditoria de pesado cerrada.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.admin.weightedAudit.saving = false;
+    renderAdminWeightedAuditPanel();
   }
 }
 
@@ -370,16 +664,14 @@ async function loadAdminMetrics() {
   if (typeof document !== "undefined" && document.hidden) {
     return;
   }
-
-  state.admin.loading = true;
-  renderAdminModal();
+  state.admin.metricsLoading = true;
 
   try {
     state.admin.metrics = await requestAdminJson("/api/admin/metrics");
   } catch (_error) {
     // Evita toasts repetidos si el panel admin queda abierto sin conexion.
   } finally {
-    state.admin.loading = false;
+    state.admin.metricsLoading = false;
     renderAdminModal();
   }
 }
@@ -428,7 +720,7 @@ async function openAdminModal() {
   }
   renderAdminModal();
   startAdminMetricsPolling();
-  await refreshAdminWorkspace();
+  void refreshAdminWorkspace(getAdminWorkspaceFullOptions(getAdminBranch(), true)).catch(() => {});
 }
 
 function closeAdminModal() {
@@ -749,7 +1041,7 @@ async function refreshAdminDevPanelData() {
   try {
     await Promise.all([
       refreshCurrentSnapshot(),
-      refreshAdminWorkspace(),
+      refreshAdminWorkspace(getAdminWorkspaceFullOptions(getAdminBranch(), true)),
       loadRegisterSummary({ silent: true }),
     ]);
     showToast("Panel admin recargado.", "success");
@@ -873,7 +1165,11 @@ async function saveAdminEditor() {
       body: JSON.stringify(payload),
     });
     await refreshCurrentSnapshot();
-    await refreshAdminWorkspace();
+    await refreshAdminWorkspace(
+      state.adminEditor.kind === "cashier"
+        ? getAdminWorkspaceFullOptions(getAdminBranch(), true)
+        : { ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true },
+    );
     closeAdminEditor();
     showToast("Registro actualizado desde admin.", "success");
   } catch (error) {
@@ -959,7 +1255,7 @@ async function reimportCatalog() {
       body: JSON.stringify({ workbookPath: "Queseria El rincon V1.5.xlsx" }),
     });
     await refreshCurrentSnapshot();
-    await refreshAdminWorkspace();
+    await refreshAdminWorkspace({ ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true });
     showToast(
       `Catalogo sincronizado con ${response.importedCount || response.result?.importedCount || 0} productos.`,
       "success",
@@ -998,7 +1294,7 @@ async function createAdminProduct() {
     refs.adminNewProductStock.value = "0";
     refs.adminNewProductMinStock.value = "0";
     await refreshCurrentSnapshot();
-    await refreshAdminWorkspace();
+    await refreshAdminWorkspace({ ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true });
     showToast("Producto agregado correctamente.", "success");
   } catch (error) {
     showToast(error.message, "error");
@@ -1022,7 +1318,7 @@ async function removeAdminProduct(row) {
       { method: "DELETE" },
     );
     await refreshCurrentSnapshot();
-    await refreshAdminWorkspace();
+    await refreshAdminWorkspace({ ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true });
     showToast("Producto desactivado.", "success");
   } catch (error) {
     showToast(error.message, "error");
@@ -1084,7 +1380,7 @@ async function saveInventoryRow(row, branchOverride) {
       body: JSON.stringify(payload),
     });
     await refreshCurrentSnapshot();
-    await refreshAdminWorkspace();
+    await refreshAdminWorkspace({ ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true });
     showToast("Inventario actualizado.", "success");
   } catch (error) {
     showToast(error.message, "error");

@@ -215,6 +215,8 @@ function persistCashierSession() {
   persistText(
     STORAGE_KEYS.cashierSession,
     JSON.stringify({
+      id: state.cashier.id,
+      token: state.cashier.token,
       name: state.cashier.name,
       branch: state.cashier.branch,
       authenticated: state.cashier.authenticated,
@@ -230,10 +232,19 @@ async function restoreCashierSession() {
 
   try {
     const parsed = JSON.parse(rawValue);
+    state.cashier.id = Number.isInteger(Number(parsed.id)) ? Number(parsed.id) : null;
+    state.cashier.token = String(parsed.token || "");
     state.cashier.name = parsed.name || "";
     state.cashier.branch = parsed.branch || "";
-    state.cashier.authenticated = Boolean(parsed.authenticated && parsed.name && parsed.branch);
+    state.cashier.authenticated = Boolean(
+      parsed.authenticated
+      && state.cashier.token
+      && parsed.name
+      && parsed.branch,
+    );
   } catch (_error) {
+    state.cashier.id = null;
+    state.cashier.token = "";
     state.cashier.name = "";
     state.cashier.branch = "";
     state.cashier.authenticated = false;
@@ -254,6 +265,7 @@ async function restoreRegisterEvents() {
 function addOfflineRegisterEvent(event) {
   const offlineEvent = {
     id: `offline-register-${Date.now()}`,
+    clientEventId: event.clientEventId || `offline-register-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     ...event,
     createdAt: new Date().toISOString(),
     synced: false,
@@ -273,6 +285,33 @@ function getRegisterEventsForCurrentShift() {
   );
 }
 
+function getOfflineCashSalesFromQueue(shift, branch) {
+  return roundMoney(
+    state.pendingQueue
+      .filter((operation) => operation.url === "/api/sales" && operation.method === "POST")
+      .reduce((sum, operation) => {
+        try {
+          const payload = JSON.parse(operation.body || "{}");
+          if (payload.shift !== shift || payload.branch !== branch) {
+            return sum;
+          }
+          if (payload.paymentMethod !== "Efectivo") {
+            return sum;
+          }
+          const total = roundMoney(
+            (Array.isArray(payload.items) ? payload.items : []).reduce(
+              (lineSum, item) => lineSum + roundMoney(item.lineTotal || 0),
+              0,
+            ),
+          );
+          return roundMoney(sum + total);
+        } catch (_error) {
+          return sum;
+        }
+      }, 0),
+  );
+}
+
 // Calcular resumen de caja considerando eventos offline
 function calculateRegisterSummaryWithOffline(summary, offlineEvents) {
   const currentShift = refs.shiftSelect?.value || "Tarde";
@@ -283,24 +322,24 @@ function calculateRegisterSummaryWithOffline(summary, offlineEvents) {
     (e) => e.shift === currentShift && e.branch === branch
   );
   
-  // Encontrar inicio de caja offline
-  const offlineStartEvent = shiftOfflineEvents.find((e) => e.eventType === "start");
-  
-  // Calcular ventas offline
-  const offlineCashSales = shiftOfflineEvents
-    .filter((e) => e.eventType === "quick_cut" || e.eventType === "final_cut")
-    .reduce((sum, e) => sum + (e.cashSales || 0), 0);
+  // Calcular entradas offline por inicio de caja y ventas pendientes en cola.
+  const offlineOpeningAmount = roundMoney(
+    shiftOfflineEvents
+      .filter((e) => e.eventType === "start")
+      .reduce((sum, e) => sum + roundMoney(e.openingAmount || 0), 0),
+  );
+  const offlineCashSales = getOfflineCashSalesFromQueue(currentShift, branch);
   const offlineWithdrawals = shiftOfflineEvents
     .filter((e) => e.eventType === "quick_cut" || e.eventType === "final_cut")
-    .reduce((sum, e) => sum + (e.withdrawalsAmount || 0), 0);
+    .reduce((sum, e) => sum + roundMoney(e.withdrawalsAmount || 0), 0);
   
   // Combinar con resumen del servidor
   return {
     ...summary,
-    openingAmount: offlineStartEvent ? summary.openingAmount + offlineStartEvent.openingAmount : summary.openingAmount,
+    openingAmount: roundMoney(summary.openingAmount + offlineOpeningAmount),
     cashSales: summary.cashSales + offlineCashSales,
     withdrawalsAmount: (summary.withdrawalsAmount || 0) + offlineWithdrawals,
-    expectedCash: summary.expectedCash + offlineCashSales - offlineWithdrawals,
+    expectedCash: roundMoney(summary.expectedCash + offlineOpeningAmount + offlineCashSales - offlineWithdrawals),
     quickCuts: summary.quickCuts + shiftOfflineEvents.filter((e) => e.eventType === "quick_cut").length,
     finalCuts: summary.finalCuts + shiftOfflineEvents.filter((e) => e.eventType === "final_cut").length,
   };

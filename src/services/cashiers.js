@@ -60,8 +60,6 @@ function createCashier(payload) {
   const branch = normalizeBranch(payload.branch || "");
   const password = String(payload.password || "").trim();
 
-  console.log("createCashier - raw branch:", payload.branch, "normalized:", branch);
-
   if (!name) {
     throw new Error("El nombre del cajero es requerido.");
   }
@@ -77,15 +75,11 @@ function createCashier(payload) {
   const passwordHash = JSON.stringify(hashCashierPassword(password));
   const now = nowIso();
 
-  console.log("Creating cashier:", { name, branch, passwordLength: password.length });
-
   try {
     const result = db.prepare(`
       INSERT INTO cashiers (name, branch, password_hash, active, created_at, updated_at)
       VALUES (?, ?, ?, 1, ?, ?)
     `).run(name, branch, passwordHash, now, now);
-
-    console.log("Cashier created with id:", result.lastInsertRowid);
 
     return {
       id: Number(result.lastInsertRowid),
@@ -94,7 +88,6 @@ function createCashier(payload) {
       active: true,
     };
   } catch (error) {
-    console.error("Error creating cashier:", error.message, error.code);
     if (error.code === "SQLITE_CONSTRAINT_UNIQUE") {
       throw new Error("Ya existe un cajero con ese nombre en esa sucursal.");
     }

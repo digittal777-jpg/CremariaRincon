@@ -8,6 +8,8 @@ const exportService = require("./export");
 const workbookImport = require("./workbookImport");
 const settings = require("./settings");
 const audit = require("./audit");
+const merchandiseRequests = require("./merchandiseRequests");
+const weightedAudit = require("./weightedAudit");
 
 module.exports = {
   ...products,
@@ -20,4 +22,6 @@ module.exports = {
   ...workbookImport,
   ...settings,
   ...audit,
+  ...merchandiseRequests,
+  ...weightedAudit,
 };

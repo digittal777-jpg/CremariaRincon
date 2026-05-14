@@ -12,6 +12,7 @@ const { createDatabaseBackup, installDatabaseFromBuffer, nowIso } = require("./d
 
 const services = require("./services");
 const adminAuth = require("./admin/auth");
+const cashierAuth = require("./cashier/auth");
 const { getSetting, setSetting } = require("./utils/settings");
 const { getSystemMetrics } = require("./admin/metrics");
 
@@ -41,6 +42,22 @@ function getProcessCpuPercent() {
 
 function broadcastSnapshot(snapshot = services.getDashboardSnapshot()) {
   io.emit("dashboard:snapshot", snapshot);
+}
+
+function broadcastMerchandiseRequestUpdate(requestRecord) {
+  if (!requestRecord) {
+    return;
+  }
+
+  io.emit("merchandise-request:updated", {
+    id: requestRecord.id,
+    branch: requestRecord.branch,
+    requestedBy: requestRecord.requestedBy,
+    status: requestRecord.status,
+    createdAt: requestRecord.createdAt,
+    approvedAt: requestRecord.approvedAt,
+    appliedAt: requestRecord.appliedAt,
+  });
 }
 
 app.use(express.json({ limit: "1mb" }));
@@ -76,11 +93,106 @@ app.get("/api/bootstrap", (request, response) => {
   }
 });
 
-app.post("/api/sales", (request, response) => {
-  const sale = services.createSale(request.body || {});
+app.post("/api/sales", cashierAuth.requireCashierAuth, (request, response) => {
+  const cashierSession = request.cashierSession;
+  const sale = services.createSale({
+    ...(request.body || {}),
+    cashier: cashierSession.name,
+    branch: cashierSession.branch,
+  });
   const snapshot = services.getDashboardSnapshot(sale.branch);
   broadcastSnapshot(snapshot);
   response.status(201).json({ sale, snapshot });
+});
+
+app.post("/api/merchandise-requests", cashierAuth.requireCashierAuth, (request, response) => {
+  const cashierSession = request.cashierSession;
+  const merchandiseRequest = services.createMerchandiseRequest({
+    ...(request.body || {}),
+    requestedBy: cashierSession.name,
+    cashier: cashierSession.name,
+    branch: cashierSession.branch,
+  });
+  broadcastMerchandiseRequestUpdate(merchandiseRequest);
+  response.status(201).json({ request: merchandiseRequest });
+});
+
+app.get("/api/merchandise-requests/my", cashierAuth.requireCashierAuth, (request, response) => {
+  const cashierSession = request.cashierSession;
+  const status = request.query.status || "pending";
+  const limit = Number(request.query.limit || 12);
+  const requests = services.listMyMerchandiseRequests({
+    requestedBy: cashierSession.name,
+    branch: cashierSession.branch,
+    status,
+    limit,
+  });
+  response.json({ requests, generatedAt: nowIso() });
+});
+
+app.get("/api/merchandise-requests/pending", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response) => {
+  const branch = request.query.branch || "all";
+  const limit = Number(request.query.limit || 60);
+  const requests = services.listPendingMerchandiseRequests(branch, limit);
+  response.json({ requests, generatedAt: nowIso() });
+});
+
+app.get("/api/merchandise-requests/:id", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response) => {
+  const requestId = Number(request.params.id);
+  const merchandiseRequest = services.getMerchandiseRequestById(requestId);
+  if (!merchandiseRequest) {
+    response.status(404).json({ message: "Solicitud de mercaderia no encontrada" });
+    return;
+  }
+
+  response.json({ request: merchandiseRequest });
+});
+
+app.post("/api/merchandise-requests/:id/approve", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response) => {
+  const requestId = Number(request.params.id);
+  const merchandiseRequest = services.approveMerchandiseRequest(requestId);
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "merchandise_request_approve",
+    entityType: "merchandise_request",
+    entityId: requestId,
+    branch: merchandiseRequest.branch,
+    payload: {
+      supplierName: merchandiseRequest.supplierName,
+      totalValue: merchandiseRequest.totalValue,
+      itemCount: merchandiseRequest.itemCount,
+    },
+  });
+  const snapshot = services.getDashboardSnapshot(merchandiseRequest.branch);
+  broadcastSnapshot(snapshot);
+  broadcastMerchandiseRequestUpdate(merchandiseRequest);
+  response.json({ request: merchandiseRequest, snapshot });
+});
+
+app.post("/api/merchandise-requests/:id/reject", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response) => {
+  const requestId = Number(request.params.id);
+  const rejectionReason = request.body?.rejectionReason || request.body?.reason || "";
+  const merchandiseRequest = services.rejectMerchandiseRequest(requestId, rejectionReason);
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "merchandise_request_reject",
+    entityType: "merchandise_request",
+    entityId: requestId,
+    branch: merchandiseRequest.branch,
+    payload: {
+      rejectionReason: merchandiseRequest.rejectionReason,
+    },
+  });
+  broadcastMerchandiseRequestUpdate(merchandiseRequest);
+  response.json({ request: merchandiseRequest });
 });
 
 
@@ -480,14 +592,44 @@ app.post("/api/admin/cashiers/init-test", (request, response, next) => {
 
 app.post("/api/cashier/auth", (request, response) => {
   const { name, branch, password } = request.body || {};
-  console.log("POST /api/cashier/auth - name:", name, "branch:", branch);
   const cashier = services.authenticateCashier(name, branch, password);
-  console.log("Auth result:", cashier);
   if (cashier) {
-    response.json({ authenticated: true, cashier });
+    const session = cashierAuth.createCashierSession(cashier);
+    response.json({
+      authenticated: true,
+      cashier: session.cashier,
+      token: session.token,
+      expiresAt: session.expiresAt,
+    });
   } else {
-    response.status(401).json({ authenticated: false });
+    response.status(401).json({
+      authenticated: false,
+      message: "Credenciales incorrectas.",
+    });
   }
+});
+
+app.get("/api/cashier/auth/status", (request, response) => {
+  const cashierSession = cashierAuth.getCashierSessionFromRequest(request);
+  if (!cashierSession) {
+    response.json({ authenticated: false });
+    return;
+  }
+
+  response.json({
+    authenticated: true,
+    cashier: {
+      id: cashierSession.cashierId,
+      name: cashierSession.name,
+      branch: cashierSession.branch,
+    },
+    expiresAt: cashierSession.expiresAt,
+  });
+});
+
+app.post("/api/cashier/auth/logout", (request, response) => {
+  cashierAuth.destroyCashierSession(request);
+  response.json({ ok: true });
 });
 
 
@@ -508,8 +650,104 @@ app.post("/api/admin/register/cut", (request, response, next) => {
 app.get("/api/admin/register/summary", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
 }, (request, response) => {
-  const summary = services.getRegisterSummary(request.query.shift || "Tarde", request.query.branch || "carrizal");
+  const summary = services.getRegisterSummary(
+    request.query.shift || "Tarde",
+    request.query.branch || "carrizal",
+    { cashier: request.query.cashier || "" },
+  );
   response.json(summary);
+});
+
+app.get("/api/admin/weighted-audit/sessions", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response) => {
+  const sessions = services.listWeightedAuditSessions({
+    branch: request.query.branch || "all",
+    shift: request.query.shift || "",
+    dateKey: request.query.dateKey || "",
+    limit: Number(request.query.limit || 40),
+  });
+  response.json({ sessions, generatedAt: nowIso() });
+});
+
+app.post("/api/admin/weighted-audit/sessions", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response) => {
+  const session = services.createWeightedAuditSession({
+    branch: request.body?.branch || "carrizal",
+    shift: request.body?.shift || "Tarde",
+    dateKey: request.body?.dateKey || "",
+    createdBy: request.body?.createdBy || getAdminActorName(request),
+    notes: request.body?.notes || "",
+  });
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "weighted_audit_session_create",
+    entityType: "weighted_audit_session",
+    entityId: session.id,
+    branch: session.branch,
+    payload: {
+      shift: session.shift,
+      auditedDateKey: session.auditedDateKey,
+    },
+  });
+  response.status(201).json({ session });
+});
+
+app.get("/api/admin/weighted-audit/sessions/:id", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response) => {
+  const sessionId = Number(request.params.id);
+  const session = services.getWeightedAuditSessionById(sessionId);
+  if (!session) {
+    response.status(404).json({ message: "Sesion de auditoria no encontrada" });
+    return;
+  }
+
+  response.json({ session });
+});
+
+app.patch("/api/admin/weighted-audit/sessions/:id/items", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response) => {
+  const sessionId = Number(request.params.id);
+  const session = services.updateWeightedAuditItems(sessionId, request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "weighted_audit_items_update",
+    entityType: "weighted_audit_session",
+    entityId: session.id,
+    branch: session.branch,
+    payload: {
+      shift: session.shift,
+      auditedDateKey: session.auditedDateKey,
+      itemsUpdated: Array.isArray(request.body?.items) ? request.body.items.length : 0,
+    },
+  });
+  response.json({ session });
+});
+
+app.post("/api/admin/weighted-audit/sessions/:id/complete", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response) => {
+  const sessionId = Number(request.params.id);
+  const session = services.completeWeightedAuditSession(sessionId, {
+    completedBy: request.body?.completedBy || getAdminActorName(request),
+    notes: request.body?.notes || "",
+  });
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "weighted_audit_session_complete",
+    entityType: "weighted_audit_session",
+    entityId: session.id,
+    branch: session.branch,
+    payload: {
+      shift: session.shift,
+      auditedDateKey: session.auditedDateKey,
+      incidents: session.summary?.incidentItems || 0,
+    },
+  });
+  response.json({ session });
 });
 
 
@@ -589,19 +827,33 @@ app.patch("/api/admin/inventory-movements/:id", (request, response, next) => {
 });
 
 
-app.get("/api/register/summary", (request, response) => {
+app.get("/api/register/summary", cashierAuth.requireCashierAuth, (request, response) => {
+  const cashierSession = request.cashierSession;
   const shift = request.query.shift || "Tarde";
-  const branch = request.query.branch || "carrizal";
-  response.json(services.getRegisterSummary(shift, branch));
+  response.json({
+    summary: services.getRegisterSummary(shift, cashierSession.branch, {
+      cashier: cashierSession.name,
+    }),
+  });
 });
 
-app.post("/api/register/start", (request, response) => {
-  const result = services.startRegister(request.body || {});
+app.post("/api/register/start", cashierAuth.requireCashierAuth, (request, response) => {
+  const cashierSession = request.cashierSession;
+  const result = services.startRegister({
+    ...(request.body || {}),
+    cashier: cashierSession.name,
+    branch: cashierSession.branch,
+  });
   response.json(result);
 });
 
-app.post("/api/register/cut", (request, response) => {
-  const result = services.createRegisterCut(request.body || {});
+app.post("/api/register/cut", cashierAuth.requireCashierAuth, (request, response) => {
+  const cashierSession = request.cashierSession;
+  const result = services.createRegisterCut({
+    ...(request.body || {}),
+    cashier: cashierSession.name,
+    branch: cashierSession.branch,
+  });
   response.json(result);
 });
 
@@ -659,7 +911,9 @@ app.use((error, _request, response, _next) => {
 });
 
 // ── INICIO ────────────────────────────────────────────────────────────────────
-services.ensureCatalogSeeded().then(() => { services.initializeTestCashiers(); });
+services.ensureCatalogSeeded().catch((error) => {
+  console.error("No pude preparar el catalogo inicial:", error.message);
+});
 
 server.listen(PORT, () => { console.log("Servidor corriendo en http://localhost:" + PORT); });
 
