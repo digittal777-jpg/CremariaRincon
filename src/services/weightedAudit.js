@@ -79,6 +79,74 @@ function buildSessionSummary(items) {
   };
 }
 
+function buildAutoWeightedAuditNote({ shift, cashier, eventId } = {}) {
+  const safeShift = normalizeText(shift || STORE_SHIFTS[0], 24) || STORE_SHIFTS[0];
+  const safeCashier = normalizeText(cashier || "", 60);
+  const safeEventId = Number(eventId);
+  const fragments = [`Generada automaticamente desde corte final ${safeShift}`];
+
+  if (safeCashier) {
+    fragments.push(`por ${safeCashier}`);
+  }
+  if (Number.isInteger(safeEventId) && safeEventId > 0) {
+    fragments.push(`evento ${safeEventId}`);
+  }
+
+  return normalizeText(fragments.join(" · "), 240) || null;
+}
+
+function ensureWeightedAuditSessionInternal(payload = {}) {
+  const branch = normalizeBranch(payload.branch);
+  const shift = normalizeText(payload.shift || STORE_SHIFTS[0], 24) || STORE_SHIFTS[0];
+  const auditedDateKey = normalizeAuditDateKey(payload.dateKey);
+  const createdBy = normalizeText(payload.createdBy || "admin", 60) || "admin";
+  const notes = normalizeText(payload.notes || "", 240) || null;
+
+  if (!STORE_BRANCHES.includes(branch)) {
+    throw createHttpError("Selecciona una sucursal valida para la auditoria.");
+  }
+  if (!STORE_SHIFTS.includes(shift)) {
+    throw createHttpError("Selecciona un turno valido para la auditoria.");
+  }
+
+  let created = false;
+  const sessionId = db.transaction(() => {
+    const existing = db.prepare(`
+      SELECT id
+      FROM weighted_audit_sessions
+      WHERE branch = ? AND shift = ? AND audited_date_key = ?
+    `).get(branch, shift, auditedDateKey);
+
+    if (existing) {
+      ensureWeightedAuditTemplate(existing.id, branch);
+      return existing.id;
+    }
+
+    const now = nowIso();
+    const insert = db.prepare(`
+      INSERT INTO weighted_audit_sessions (
+        branch,
+        shift,
+        audited_date_key,
+        status,
+        created_by,
+        notes,
+        created_at
+      ) VALUES (?, ?, ?, 'pending', ?, ?, ?)
+    `).run(branch, shift, auditedDateKey, createdBy, notes, now);
+
+    created = true;
+    const nextId = Number(insert.lastInsertRowid);
+    ensureWeightedAuditTemplate(nextId, branch);
+    return nextId;
+  })();
+
+  return {
+    created,
+    session: getWeightedAuditSessionById(sessionId),
+  };
+}
+
 function getWeightedAuditSessionById(sessionId) {
   const sessionRow = db.prepare(`
     SELECT
@@ -100,6 +168,10 @@ function getWeightedAuditSessionById(sessionId) {
     return null;
   }
 
+  if (sessionRow.status !== "completed") {
+    ensureWeightedAuditTemplate(sessionRow.id, sessionRow.branch);
+  }
+
   const items = db.prepare(`
     SELECT
       id,
@@ -117,7 +189,14 @@ function getWeightedAuditSessionById(sessionId) {
       updated_at
     FROM weighted_audit_items
     WHERE session_id = ?
-    ORDER BY ABS(COALESCE(difference, 0)) DESC, product_name COLLATE NOCASE
+    ORDER BY
+      CASE
+        WHEN counted_stock IS NULL THEN 0
+        WHEN ABS(COALESCE(difference, 0)) > 0 THEN 1
+        ELSE 2
+      END,
+      ABS(COALESCE(difference, 0)) DESC,
+      product_name COLLATE NOCASE
   `).all(sessionId).map(mapWeightedAuditItem);
 
   return {
@@ -190,50 +269,23 @@ function ensureWeightedAuditTemplate(sessionId, branch) {
 }
 
 function createWeightedAuditSession(payload = {}) {
-  const branch = normalizeBranch(payload.branch);
-  const shift = normalizeText(payload.shift || STORE_SHIFTS[0], 24) || STORE_SHIFTS[0];
-  const auditedDateKey = normalizeAuditDateKey(payload.dateKey);
-  const createdBy = normalizeText(payload.createdBy || "admin", 60) || "admin";
-  const notes = normalizeText(payload.notes || "", 240) || null;
+  return ensureWeightedAuditSessionInternal(payload).session;
+}
 
-  if (!STORE_BRANCHES.includes(branch)) {
-    throw createHttpError("Selecciona una sucursal valida para la auditoria.");
-  }
-  if (!STORE_SHIFTS.includes(shift)) {
-    throw createHttpError("Selecciona un turno valido para la auditoria.");
-  }
+function ensureWeightedAuditSessionForFinalCut(payload = {}) {
+  const cashier = normalizeText(payload.cashier || "Mostrador", 60) || "Mostrador";
 
-  const sessionId = db.transaction(() => {
-    const existing = db.prepare(`
-      SELECT id
-      FROM weighted_audit_sessions
-      WHERE branch = ? AND shift = ? AND audited_date_key = ?
-    `).get(branch, shift, auditedDateKey);
-
-    if (existing) {
-      ensureWeightedAuditTemplate(existing.id, branch);
-      return existing.id;
-    }
-
-    const now = nowIso();
-    const insert = db.prepare(`
-      INSERT INTO weighted_audit_sessions (
-        branch,
-        shift,
-        audited_date_key,
-        status,
-        created_by,
-        notes,
-        created_at
-      ) VALUES (?, ?, ?, 'pending', ?, ?, ?)
-    `).run(branch, shift, auditedDateKey, createdBy, notes, now);
-
-    const nextId = Number(insert.lastInsertRowid);
-    ensureWeightedAuditTemplate(nextId, branch);
-    return nextId;
-  })();
-
-  return getWeightedAuditSessionById(sessionId);
+  return ensureWeightedAuditSessionInternal({
+    branch: payload.branch,
+    shift: payload.shift,
+    dateKey: payload.dateKey,
+    createdBy: payload.createdBy || `corte final · ${cashier}`,
+    notes: payload.notes || buildAutoWeightedAuditNote({
+      shift: payload.shift,
+      cashier,
+      eventId: payload.eventId,
+    }),
+  });
 }
 
 function listWeightedAuditSessions(options = {}) {
@@ -318,11 +370,22 @@ function updateWeightedAuditItems(sessionId, payload = {}) {
   }
 
   const items = Array.isArray(payload.items) ? payload.items : [];
-  if (items.length === 0) {
+  const nextNotes = payload.notes === undefined
+    ? session.notes || null
+    : normalizeText(payload.notes || "", 240) || null;
+  if (items.length === 0 && payload.notes === undefined) {
     throw createHttpError("No enviaste renglones de auditoria para guardar.");
   }
 
   db.transaction(() => {
+    if (payload.notes !== undefined) {
+      db.prepare(`
+        UPDATE weighted_audit_sessions
+        SET notes = ?
+        WHERE id = ?
+      `).run(nextNotes, sessionId);
+    }
+
     items.forEach((entry) => {
       const itemId = Number(entry.itemId);
       const productId = Number(entry.productId);
@@ -439,9 +502,9 @@ function listWeightedAuditRowsForExport() {
 module.exports = {
   completeWeightedAuditSession,
   createWeightedAuditSession,
+  ensureWeightedAuditSessionForFinalCut,
   getWeightedAuditSessionById,
   listWeightedAuditRowsForExport,
   listWeightedAuditSessions,
   updateWeightedAuditItems,
 };
-

@@ -45,7 +45,9 @@ function renderCashierSession() {
   if (refs.cashierSessionHelper) {
     refs.cashierSessionHelper.textContent = state.cashier.authenticated
       ? "Puedes cambiar de sucursal o cerrar la sesion del cajero cuando lo necesites."
-      : "Selecciona sucursal y entra con la clave del cajero para empezar a vender.";
+      : state.online
+        ? "Selecciona sucursal y entra con la clave del cajero para empezar a vender."
+        : "Sin internet: si este cajero ya entro antes en este dispositivo y sucursal, puedes iniciar con su clave para seguir vendiendo offline.";
   }
 
   if (refs.logoutCashierButton) {

@@ -95,6 +95,11 @@ const state = {
       saving: false,
       dateKey: "",
       shift: "Tarde",
+      search: "",
+      showPendingOnly: false,
+      showIncidentsOnly: false,
+      draftItems: {},
+      notesDraft: "",
     },
     editorData: {
       sales: [],

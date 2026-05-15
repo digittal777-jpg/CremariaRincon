@@ -34,6 +34,7 @@ const STORAGE_KEYS = {
   cart: "cremeria.cart",
   shift: "cremeria.shift",
   cashierSession: "cremeria.cashier.session",
+  cashierOfflineProfiles: "cremeria.cashier.offlineProfiles",
   snapshot: "cremeria.snapshot",
   queue: "cremeria.queue",
   adminToken: "cremeria.adminToken",

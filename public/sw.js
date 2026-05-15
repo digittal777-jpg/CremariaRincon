@@ -1,12 +1,26 @@
-const STATIC_CACHE_NAME = "cremeria-rincon-static-v2";
-const API_CACHE_NAME = "cremeria-rincon-api-v2";
+const STATIC_CACHE_NAME = "cremeria-rincon-static-v4";
+const API_CACHE_NAME = "cremeria-rincon-api-v4";
 const APP_SHELL = [
   "/",
   "/index.html",
   "/styles.css",
-  "/app.js",
   "/manifest.webmanifest",
+  "/assets/branding/rincon-logo-gold-192.png",
+  "/assets/branding/rincon-logo-gold-512.png",
   "/socket.io/socket.io.js",
+  "/js/config.js",
+  "/js/state.js",
+  "/js/helpers.js",
+  "/js/storage.js",
+  "/js/network.js",
+  "/js/render.js",
+  "/js/render-admin.js",
+  "/js/quick-import.js",
+  "/js/merchandise-requests.js",
+  "/js/actions.js",
+  "/js/sales.js",
+  "/js/auth.js",
+  "/js/app.js",
 ];
 
 self.addEventListener("install", (event) => {
@@ -93,6 +107,6 @@ async function handleStaticRequest(request) {
     return response;
   } catch (_error) {
     const cachedResponse = await caches.match(request);
-    return cachedResponse || caches.match("/index.html");
+    return cachedResponse || Response.error();
   }
 }

@@ -4,6 +4,7 @@ const {
   STORE_BRANCHES,
   STORE_SHIFTS,
   createHttpError,
+  getStoreDateKey,
   isSameStoreDay,
   normalizeBranch,
   normalizeText,
@@ -356,6 +357,18 @@ function createRegisterCut(payload) {
   if (clientEventId) {
     const existing = getRegisterEventByClientEventId(clientEventId);
     if (existing) {
+      let auditResolution = null;
+      if (existing.eventType === "final_cut") {
+        const { ensureWeightedAuditSessionForFinalCut } = require("./weightedAudit");
+        auditResolution = ensureWeightedAuditSessionForFinalCut({
+          branch: existing.branch,
+          shift: existing.shift,
+          cashier: existing.cashier,
+          eventId: existing.id,
+          dateKey: getStoreDateKey(new Date(existing.createdAt)),
+        });
+      }
+
       if (existing.eventType !== eventType) {
         throw createHttpError("El clientEventId ya fue usado en otro tipo de evento de caja.");
       }
@@ -363,6 +376,8 @@ function createRegisterCut(payload) {
         eventId: existing.id,
         differenceAmount: existing.differenceAmount,
         overWithdrawalAmount: existing.overWithdrawalAmount || 0,
+        auditSession: auditResolution?.session || null,
+        auditSessionCreated: Boolean(auditResolution?.created),
         summary: getRegisterSummary(existing.shift, existing.branch, { cashier: existing.cashier }),
       };
     }
@@ -417,10 +432,24 @@ function createRegisterCut(payload) {
     now,
   );
 
+  let auditResolution = null;
+  if (eventType === "final_cut") {
+    const { ensureWeightedAuditSessionForFinalCut } = require("./weightedAudit");
+    auditResolution = ensureWeightedAuditSessionForFinalCut({
+      branch,
+      shift: summary.shift,
+      cashier,
+      eventId: Number(insert.lastInsertRowid),
+      dateKey: getStoreDateKey(new Date(now)),
+    });
+  }
+
   return {
     eventId: Number(insert.lastInsertRowid),
     differenceAmount,
     overWithdrawalAmount,
+    auditSession: auditResolution?.session || null,
+    auditSessionCreated: Boolean(auditResolution?.created),
     summary: getRegisterSummary(summary.shift, branch, { cashier }),
   };
 }

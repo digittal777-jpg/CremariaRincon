@@ -68,6 +68,10 @@ function normalizeMerchandiseRequestQuantity(value, product) {
   );
 }
 
+function getMerchandiseRequestItemSignedMultiplier(mode = state.merchandise.currentMode) {
+  return mode === "return" ? -1 : 1;
+}
+
 function resetMerchandiseRequestDraft() {
   state.merchandise.items = [];
   state.merchandise.supplierName = "";
@@ -93,13 +97,18 @@ function syncMerchandiseRequestProductsFromSnapshot() {
     }
 
     const unitPrice = roundMoney(product.price);
+    const fallbackTotalValue = roundMoney(
+      unitPrice * item.quantity * getMerchandiseRequestItemSignedMultiplier(item.mode),
+    );
     return {
       ...item,
       productName: product.name,
       unit: product.unit,
       categoryLabel: product.categoryLabel,
       unitPrice,
-      totalValue: roundMoney(unitPrice * item.quantity * (item.mode === "receive" ? 1 : -1)),
+      totalValue: Number.isFinite(Number(item.totalValue))
+        ? roundMoney(item.totalValue)
+        : fallbackTotalValue,
     };
   });
 
@@ -272,27 +281,50 @@ function closeMerchandiseRequestItemModal() {
   setModalOpen(refs.merchandiseRequestItemModal, false);
 }
 
-function syncMerchandiseRequestItemTotal() {
+function syncMerchandiseRequestItemTotal(options = {}) {
   if (!state.merchandise.currentProduct || !refs.merchandiseRequestItemTotal) {
     return;
   }
 
-  const quantity = normalizeMerchandiseRequestQuantity(
-    state.merchandise.currentQuantity || refs.merchandiseRequestItemQuantity?.value,
-    state.merchandise.currentProduct,
-  );
-  state.merchandise.currentQuantity = String(quantity);
+  const rawQuantity = state.merchandise.currentQuantity || refs.merchandiseRequestItemQuantity?.value;
+  const parsedQuantity = Number(rawQuantity);
+  const quantity = Number.isFinite(parsedQuantity) && parsedQuantity > 0
+    ? normalizeMerchandiseRequestQuantity(parsedQuantity, state.merchandise.currentProduct)
+    : null;
+  const unitPrice = roundMoney(state.merchandise.currentProduct.price);
+  const signedMultiplier = getMerchandiseRequestItemSignedMultiplier();
+  refs.merchandiseRequestItemUnitPrice.value = unitPrice.toFixed(2);
 
-  if (refs.merchandiseRequestItemQuantity) {
-    refs.merchandiseRequestItemQuantity.value = String(quantity);
+  if (options.preserveTypedQuantity && quantity == null) {
+    return;
   }
 
-  const unitPrice = roundMoney(state.merchandise.currentProduct.price);
-  const signedMultiplier = state.merchandise.currentMode === "return" ? -1 : 1;
-  refs.merchandiseRequestItemUnitPrice.value = unitPrice.toFixed(2);
+  if (!options.preserveTypedQuantity) {
+    const normalizedQuantity = quantity
+      ?? getMerchandiseRequestQuantityMin(state.merchandise.currentProduct);
+    state.merchandise.currentQuantity = String(normalizedQuantity);
+
+    if (refs.merchandiseRequestItemQuantity) {
+      refs.merchandiseRequestItemQuantity.value = state.merchandise.currentQuantity;
+    }
+  }
+
+  if (quantity == null) {
+    return;
+  }
+
   refs.merchandiseRequestItemTotal.value = roundMoney(
     quantity * unitPrice * signedMultiplier,
   ).toFixed(2);
+}
+
+function finalizeMerchandiseRequestItemQuantityInput() {
+  if (!state.merchandise.currentProduct || !refs.merchandiseRequestItemQuantity) {
+    return;
+  }
+
+  state.merchandise.currentQuantity = refs.merchandiseRequestItemQuantity.value;
+  syncMerchandiseRequestItemTotal();
 }
 
 function syncMerchandiseRequestQuantityFromTotal() {
@@ -329,7 +361,7 @@ function finalizeMerchandiseRequestItemTotalInput() {
     return;
   }
 
-  const signedMultiplier = state.merchandise.currentMode === "return" ? -1 : 1;
+  const signedMultiplier = getMerchandiseRequestItemSignedMultiplier();
   refs.merchandiseRequestItemTotal.value = roundMoney(lineTotal * signedMultiplier).toFixed(2);
   syncMerchandiseRequestQuantityFromTotal();
 }
@@ -504,10 +536,23 @@ function addMerchandiseRequestItem() {
 
   const mode = state.merchandise.currentMode;
   const unitPrice = roundMoney(product.price);
-  const totalValue = roundMoney(unitPrice * quantity * (mode === "receive" ? 1 : -1));
+  const signedMultiplier = getMerchandiseRequestItemSignedMultiplier(mode);
+  const rawLineTotal = roundMoney(
+    Math.abs(refs.merchandiseRequestItemTotal?.value || unitPrice * quantity),
+  );
+  if (!Number.isFinite(rawLineTotal) || rawLineTotal <= 0) {
+    showToast("Captura un valor valido para la linea.", "error");
+    return;
+  }
+
+  const totalValue = roundMoney(rawLineTotal * signedMultiplier);
   const existingIndex = state.merchandise.items.findIndex(
     (item) => item.productId === product.id && item.mode === mode,
   );
+
+  state.merchandise.currentQuantity = String(quantity);
+  refs.merchandiseRequestItemQuantity.value = state.merchandise.currentQuantity;
+  refs.merchandiseRequestItemTotal.value = totalValue.toFixed(2);
 
   if (existingIndex >= 0) {
     const currentItem = state.merchandise.items[existingIndex];
@@ -516,7 +561,7 @@ function addMerchandiseRequestItem() {
       ...currentItem,
       quantity: nextQuantity,
       unitPrice,
-      totalValue: roundMoney(unitPrice * nextQuantity * (mode === "receive" ? 1 : -1)),
+      totalValue: roundMoney(currentItem.totalValue + totalValue),
     };
   } else {
     state.merchandise.items.push({
@@ -559,6 +604,7 @@ async function submitMerchandiseRequest() {
     items: state.merchandise.items.map((item) => ({
       productId: item.productId,
       quantity: item.quantity,
+      totalValue: item.totalValue,
       mode: item.mode,
     })),
   };

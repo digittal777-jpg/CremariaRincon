@@ -190,6 +190,11 @@ async function bootstrap() {
   refs.createWeightedAuditButton = $("create-weighted-audit-button");
   refs.saveWeightedAuditItemsButton = $("save-weighted-audit-items-button");
   refs.completeWeightedAuditButton = $("complete-weighted-audit-button");
+  refs.adminWeightedAuditSearch = $("admin-weighted-audit-search");
+  refs.toggleWeightedAuditPendingButton = $("toggle-weighted-audit-pending-button");
+  refs.toggleWeightedAuditIncidentsButton = $("toggle-weighted-audit-incidents-button");
+  refs.fillWeightedAuditVisibleButton = $("fill-weighted-audit-visible-button");
+  refs.clearWeightedAuditVisibleButton = $("clear-weighted-audit-visible-button");
   refs.configAllowNegativeStock = $("config-allow-negative-stock");
   refs.saveAdminConfigButton = $("save-admin-config-button");
   refs.adminAuthModal = $("admin-auth-modal");
@@ -237,6 +242,11 @@ async function bootstrap() {
   await restoreQueue();
   await restoreRegisterEvents();
   await restoreCashierSession();
+  state.admin.token = readStorageText(STORAGE_KEYS.adminToken, "");
+  const cachedSnapshot = await restoreSnapshot();
+  if (cachedSnapshot) {
+    applySnapshot(cachedSnapshot, { skipPersist: true });
+  }
   try {
     if (state.cashier.token) {
       await loadCashierAuthStatus();
@@ -246,16 +256,19 @@ async function bootstrap() {
       clearCashierSessionState();
     }
   }
-  state.admin.token = readStorageText(STORAGE_KEYS.adminToken, "");
   try {
-    await loadAdminAuthStatus();
-    if (!state.admin.authenticated) {
-      state.admin.token = "";
-      writeStorageText(STORAGE_KEYS.adminToken, "");
+    if (state.admin.token) {
+      await loadAdminAuthStatus();
+      if (!state.admin.authenticated) {
+        state.admin.token = "";
+        writeStorageText(STORAGE_KEYS.adminToken, "");
+      }
     }
-  } catch (_error) {
-    state.admin.configured = false;
-    state.admin.authenticated = false;
+  } catch (error) {
+    if (!isNetworkError(error)) {
+      state.admin.configured = false;
+      state.admin.authenticated = false;
+    }
   }
 
   // Renderizados iniciales
@@ -318,6 +331,27 @@ async function bootstrap() {
   });
   refs.adminWeightedAuditDate?.addEventListener("change", () => {
     state.admin.weightedAudit.dateKey = refs.adminWeightedAuditDate.value;
+  });
+  refs.adminWeightedAuditSearch?.addEventListener("input", () => {
+    updateWeightedAuditFilters({ search: refs.adminWeightedAuditSearch.value });
+  });
+  refs.toggleWeightedAuditPendingButton?.addEventListener("click", () => {
+    updateWeightedAuditFilters({
+      showPendingOnly: !state.admin.weightedAudit.showPendingOnly,
+      showIncidentsOnly: false,
+    });
+  });
+  refs.toggleWeightedAuditIncidentsButton?.addEventListener("click", () => {
+    updateWeightedAuditFilters({
+      showPendingOnly: false,
+      showIncidentsOnly: !state.admin.weightedAudit.showIncidentsOnly,
+    });
+  });
+  refs.fillWeightedAuditVisibleButton?.addEventListener("click", () => {
+    fillVisibleWeightedAuditDraftsWithPos();
+  });
+  refs.clearWeightedAuditVisibleButton?.addEventListener("click", () => {
+    clearVisibleWeightedAuditDrafts();
   });
 
   // Turno
@@ -481,8 +515,9 @@ async function bootstrap() {
   refs.merchandiseRequestItemAddButton.addEventListener("click", addMerchandiseRequestItem);
   refs.merchandiseRequestItemQuantity.addEventListener("input", () => {
     state.merchandise.currentQuantity = refs.merchandiseRequestItemQuantity.value;
-    syncMerchandiseRequestItemTotal();
+    syncMerchandiseRequestItemTotal({ preserveTypedQuantity: true });
   });
+  refs.merchandiseRequestItemQuantity.addEventListener("blur", finalizeMerchandiseRequestItemQuantityInput);
   refs.merchandiseRequestItemTotal.addEventListener("input", syncMerchandiseRequestQuantityFromTotal);
   refs.merchandiseRequestItemTotal.addEventListener("blur", finalizeMerchandiseRequestItemTotalInput);
   refs.merchandiseRequestItemTotal.addEventListener("focus", () => refs.merchandiseRequestItemTotal.select());
@@ -760,6 +795,46 @@ async function bootstrap() {
     }
     void openAdminWeightedAuditSession(button.dataset.id);
   });
+  refs.adminWeightedAuditItems?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-action]");
+    if (!button) {
+      return;
+    }
+
+    if (button.dataset.action === "weighted-audit-set-pos") {
+      applyWeightedAuditQuickAction("set-pos", button.dataset.itemId);
+      return;
+    }
+
+    if (button.dataset.action === "weighted-audit-set-zero") {
+      applyWeightedAuditQuickAction("set-zero", button.dataset.itemId);
+      return;
+    }
+
+    if (button.dataset.action === "weighted-audit-clear-row") {
+      applyWeightedAuditQuickAction("clear-row", button.dataset.itemId);
+    }
+  });
+  refs.adminWeightedAuditItems?.addEventListener("input", (event) => {
+    const notesField = event.target.closest("[data-weighted-session-notes]");
+    if (notesField) {
+      updateWeightedAuditNotesDraft(notesField.value);
+      return;
+    }
+
+    const field = event.target.closest("[data-weighted-draft-field]");
+    const row = event.target.closest("[data-weighted-item-row]");
+    if (!field || !row) {
+      return;
+    }
+
+    updateWeightedAuditDraftField(
+      row.dataset.itemId,
+      field.dataset.weightedDraftField,
+      field.value,
+    );
+    syncWeightedAuditRowPreview(row);
+  });
 
   refs.adminAuditLogList.addEventListener("click", (event) => {
     const button = event.target.closest('[data-action="open-audit-log"]');
@@ -882,22 +957,16 @@ async function bootstrap() {
   registerConnectionEvents();
   registerServiceWorker();
 
-  // Cargar snapshot inicial con mejor manejo offline
-  const cachedSnapshot = await restoreSnapshot();
-  if (cachedSnapshot) {
-    applySnapshot(cachedSnapshot, { skipPersist: true });
-    if (!state.online) {
-      refs.socketStatus.textContent = "Sin conexion";
-      showToast("Cargando ultimo estado guardado en modo offline.", "info");
-    }
+  // Intentar cargar desde servidor con reintentos acotados
+  let bootstrapLoaded = false;
+
+  if (!state.online && cachedSnapshot) {
+    bootstrapLoaded = true;
+    refs.socketStatus.textContent = "Sin conexion";
+    showToast("Trabajando con el ultimo estado guardado localmente.", "info");
   }
 
-  // Intentar cargar desde servidor con reintentos
-  let bootstrapLoaded = false;
-  let bootstrapRetries = 0;
-  const maxBootstrapRetries = 3;
-
-  while (!bootstrapLoaded && bootstrapRetries < maxBootstrapRetries) {
+  if (!bootstrapLoaded) {
     try {
       const snapshot = await performJsonRequest(
         `/api/bootstrap?branch=${encodeURIComponent(getActiveCashierBranch())}`,
@@ -913,14 +982,6 @@ async function bootstrap() {
         refs.socketStatus.textContent = "Conectado";
       }
     } catch (error) {
-      bootstrapRetries++;
-      
-      if (bootstrapRetries < maxBootstrapRetries) {
-        // Esperar antes de reintentar
-        await new Promise(resolve => setTimeout(resolve, 1000 * bootstrapRetries));
-        continue;
-      }
-
       // Si no hay snapshot cacheado, mostrar error
       if (!cachedSnapshot) {
         throw error;
@@ -936,8 +997,10 @@ async function bootstrap() {
   connectSocket();
   updatePaymentView();
   if (state.cashier.authenticated) {
-    await loadRegisterSummary({ silent: true });
-    await loadMyMerchandiseRequests({ silent: true });
+    void Promise.allSettled([
+      loadRegisterSummary({ silent: true }),
+      loadMyMerchandiseRequests({ silent: true }),
+    ]);
   } else {
     state.register.summary = getEmptyRegisterSummary();
     renderRegisterSummaryPill();

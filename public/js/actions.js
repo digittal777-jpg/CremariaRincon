@@ -452,6 +452,356 @@ async function loadAdminConfig() {
   }
 }
 
+function resetWeightedAuditDraftState(session = null) {
+  state.admin.weightedAudit.currentSession = session || null;
+  state.admin.weightedAudit.notesDraft = session?.notes || "";
+  state.admin.weightedAudit.draftItems = {};
+
+  const items = Array.isArray(session?.items) ? session.items : [];
+  items.forEach((item) => {
+    state.admin.weightedAudit.draftItems[item.id] = {
+      countedStock: item.countedStock == null ? "" : String(item.countedStock),
+      reason: item.reason || "",
+    };
+  });
+}
+
+function setWeightedAuditCurrentSession(session = null) {
+  resetWeightedAuditDraftState(session);
+}
+
+function getWeightedAuditDraftEntry(itemId) {
+  return state.admin.weightedAudit.draftItems?.[Number(itemId)] || {};
+}
+
+function updateWeightedAuditNotesDraft(value) {
+  state.admin.weightedAudit.notesDraft = String(value || "");
+}
+
+function updateWeightedAuditDraftField(itemId, field, value) {
+  const safeItemId = Number(itemId);
+  if (!Number.isInteger(safeItemId) || safeItemId <= 0) {
+    return;
+  }
+
+  state.admin.weightedAudit.draftItems[safeItemId] = {
+    ...getWeightedAuditDraftEntry(safeItemId),
+    [field]: String(value ?? ""),
+  };
+}
+
+function captureWeightedAuditDraftFromDom() {
+  if (!refs.adminWeightedAuditItems) {
+    return;
+  }
+
+  const nextDrafts = { ...(state.admin.weightedAudit.draftItems || {}) };
+  refs.adminWeightedAuditItems.querySelectorAll("[data-weighted-item-row]").forEach((row) => {
+    const itemId = Number(row.dataset.itemId);
+    if (!Number.isInteger(itemId) || itemId <= 0) {
+      return;
+    }
+
+    nextDrafts[itemId] = {
+      countedStock: row.querySelector('[data-weighted-draft-field="countedStock"]')?.value ?? "",
+      reason: row.querySelector('[data-weighted-draft-field="reason"]')?.value ?? "",
+    };
+  });
+
+  const notesField = refs.adminWeightedAuditItems.querySelector("[data-weighted-session-notes]");
+  if (notesField) {
+    state.admin.weightedAudit.notesDraft = notesField.value;
+  }
+
+  state.admin.weightedAudit.draftItems = nextDrafts;
+}
+
+function getWeightedAuditStatusLabel(statusKey) {
+  if (statusKey === "match") {
+    return "Cuadra";
+  }
+  if (statusKey === "shortage") {
+    return "Merma";
+  }
+  if (statusKey === "surplus") {
+    return "Sobrante";
+  }
+  if (statusKey === "invalid") {
+    return "Invalido";
+  }
+  return "Pendiente";
+}
+
+function getWeightedAuditPreviewItem(item) {
+  const draft = getWeightedAuditDraftEntry(item.id);
+  const rawCountedStock = draft.countedStock !== undefined
+    ? String(draft.countedStock)
+    : item.countedStock == null
+      ? ""
+      : String(item.countedStock);
+  const safeRawCountedStock = rawCountedStock.trim();
+  const reason = draft.reason !== undefined ? String(draft.reason || "") : String(item.reason || "");
+
+  let countedStock = null;
+  let difference = null;
+  let statusKey = "pending";
+
+  if (safeRawCountedStock !== "") {
+    const parsedCountedStock = Number(safeRawCountedStock);
+    if (Number.isFinite(parsedCountedStock) && parsedCountedStock >= 0) {
+      countedStock = roundStock(parsedCountedStock);
+      difference = roundStock(countedStock - roundStock(item.posStock));
+      statusKey = difference < 0 ? "shortage" : difference > 0 ? "surplus" : "match";
+    } else {
+      countedStock = Number.NaN;
+      statusKey = "invalid";
+    }
+  }
+
+  const incident = Number.isFinite(difference) && difference !== 0;
+  const reasonRequired = incident;
+  const missingReason = reasonRequired && !reason.trim();
+
+  return {
+    ...item,
+    rawCountedStock,
+    countedStock,
+    difference,
+    reason,
+    incident,
+    reasonRequired,
+    missingReason,
+    statusKey,
+    statusLabel: getWeightedAuditStatusLabel(statusKey),
+  };
+}
+
+function getWeightedAuditStatusRank(statusKey) {
+  if (statusKey === "pending") {
+    return 0;
+  }
+  if (statusKey === "invalid") {
+    return 1;
+  }
+  if (statusKey === "shortage" || statusKey === "surplus") {
+    return 2;
+  }
+  return 3;
+}
+
+function getFilteredWeightedAuditItems(items = []) {
+  const searchText = String(state.admin.weightedAudit.search || "").trim().toLowerCase();
+
+  return items
+    .map((item) => getWeightedAuditPreviewItem(item))
+    .filter((item) => {
+      if (searchText && !String(item.productName || "").toLowerCase().includes(searchText)) {
+        return false;
+      }
+
+      if (state.admin.weightedAudit.showPendingOnly) {
+        return item.statusKey === "pending" || item.statusKey === "invalid";
+      }
+
+      if (state.admin.weightedAudit.showIncidentsOnly) {
+        return item.incident || item.missingReason;
+      }
+
+      return true;
+    })
+    .sort((left, right) => {
+      const statusDelta = getWeightedAuditStatusRank(left.statusKey) - getWeightedAuditStatusRank(right.statusKey);
+      if (statusDelta !== 0) {
+        return statusDelta;
+      }
+
+      const differenceDelta = Math.abs(Number(right.difference || 0)) - Math.abs(Number(left.difference || 0));
+      if (differenceDelta !== 0) {
+        return differenceDelta;
+      }
+
+      return String(left.productName || "").localeCompare(String(right.productName || ""), "es");
+    });
+}
+
+function buildWeightedAuditPreviewSummary(items = []) {
+  return {
+    totalItems: items.length,
+    countedItems: items.filter((item) => Number.isFinite(item.countedStock)).length,
+    pendingItems: items.filter((item) => !Number.isFinite(item.countedStock)).length,
+    incidentItems: items.filter((item) => item.incident).length,
+    shortageKg: roundStock(
+      items
+        .filter((item) => Number(item.difference) < 0)
+        .reduce((sum, item) => sum + Math.abs(roundStock(item.difference)), 0),
+    ),
+    surplusKg: roundStock(
+      items
+        .filter((item) => Number(item.difference) > 0)
+        .reduce((sum, item) => sum + roundStock(item.difference), 0),
+    ),
+    varianceValue: roundMoney(
+      items.reduce(
+        (sum, item) => sum + roundMoney((item.difference || 0) * roundMoney(item.unitPrice || 0)),
+        0,
+      ),
+    ),
+  };
+}
+
+function updateWeightedAuditFilters(partial = {}) {
+  captureWeightedAuditDraftFromDom();
+  state.admin.weightedAudit = {
+    ...state.admin.weightedAudit,
+    ...partial,
+  };
+  renderAdminWeightedAuditPanel();
+}
+
+function fillVisibleWeightedAuditDraftsWithPos() {
+  const session = state.admin.weightedAudit.currentSession;
+  if (!session) {
+    showToast("Abre una sesion de auditoria primero.", "info");
+    return;
+  }
+
+  captureWeightedAuditDraftFromDom();
+  getFilteredWeightedAuditItems(session.items || []).forEach((item) => {
+    state.admin.weightedAudit.draftItems[item.id] = {
+      ...getWeightedAuditDraftEntry(item.id),
+      countedStock: String(roundStock(item.posStock)),
+      reason: "",
+    };
+  });
+  renderAdminWeightedAuditPanel();
+}
+
+function clearVisibleWeightedAuditDrafts() {
+  const session = state.admin.weightedAudit.currentSession;
+  if (!session) {
+    showToast("No hay sesion de auditoria abierta.", "info");
+    return;
+  }
+
+  captureWeightedAuditDraftFromDom();
+  getFilteredWeightedAuditItems(session.items || []).forEach((item) => {
+    state.admin.weightedAudit.draftItems[item.id] = {
+      ...getWeightedAuditDraftEntry(item.id),
+      countedStock: "",
+      reason: "",
+    };
+  });
+  renderAdminWeightedAuditPanel();
+}
+
+function applyWeightedAuditQuickAction(action, itemId) {
+  const safeItemId = Number(itemId);
+  if (!Number.isInteger(safeItemId) || safeItemId <= 0) {
+    return;
+  }
+
+  captureWeightedAuditDraftFromDom();
+  const sessionItem = state.admin.weightedAudit.currentSession?.items?.find((item) => item.id === safeItemId);
+  if (!sessionItem) {
+    return;
+  }
+
+  if (action === "set-pos") {
+    state.admin.weightedAudit.draftItems[safeItemId] = {
+      ...getWeightedAuditDraftEntry(safeItemId),
+      countedStock: String(roundStock(sessionItem.posStock)),
+      reason: "",
+    };
+  } else if (action === "set-zero") {
+    state.admin.weightedAudit.draftItems[safeItemId] = {
+      ...getWeightedAuditDraftEntry(safeItemId),
+      countedStock: "0",
+    };
+  } else if (action === "clear-row") {
+    state.admin.weightedAudit.draftItems[safeItemId] = {
+      countedStock: "",
+      reason: "",
+    };
+  }
+
+  const row = refs.adminWeightedAuditItems?.querySelector(
+    `[data-weighted-item-row][data-item-id="${safeItemId}"]`,
+  );
+  if (!row) {
+    return;
+  }
+
+  const draft = getWeightedAuditDraftEntry(safeItemId);
+  const countedField = row.querySelector('[data-weighted-draft-field="countedStock"]');
+  const reasonField = row.querySelector('[data-weighted-draft-field="reason"]');
+  if (countedField) {
+    countedField.value = draft.countedStock || "";
+  }
+  if (reasonField && action !== "set-zero") {
+    reasonField.value = draft.reason || "";
+  }
+  syncWeightedAuditRowPreview(row);
+}
+
+function syncWeightedAuditRowPreview(row) {
+  const safeItemId = Number(row?.dataset?.itemId);
+  if (!Number.isInteger(safeItemId) || safeItemId <= 0) {
+    return;
+  }
+
+  const sessionItem = state.admin.weightedAudit.currentSession?.items?.find((item) => item.id === safeItemId);
+  if (!sessionItem) {
+    return;
+  }
+
+  const preview = getWeightedAuditPreviewItem(sessionItem);
+  row.dataset.auditStatus = preview.statusKey;
+  row.classList.toggle("weighted-audit-row-needs-reason", preview.missingReason);
+  row.classList.toggle("weighted-audit-row-incident", preview.incident);
+
+  const statusNode = row.querySelector('[data-role="weighted-status"]');
+  if (statusNode) {
+    statusNode.textContent = preview.statusLabel;
+    statusNode.className = `small-pill weighted-audit-pill ${preview.statusKey}${preview.missingReason ? " needs-reason" : ""}`;
+  }
+
+  const differenceNode = row.querySelector('[data-role="weighted-difference"]');
+  if (differenceNode) {
+    const differenceText = preview.statusKey === "pending"
+      ? "-"
+      : preview.statusKey === "invalid"
+        ? "Invalido"
+        : `${preview.difference > 0 ? "+" : ""}${formatQuantity(preview.difference)}`;
+    differenceNode.textContent = differenceText;
+    differenceNode.className = `weighted-audit-difference ${preview.statusKey}`;
+  }
+
+  const helperNode = row.querySelector('[data-role="weighted-helper"]');
+  if (helperNode) {
+    let helperText = "Aun sin conteo.";
+    if (preview.statusKey === "invalid") {
+      helperText = "Captura un numero valido mayor o igual a 0.";
+    } else if (preview.missingReason) {
+      helperText = "Falta motivo para guardar la diferencia.";
+    } else if (preview.incident) {
+      helperText = preview.difference < 0
+        ? `Faltan ${formatQuantity(Math.abs(preview.difference))} kg.`
+        : `Sobran ${formatQuantity(preview.difference)} kg.`;
+    } else if (preview.statusKey === "match") {
+      helperText = "Cuadra con el stock del POS.";
+    }
+    helperNode.textContent = helperText;
+  }
+
+  const reasonField = row.querySelector('[data-weighted-draft-field="reason"]');
+  if (reasonField) {
+    reasonField.required = preview.reasonRequired;
+    reasonField.placeholder = preview.reasonRequired
+      ? "Motivo obligatorio si hay diferencia"
+      : "Sin diferencia o nota opcional";
+  }
+}
+
 function getAdminWeightedAuditFilters(branchOverride = getAdminBranch()) {
   const fallbackDate = toDateInputValue();
   const dateKey = String(
@@ -496,7 +846,11 @@ async function loadAdminWeightedAuditSessions(branchOverride = getAdminBranch())
 
     const currentId = state.admin.weightedAudit.currentSession?.id;
     if (currentId && !state.admin.weightedAudit.sessions.some((item) => item.id === currentId)) {
-      state.admin.weightedAudit.currentSession = null;
+      setWeightedAuditCurrentSession(null);
+    }
+
+    if (!state.admin.weightedAudit.currentSession && state.admin.weightedAudit.sessions[0]) {
+      await openAdminWeightedAuditSession(state.admin.weightedAudit.sessions[0].id);
     }
   } catch (_error) {
     state.admin.weightedAudit.sessions = [];
@@ -517,7 +871,7 @@ async function openAdminWeightedAuditSession(sessionId) {
   renderAdminWeightedAuditPanel();
   try {
     const response = await requestAdminJson(`/api/admin/weighted-audit/sessions/${id}`);
-    state.admin.weightedAudit.currentSession = response.session || null;
+    setWeightedAuditCurrentSession(response.session || null);
     renderAdminWeightedAuditPanel();
   } catch (error) {
     showToast(error.message, "error");
@@ -535,6 +889,12 @@ async function createAdminWeightedAuditSession() {
   }
 
   const filters = getAdminWeightedAuditFilters(branch);
+  const existingSessionMatchesFilters = Boolean(
+    state.admin.weightedAudit.currentSession
+    && state.admin.weightedAudit.currentSession.branch === branch
+    && state.admin.weightedAudit.currentSession.shift === filters.shift
+    && state.admin.weightedAudit.currentSession.auditedDateKey === filters.dateKey,
+  );
   state.admin.weightedAudit.saving = true;
   renderAdminWeightedAuditPanel();
   try {
@@ -545,9 +905,10 @@ async function createAdminWeightedAuditSession() {
         shift: filters.shift,
         dateKey: filters.dateKey,
         createdBy: state.admin.username || "admin",
+        notes: existingSessionMatchesFilters ? state.admin.weightedAudit.notesDraft || "" : "",
       }),
     });
-    state.admin.weightedAudit.currentSession = response.session || null;
+    setWeightedAuditCurrentSession(response.session || null);
     await loadAdminWeightedAuditSessions(branch);
     showToast("Sesion de auditoria de pesado lista.", "success");
   } catch (error) {
@@ -565,18 +926,22 @@ async function saveAdminWeightedAuditItems() {
     return;
   }
 
-  const rows = [...(refs.adminWeightedAuditItems?.querySelectorAll("[data-weighted-item-row]") || [])];
-  const payloadItems = rows
-    .map((row) => ({
-      itemId: Number(row.dataset.itemId),
-      productId: Number(row.dataset.productId),
-      countedStock: row.querySelector('[data-field="countedStock"]')?.value,
-      reason: row.querySelector('[data-field="reason"]')?.value || "",
-    }))
+  captureWeightedAuditDraftFromDom();
+  const payloadItems = (session.items || [])
+    .map((item) => {
+      const preview = getWeightedAuditPreviewItem(item);
+      return {
+        itemId: item.id,
+        productId: item.productId,
+        countedStock: preview.rawCountedStock,
+        reason: preview.reason || "",
+      };
+    })
     .filter((item) => String(item.countedStock || "").trim() !== "");
+  const nextNotes = state.admin.weightedAudit.notesDraft || "";
 
-  if (payloadItems.length === 0) {
-    showToast("Captura al menos un conteo fisico para guardar.", "info");
+  if (payloadItems.length === 0 && !nextNotes.trim()) {
+    showToast("Captura al menos un conteo fisico o una nota para guardar.", "info");
     return;
   }
 
@@ -587,10 +952,10 @@ async function saveAdminWeightedAuditItems() {
       `/api/admin/weighted-audit/sessions/${session.id}/items`,
       {
         method: "PATCH",
-        body: JSON.stringify({ items: payloadItems }),
+        body: JSON.stringify({ items: payloadItems, notes: nextNotes }),
       },
     );
-    state.admin.weightedAudit.currentSession = response.session || session;
+    setWeightedAuditCurrentSession(response.session || session);
     await loadAdminWeightedAuditSessions(getAdminBranch());
     showToast("Conteos de pesado guardados.", "success");
   } catch (error) {
@@ -611,16 +976,18 @@ async function closeAdminWeightedAuditSession() {
   state.admin.weightedAudit.saving = true;
   renderAdminWeightedAuditPanel();
   try {
+    captureWeightedAuditDraftFromDom();
     const response = await requestAdminJson(
       `/api/admin/weighted-audit/sessions/${session.id}/complete`,
       {
         method: "POST",
         body: JSON.stringify({
           completedBy: state.admin.username || "admin",
+          notes: state.admin.weightedAudit.notesDraft || "",
         }),
       },
     );
-    state.admin.weightedAudit.currentSession = response.session || session;
+    setWeightedAuditCurrentSession(response.session || session);
     await loadAdminWeightedAuditSessions(getAdminBranch());
     showToast("Auditoria de pesado cerrada.", "success");
   } catch (error) {

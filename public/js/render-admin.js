@@ -556,3 +556,198 @@ function renderAdminWeightedAuditPanel() {
     refs.completeWeightedAuditButton.textContent = isCompleted ? "Auditoria cerrada" : "Cerrar auditoria";
   }
 }
+
+function renderAdminWeightedAuditPanel() {
+  if (!refs.adminWeightedAuditSessions || !refs.adminWeightedAuditItems || !refs.adminWeightedAuditStatus) {
+    return;
+  }
+  if (!refs.adminModal?.classList.contains("open")) {
+    return;
+  }
+
+  const weightedState = state.admin.weightedAudit || {};
+  const sessions = Array.isArray(weightedState.sessions) ? weightedState.sessions : [];
+  const currentSession = weightedState.currentSession || null;
+  const statusText = weightedState.loading
+    ? "Cargando auditorias..."
+    : currentSession
+      ? `${currentSession.auditedDateKey} · ${currentSession.shift} · ${currentSession.status === "completed" ? "cerrada" : "pendiente"}`
+      : "Sin auditoria cargada";
+  refs.adminWeightedAuditStatus.textContent = statusText;
+
+  if (refs.adminWeightedAuditSearch) {
+    refs.adminWeightedAuditSearch.value = weightedState.search || "";
+    refs.adminWeightedAuditSearch.disabled = Boolean(weightedState.loading);
+  }
+  if (refs.toggleWeightedAuditPendingButton) {
+    refs.toggleWeightedAuditPendingButton.classList.toggle("is-active", Boolean(weightedState.showPendingOnly));
+    refs.toggleWeightedAuditPendingButton.disabled = Boolean(weightedState.loading || !currentSession);
+  }
+  if (refs.toggleWeightedAuditIncidentsButton) {
+    refs.toggleWeightedAuditIncidentsButton.classList.toggle("is-active", Boolean(weightedState.showIncidentsOnly));
+    refs.toggleWeightedAuditIncidentsButton.disabled = Boolean(weightedState.loading || !currentSession);
+  }
+  if (refs.fillWeightedAuditVisibleButton) {
+    refs.fillWeightedAuditVisibleButton.disabled = Boolean(weightedState.loading || !currentSession || currentSession?.status === "completed");
+  }
+  if (refs.clearWeightedAuditVisibleButton) {
+    refs.clearWeightedAuditVisibleButton.disabled = Boolean(weightedState.loading || !currentSession || currentSession?.status === "completed");
+  }
+
+  refs.adminWeightedAuditSessions.innerHTML = sessions.length
+    ? sessions.map((session) => `
+        <button
+          class="admin-record-item ${currentSession?.id === session.id ? "active" : ""}"
+          data-action="open-weighted-audit-session"
+          data-id="${session.id}"
+          type="button"
+        >
+          <div class="admin-record-item-head">
+            <strong>${escapeHtml(session.auditedDateKey)} · ${escapeHtml(session.shift)}</strong>
+            <span class="small-pill">${escapeHtml(getBranchLabel(session.branch))}</span>
+          </div>
+          <p>${session.summary?.countedItems || 0}/${session.summary?.totalItems || 0} conteos · Pendientes ${session.summary?.pendingItems || 0} · Incidentes ${session.summary?.incidentItems || 0}</p>
+          <p>${escapeHtml(session.createdBy || "Sin origen")} · ${session.status === "completed" ? "Cerrada" : "Pendiente"}</p>
+        </button>
+      `).join("")
+    : `<div class="empty-state">No hay sesiones para los filtros actuales.</div>`;
+
+  if (!currentSession) {
+    refs.adminWeightedAuditItems.innerHTML = `
+      <div class="empty-state">
+        Crea o abre una sesion para capturar conteos fisicos de productos kg. Los cortes finales ya pueden dejar esta sesion preparada automaticamente.
+      </div>
+    `;
+    if (refs.saveWeightedAuditItemsButton) {
+      refs.saveWeightedAuditItemsButton.disabled = true;
+    }
+    if (refs.completeWeightedAuditButton) {
+      refs.completeWeightedAuditButton.disabled = true;
+    }
+    return;
+  }
+
+  const isCompleted = currentSession.status === "completed";
+  const items = Array.isArray(currentSession.items) ? currentSession.items : [];
+  const previewItems = items.map((item) => getWeightedAuditPreviewItem(item));
+  const visibleItems = getFilteredWeightedAuditItems(items);
+  const summary = buildWeightedAuditPreviewSummary(previewItems);
+  const visibleSummary = buildWeightedAuditPreviewSummary(visibleItems);
+
+  refs.adminWeightedAuditItems.innerHTML = `
+    <div class="detail-lines">
+      <div class="detail-line">
+        <div>
+          <strong>Resumen de auditoria</strong>
+          <p>${escapeHtml(currentSession.createdBy || "Sin origen")} · ${currentSession.completedBy ? `Cerrada por ${escapeHtml(currentSession.completedBy)}` : "Pendiente de cierre"}</p>
+        </div>
+      </div>
+    </div>
+    <div class="weighted-audit-summary-grid">
+      <article class="weighted-audit-summary-card">
+        <span>Conteos</span>
+        <strong>${summary.countedItems}/${summary.totalItems}</strong>
+        <p>Pendientes ${summary.pendingItems}</p>
+      </article>
+      <article class="weighted-audit-summary-card">
+        <span>Diferencias</span>
+        <strong>${summary.incidentItems}</strong>
+        <p>Visibles ${visibleSummary.totalItems}</p>
+      </article>
+      <article class="weighted-audit-summary-card">
+        <span>Merma / sobrante</span>
+        <strong>${formatQuantity(summary.shortageKg)} / ${formatQuantity(summary.surplusKg)}</strong>
+        <p>Kg comprometidos</p>
+      </article>
+      <article class="weighted-audit-summary-card">
+        <span>Impacto</span>
+        <strong>${formatCurrency(summary.varianceValue)}</strong>
+        <p>${visibleItems.length === items.length ? "Vista completa" : `Filtrado ${visibleItems.length}/${items.length}`}</p>
+      </article>
+    </div>
+    <label class="field weighted-audit-notes-field">
+      <span>Notas del reporte</span>
+      <textarea data-weighted-session-notes rows="3" ${isCompleted ? "disabled" : ""}>${escapeHtml(weightedState.notesDraft || currentSession.notes || "")}</textarea>
+      <small>Guarda contexto del cierre, incidencias del pesado o instrucciones para el admin final.</small>
+    </label>
+    <div class="inventory-table-wrap">
+      <table class="inventory-table">
+        <thead>
+          <tr>
+            <th>Estado</th>
+            <th>Producto</th>
+            <th>Stock POS</th>
+            <th>Conteo fisico</th>
+            <th>Diferencia</th>
+            <th>Motivo</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${visibleItems.map((item) => `
+            <tr
+              data-weighted-item-row
+              data-item-id="${item.id}"
+              data-product-id="${item.productId}"
+              class="weighted-audit-row ${item.incident ? "weighted-audit-row-incident" : ""} ${item.missingReason ? "weighted-audit-row-needs-reason" : ""}"
+            >
+              <td>
+                <div class="weighted-audit-status-stack">
+                  <span class="small-pill weighted-audit-pill ${item.statusKey}${item.missingReason ? " needs-reason" : ""}" data-role="weighted-status">${item.statusLabel}</span>
+                  <small data-role="weighted-helper">${item.statusKey === "pending" ? "Aun sin conteo." : item.missingReason ? "Falta motivo para guardar la diferencia." : item.incident ? item.difference < 0 ? `Faltan ${formatQuantity(Math.abs(item.difference))} kg.` : `Sobran ${formatQuantity(item.difference)} kg.` : item.statusKey === "invalid" ? "Captura un numero valido mayor o igual a 0." : "Cuadra con el stock del POS."}</small>
+                </div>
+              </td>
+              <td>
+                <div class="inventory-name">
+                  <strong>${escapeHtml(item.productName)}</strong>
+                  <small>${escapeHtml(item.unit)} · ${formatCurrency(item.unitPrice || 0)} por ${escapeHtml(item.unit)}</small>
+                </div>
+              </td>
+              <td>${escapeHtml(formatQuantity(item.posStock))}</td>
+              <td>
+                <input class="inventory-input" data-weighted-draft-field="countedStock" type="number" min="0" step="0.001" value="${escapeHtml(item.rawCountedStock)}" ${isCompleted ? "disabled" : ""} />
+              </td>
+              <td class="weighted-audit-difference ${item.statusKey}" data-role="weighted-difference">${item.statusKey === "pending" ? "-" : item.statusKey === "invalid" ? "Invalido" : `${item.difference > 0 ? "+" : ""}${escapeHtml(formatQuantity(item.difference))}`}</td>
+              <td>
+                <input class="inventory-input" data-weighted-draft-field="reason" type="text" maxlength="240" value="${escapeHtml(item.reason || "")}" placeholder="${item.reasonRequired ? "Motivo obligatorio si hay diferencia" : "Sin diferencia o nota opcional"}" ${isCompleted ? "disabled" : ""} />
+              </td>
+              <td>
+                <div class="weighted-audit-row-actions">
+                  <button class="ghost-button compact-button" data-action="weighted-audit-set-pos" data-item-id="${item.id}" type="button" ${isCompleted ? "disabled" : ""}>
+                    Igualar
+                  </button>
+                  <button class="ghost-button compact-button" data-action="weighted-audit-set-zero" data-item-id="${item.id}" type="button" ${isCompleted ? "disabled" : ""}>
+                    0 kg
+                  </button>
+                  <button class="ghost-button compact-button" data-action="weighted-audit-clear-row" data-item-id="${item.id}" type="button" ${isCompleted ? "disabled" : ""}>
+                    Limpiar
+                  </button>
+                </div>
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  if (visibleItems.length === 0) {
+    refs.adminWeightedAuditItems.insertAdjacentHTML(
+      "beforeend",
+      `<div class="empty-state">No hay productos kg visibles con los filtros actuales.</div>`,
+    );
+  }
+
+  refs.adminWeightedAuditItems
+    .querySelectorAll("[data-weighted-item-row]")
+    .forEach((row) => syncWeightedAuditRowPreview(row));
+
+  if (refs.saveWeightedAuditItemsButton) {
+    refs.saveWeightedAuditItemsButton.disabled = Boolean(weightedState.loading || weightedState.saving || isCompleted);
+    refs.saveWeightedAuditItemsButton.textContent = weightedState.saving ? "Guardando..." : "Guardar conteos";
+  }
+  if (refs.completeWeightedAuditButton) {
+    refs.completeWeightedAuditButton.disabled = Boolean(weightedState.loading || weightedState.saving || isCompleted);
+    refs.completeWeightedAuditButton.textContent = isCompleted ? "Auditoria cerrada" : "Cerrar auditoria";
+  }
+}

@@ -1,28 +1,139 @@
 // Funciones de red y comunicacion con el servidor
 
-async function performJsonRequest(url, options = {}) {
-  // Headers siempre al final para que no se sobrescriban.
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
+const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
+const CASHIER_REQUEST_TIMEOUT_MS = 6000;
+const ADMIN_REQUEST_TIMEOUT_MS = 10000;
+const AUTH_STATUS_TIMEOUT_MS = 4000;
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
   });
+}
 
-  const data = await response.json().catch(() => ({}));
+function createTimeoutError(timeoutMs) {
+  const timeoutSeconds = Math.max(1, Math.round(timeoutMs / 1000));
+  const error = new Error(`Tiempo de espera agotado al conectar con el servidor (${timeoutSeconds}s).`);
+  error.name = "AbortError";
+  error.isTimeout = true;
+  return error;
+}
 
-  if (!response.ok) {
-    const error = new Error(data.message || "No fue posible completar la accion.");
-    error.statusCode = response.status;
-    throw error;
+function createRequestController(externalSignal, timeoutMs) {
+  const controller = new AbortController();
+  let timeoutId = null;
+  let timedOut = false;
+  let removeExternalAbortListener = null;
+
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort(externalSignal.reason);
+    } else {
+      const onExternalAbort = () => {
+        controller.abort(externalSignal.reason);
+      };
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+      removeExternalAbortListener = () => {
+        externalSignal.removeEventListener("abort", onExternalAbort);
+      };
+    }
   }
 
-  return data;
+  if (timeoutMs > 0) {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  }
+
+  return {
+    signal: controller.signal,
+    didTimeout() {
+      return timedOut;
+    },
+    cleanup() {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      if (removeExternalAbortListener) {
+        removeExternalAbortListener();
+      }
+    },
+  };
+}
+
+function markConnectionOffline() {
+  state.online = false;
+  if (refs.socketStatus) {
+    refs.socketStatus.textContent = "Sin conexion";
+  }
+  renderSyncStatus();
+}
+
+async function performJsonRequest(url, options = {}) {
+  const {
+    timeoutMs,
+    timeout,
+    retries,
+    retryDelayMs,
+    signal,
+    headers,
+    ...fetchOptions
+  } = options;
+  const effectiveTimeoutMs = Number(timeoutMs || timeout || DEFAULT_REQUEST_TIMEOUT_MS);
+  const totalRetries = Math.max(0, Number(retries || 0));
+  const baseRetryDelayMs = Math.max(150, Number(retryDelayMs || 350));
+  const requestMethod = String(fetchOptions.method || "GET").toUpperCase();
+
+  for (let attempt = 0; attempt <= totalRetries; attempt += 1) {
+    const requestController = createRequestController(signal, effectiveTimeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        ...fetchOptions,
+        signal: requestController.signal,
+        headers: {
+          "Content-Type": "application/json",
+          ...(headers || {}),
+        },
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const error = new Error(data.message || "No fue posible completar la accion.");
+        error.statusCode = response.status;
+        throw error;
+      }
+
+      return data;
+    } catch (error) {
+      const normalizedError = requestController.didTimeout()
+        ? createTimeoutError(effectiveTimeoutMs)
+        : error;
+
+      if (isNetworkError(normalizedError)) {
+        markConnectionOffline();
+      }
+
+      const canRetry =
+        attempt < totalRetries
+        && requestMethod === "GET"
+        && isNetworkError(normalizedError);
+
+      if (!canRetry) {
+        throw normalizedError;
+      }
+
+      await delay(baseRetryDelayMs * (attempt + 1));
+    } finally {
+      requestController.cleanup();
+    }
+  }
 }
 
 function isNetworkError(error) {
-  return error instanceof TypeError;
+  return error instanceof TypeError || error?.name === "AbortError";
 }
 
 function getAdminAuthHeaders() {
@@ -43,6 +154,16 @@ function getCashierAuthHeaders(token = state.cashier.token) {
 }
 
 async function requestJson(url, options = {}) {
+  if (options.queueable && !state.online) {
+    enqueueOperation({
+      url,
+      method: options.method || "GET",
+      body: options.body || null,
+      headers: options.headers || {},
+    });
+    throw new Error("Operacion guardada en modo offline. Se sincronizara al reconectar.");
+  }
+
   try {
     return await performJsonRequest(url, options);
   } catch (error) {
@@ -63,6 +184,7 @@ async function requestJson(url, options = {}) {
 async function requestCashierJson(url, options = {}) {
   try {
     return await requestJson(url, {
+      timeout: options.timeout ?? options.timeoutMs ?? CASHIER_REQUEST_TIMEOUT_MS,
       ...options,
       headers: {
         ...getCashierAuthHeaders(),
@@ -86,6 +208,7 @@ async function requestCashierJson(url, options = {}) {
 
 async function requestAdminJson(url, options = {}) {
   return performJsonRequest(url, {
+    timeout: options.timeout ?? options.timeoutMs ?? ADMIN_REQUEST_TIMEOUT_MS,
     ...options,
     headers: {
       ...getAdminAuthHeaders(),
@@ -96,6 +219,7 @@ async function requestAdminJson(url, options = {}) {
 
 async function loadAdminAuthStatus() {
   const response = await performJsonRequest("/api/admin/auth/status", {
+    timeout: AUTH_STATUS_TIMEOUT_MS,
     headers: getAdminAuthHeaders(),
   });
   state.admin.configured = Boolean(response.configured);
@@ -106,6 +230,7 @@ async function loadAdminAuthStatus() {
 
 async function loadCashierAuthStatus() {
   const response = await performJsonRequest("/api/cashier/auth/status", {
+    timeout: AUTH_STATUS_TIMEOUT_MS,
     headers: getCashierAuthHeaders(),
   });
 

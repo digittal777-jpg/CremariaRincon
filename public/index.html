@@ -12,6 +12,8 @@
       rel="stylesheet"
     />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/assets/branding/rincon-logo-gold-192.png" />
+    <link rel="apple-touch-icon" href="/assets/branding/rincon-logo-gold-192.png" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -22,7 +24,13 @@
     <div class="page-shell">
       <header class="hero-card">
         <div class="brand-lockup">
-          <div class="brand-mark">ER</div>
+          <div class="brand-mark">
+            <img
+              class="brand-mark-image"
+              src="/assets/branding/rincon-logo-gold-192.png"
+              alt="Logo de Cremeria El Rincon"
+            />
+          </div>
           <div>
             <p class="eyebrow">Centro de control comercial</p>
             <h1>Cremeria El Rincon</h1>
@@ -513,7 +521,7 @@
             <span>Cantidad</span>
             <div class="stepper-wrap">
               <button class="stepper-button" data-merchandise-step="-1" type="button">-</button>
-              <input id="merchandise-request-item-quantity" type="number" min="0.001" step="0.25" />
+                <input id="merchandise-request-item-quantity" type="number" min="0.001" step="0.001" inputmode="decimal" />
               <button class="stepper-button" data-merchandise-step="1" type="button">+</button>
             </div>
           </label>
@@ -525,7 +533,7 @@
 
           <label class="field">
             <span>Valor de la linea</span>
-            <input id="merchandise-request-item-total" type="number" step="0.01" />
+              <input id="merchandise-request-item-total" type="number" step="0.01" inputmode="decimal" />
           </label>
         </div>
 
@@ -651,18 +659,21 @@
 
     <div class="modal-shell" id="admin-modal">
       <div class="modal-card admin-card">
-        <div class="modal-head">
-          <div>
+        <div class="modal-head admin-modal-head">
+          <div class="admin-modal-intro">
             <p class="eyebrow">Administracion</p>
             <h3>Panel admin</h3>
             <p class="modal-note">
               Control total del catalogo, inventario y metricas en tiempo real sin cargar la caja principal.
             </p>
           </div>
-          <button class="icon-button" id="close-admin-modal" type="button">×</button>
+          <div class="admin-modal-head-actions">
+            <span class="small-pill admin-context-pill">Workspace admin</span>
+            <button class="icon-button" id="close-admin-modal" type="button">×</button>
+          </div>
         </div>
 
-        <div class="admin-layout">
+        <div class="admin-workspace">
           <section class="admin-toolbar-panel">
             <div class="admin-toolbar-copy">
               <p class="eyebrow">Vista admin</p>
@@ -672,407 +683,480 @@
               </p>
             </div>
 
-            <div class="admin-toolbar-controls">
-              <label class="field">
-                <span>Sucursal</span>
-                <select id="admin-branch-select">
-                  <option value="all">Todas las sucursales</option>
-                  <option value="carrizal">Carrizal</option>
-                  <option value="miradores">Miradores</option>
-                </select>
-              </label>
-
-              <div class="admin-actions">
-                <button class="secondary-button" id="refresh-catalog-button" type="button">
-                  Reimportar catalogo
-                </button>
-                <label class="field" for="export-date-input">
-                  <span>Fecha Excel</span>
-                  <input id="export-date-input" type="date" />
+            <div class="admin-toolbar-shell">
+              <div class="admin-toolbar-filter">
+                <label class="field admin-toolbar-filter-field">
+                  <span>Sucursal</span>
+                  <select id="admin-branch-select">
+                    <option value="all">Todas las sucursales</option>
+                    <option value="carrizal">Carrizal</option>
+                    <option value="miradores">Miradores</option>
+                  </select>
                 </label>
-                <button class="secondary-button" id="export-workbook-button" type="button">
-                  Exportar Excel
-                </button>
-                <button class="secondary-button" id="download-db-button" type="button">
-                  Descargar base
-                </button>
-                <button class="secondary-button" id="install-db-button" type="button" title="Cargar una base SQLite desde este equipo">
-                  Instalar base local
-                </button>
-                <input type="file" id="install-db-input" accept=".sqlite,.sqlite3,.db" style="display: none;" />
-                <button class="secondary-button" id="install-workbook-button" type="button" title="Restaurar datos desde el Excel exportado por este sistema">
-                  Instalar Excel
-                </button>
-                <input type="file" id="install-workbook-input" accept=".xlsx" style="display: none;" />
-                <button class="primary-button" id="open-quick-import-button" type="button">
-                  Importacion rapida
-                </button>
-                <button class="secondary-button" id="admin-logout-button" type="button">
-                  Cerrar sesion
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <section class="admin-summary-panel">
-            <div class="panel-head admin-subhead">
-              <div>
-                <p class="eyebrow">Resumen</p>
-                <h2>Lectura por sucursal</h2>
-              </div>
-              <span class="small-pill" id="admin-metrics-status">Esperando datos</span>
-            </div>
-
-            <div class="admin-summary-grid" id="admin-summary-cards"></div>
-            <div class="shift-chips admin-shift-chips" id="admin-shift-summary"></div>
-          </section>
-
-          <section class="admin-metrics-panel">
-            <div class="panel-head admin-subhead">
-              <div>
-                <p class="eyebrow">Metricas</p>
-                <h2>Rendimiento en vivo</h2>
-              </div>
-            </div>
-
-            <div class="admin-metrics-grid">
-              <article class="admin-metric-card">
-                <span>CPU app</span>
-                <strong id="admin-process-cpu">0%</strong>
-              </article>
-              <article class="admin-metric-card">
-                <span>Memoria app</span>
-                <strong id="admin-process-memory">0 MB</strong>
-              </article>
-              <article class="admin-metric-card">
-                <span>Render catalogo</span>
-                <strong id="admin-products-render">0 ms</strong>
-              </article>
-              <article class="admin-metric-card">
-                <span>Snapshot UI</span>
-                <strong id="admin-snapshot-render">0 ms</strong>
-              </article>
-              <article class="admin-metric-card">
-                <span>Productos visibles</span>
-                <strong id="admin-visible-products">0</strong>
-              </article>
-              <article class="admin-metric-card">
-                <span>Nodos DOM</span>
-                <strong id="admin-dom-nodes">0</strong>
-              </article>
-            </div>
-
-            <div class="admin-system-grid">
-              <article class="admin-system-card">
-                <span>Servidor</span>
-                <strong id="admin-server-runtime">0s</strong>
-                <p id="admin-server-memory">RAM sistema 0%</p>
-              </article>
-              <article class="admin-system-card">
-                <span>Cliente</span>
-                <strong id="admin-client-memory">Sin dato</strong>
-                <p id="admin-client-hardware">CPU 0 · RAM 0 GB</p>
-                <p id="admin-client-network">Red sin dato</p>
-              </article>
-            </div>
-          </section>
-
-          <section class="panel inventory-panel admin-inventory-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Inventario</p>
-                <h2>Control editable</h2>
-              </div>
-              <div class="admin-inventory-actions">
-                <span class="helper-text" id="admin-inventory-status">
-                  Guarda cambios de precio, existencia, minimo, estado y nota.
-                </span>
-                <button class="secondary-button" id="toggle-admin-inventory-button" type="button">
-                  Mostrar inventario
-                </button>
-              </div>
-            </div>
-
-            <div class="admin-product-create-form">
-              <label class="field">
-                <span>Nombre</span>
-                <input id="admin-new-product-name" type="text" maxlength="80" placeholder="Ej. Jamon de puerco" />
-              </label>
-              <label class="field">
-                <span>Categoria</span>
-                <select id="admin-new-product-category">
-                  <option value="quesos">Quesos</option>
-                  <option value="carnes" selected>Carnes</option>
-                  <option value="piezas">Piezas</option>
-                  <option value="general">General</option>
-                </select>
-              </label>
-              <label class="field">
-                <span>Unidad</span>
-                <select id="admin-new-product-unit">
-                  <option value="kg" selected>kg</option>
-                  <option value="pza">pza</option>
-                </select>
-              </label>
-              <label class="field">
-                <span>Precio</span>
-                <input id="admin-new-product-price" type="number" min="0.01" step="0.01" />
-              </label>
-              <label class="field">
-                <span>Stock inicial</span>
-                <input id="admin-new-product-stock" type="number" min="0" step="0.25" value="0" />
-              </label>
-              <label class="field">
-                <span>Minimo</span>
-                <input id="admin-new-product-min-stock" type="number" min="0" step="0.25" value="0" />
-              </label>
-              <button class="primary-button" id="save-admin-product-button" type="button">
-                Agregar producto
-              </button>
-            </div>
-
-            <div class="inventory-table-wrap" id="admin-inventory-wrap" hidden>
-              <!-- Modo simple: una sucursal -->
-              <div id="inventory-single-table" class="inventory-single-wrapper">
-                <table class="inventory-table">
-                  <thead>
-                    <tr>
-                      <th>Producto</th>
-                      <th>Precio</th>
-                      <th>Existencia</th>
-                      <th>Minimo</th>
-                      <th>Activo</th>
-                      <th>Nota</th>
-                      <th>Estado</th>
-                      <th>Accion</th>
-                      <th>Quitar</th>
-                    </tr>
-                  </thead>
-                  <tbody id="inventory-body"></tbody>
-                </table>
               </div>
 
-              <!-- Modo comparativo: dos sucursales lado a lado -->
-              <div id="inventory-comparison-wrapper" class="inventory-comparison-wrapper" hidden>
-                <div class="comparison-tables">
-                  <div class="inventory-branch-column">
-                    <div class="inventory-branch-header">
-                      <h3 id="comparison-branch-1-label">Sucursal 1</h3>
-                    </div>
-                    <table class="inventory-table comparison-table">
-                      <thead>
-                        <tr>
-                          <th>Producto</th>
-                          <th>Precio</th>
-                          <th>Existencia</th>
-                          <th>Minimo</th>
-                          <th>Activo</th>
-                          <th>Nota</th>
-                          <th>Estado</th>
-                          <th>Accion</th>
-                        </tr>
-                      </thead>
-                      <tbody id="inventory-body-branch-1"></tbody>
-                    </table>
+              <div class="admin-toolbar-groups">
+                <section class="admin-action-group">
+                  <div class="admin-action-group-head">
+                    <p class="eyebrow">Operacion</p>
+                    <h4>Flujo diario</h4>
                   </div>
+                  <div class="admin-actions">
+                    <button class="secondary-button" id="refresh-catalog-button" type="button">
+                      Reimportar catalogo
+                    </button>
+                    <button class="primary-button" id="open-quick-import-button" type="button">
+                      Importacion rapida
+                    </button>
+                  </div>
+                </section>
 
-                  <div class="inventory-branch-column">
-                    <div class="inventory-branch-header">
-                      <h3 id="comparison-branch-2-label">Sucursal 2</h3>
-                    </div>
-                    <table class="inventory-table comparison-table">
-                      <thead>
-                        <tr>
-                          <th>Producto</th>
-                          <th>Precio</th>
-                          <th>Existencia</th>
-                          <th>Minimo</th>
-                          <th>Activo</th>
-                          <th>Nota</th>
-                          <th>Estado</th>
-                          <th>Accion</th>
-                        </tr>
-                      </thead>
-                      <tbody id="inventory-body-branch-2"></tbody>
-                    </table>
+                <section class="admin-action-group">
+                  <div class="admin-action-group-head">
+                    <p class="eyebrow">Respaldos</p>
+                    <h4>Exportar o restaurar</h4>
+                  </div>
+                  <div class="admin-actions">
+                    <label class="field admin-field-compact" for="export-date-input">
+                      <span>Fecha Excel</span>
+                      <input id="export-date-input" type="date" />
+                    </label>
+                    <button class="secondary-button" id="export-workbook-button" type="button">
+                      Exportar Excel
+                    </button>
+                    <button class="secondary-button" id="download-db-button" type="button">
+                      Descargar base
+                    </button>
+                    <button class="secondary-button" id="install-db-button" type="button" title="Cargar una base SQLite desde este equipo">
+                      Instalar base local
+                    </button>
+                    <input type="file" id="install-db-input" accept=".sqlite,.sqlite3,.db" style="display: none;" />
+                    <button class="secondary-button" id="install-workbook-button" type="button" title="Restaurar datos desde el Excel exportado por este sistema">
+                      Instalar Excel
+                    </button>
+                    <input type="file" id="install-workbook-input" accept=".xlsx" style="display: none;" />
+                  </div>
+                </section>
+
+                <section class="admin-action-group">
+                  <div class="admin-action-group-head">
+                    <p class="eyebrow">Sesion</p>
+                    <h4>Control del acceso</h4>
+                  </div>
+                  <div class="admin-actions">
+                    <button class="secondary-button" id="admin-logout-button" type="button">
+                      Cerrar sesion
+                    </button>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </section>
+
+          <div class="admin-layout">
+            <div class="admin-primary-column">
+              <section class="admin-records-panel admin-merchandise-panel">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Solicitudes</p>
+                    <h2>Mercaderia pendiente</h2>
+                  </div>
+                  <span class="small-pill" id="admin-merchandise-requests-status">0 pendientes</span>
+                </div>
+                <div class="admin-record-list" id="admin-merchandise-requests-list"></div>
+              </section>
+
+              <section class="admin-records-panel admin-weighted-panel">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Pesado</p>
+                    <h2>Auditoria de productos kg</h2>
+                  </div>
+                  <span class="small-pill" id="admin-weighted-audit-status">Sin auditoria cargada</span>
+                </div>
+
+                <div class="admin-cashier-form">
+                  <label class="field">
+                    <span>Fecha auditada</span>
+                    <input id="admin-weighted-audit-date" type="date" />
+                  </label>
+                  <label class="field">
+                    <span>Turno</span>
+                    <select id="admin-weighted-audit-shift">
+                      <option value="Manana">Manana</option>
+                      <option value="Tarde" selected>Tarde</option>
+                    </select>
+                  </label>
+                  <button class="secondary-button" id="load-weighted-audit-button" type="button">
+                    Cargar
+                  </button>
+                  <button class="primary-button" id="create-weighted-audit-button" type="button">
+                    Crear / abrir sesion
+                  </button>
+                </div>
+
+                <div class="admin-record-list" id="admin-weighted-audit-sessions"></div>
+                <div class="weighted-audit-toolbar">
+                  <label class="field weighted-audit-search-field">
+                    <span>Buscar producto kg</span>
+                    <input id="admin-weighted-audit-search" type="text" placeholder="Ej. panela, hebra, gouda..." />
+                  </label>
+                  <div class="weighted-audit-toolbar-buttons">
+                    <button class="secondary-button compact-button" id="toggle-weighted-audit-pending-button" type="button">
+                      Solo pendientes
+                    </button>
+                    <button class="secondary-button compact-button" id="toggle-weighted-audit-incidents-button" type="button">
+                      Solo diferencias
+                    </button>
+                    <button class="secondary-button compact-button" id="fill-weighted-audit-visible-button" type="button">
+                      Igualar visibles
+                    </button>
+                    <button class="ghost-button compact-button" id="clear-weighted-audit-visible-button" type="button">
+                      Limpiar visibles
+                    </button>
                   </div>
                 </div>
-              </div>
-            </div>
-          </section>
+                <div class="admin-record-list" id="admin-weighted-audit-items"></div>
 
-          <section class="admin-cashiers-panel">
-            <div class="panel-head admin-subhead">
+                <div class="admin-record-actions">
+                  <button class="secondary-button compact-button" id="save-weighted-audit-items-button" type="button">
+                    Guardar conteos
+                  </button>
+                  <button class="primary-button compact-button" id="complete-weighted-audit-button" type="button">
+                    Cerrar auditoria
+                  </button>
+                </div>
+              </section>
+
+              <section class="panel inventory-panel admin-inventory-panel">
+                <div class="panel-head">
+                  <div>
+                    <p class="eyebrow">Inventario</p>
+                    <h2>Control editable</h2>
+                  </div>
+                  <div class="admin-inventory-actions">
+                    <span class="helper-text" id="admin-inventory-status">
+                      Guarda cambios de precio, existencia, minimo, estado y nota.
+                    </span>
+                    <button class="secondary-button" id="toggle-admin-inventory-button" type="button">
+                      Mostrar inventario
+                    </button>
+                  </div>
+                </div>
+
+                <div class="admin-product-create-form">
+                  <label class="field">
+                    <span>Nombre</span>
+                    <input id="admin-new-product-name" type="text" maxlength="80" placeholder="Ej. Jamon de puerco" />
+                  </label>
+                  <label class="field">
+                    <span>Categoria</span>
+                    <select id="admin-new-product-category">
+                      <option value="quesos">Quesos</option>
+                      <option value="carnes" selected>Carnes</option>
+                      <option value="piezas">Piezas</option>
+                      <option value="general">General</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Unidad</span>
+                    <select id="admin-new-product-unit">
+                      <option value="kg" selected>kg</option>
+                      <option value="pza">pza</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Precio</span>
+                    <input id="admin-new-product-price" type="number" min="0.01" step="0.01" />
+                  </label>
+                  <label class="field">
+                    <span>Stock inicial</span>
+                    <input id="admin-new-product-stock" type="number" min="0" step="0.25" value="0" />
+                  </label>
+                  <label class="field">
+                    <span>Minimo</span>
+                    <input id="admin-new-product-min-stock" type="number" min="0" step="0.25" value="0" />
+                  </label>
+                  <button class="primary-button" id="save-admin-product-button" type="button">
+                    Agregar producto
+                  </button>
+                </div>
+
+                <p class="admin-table-hint">
+                  Desplaza horizontalmente si necesitas ver todos los campos o comparar sucursales completas.
+                </p>
+
+                <div class="inventory-table-wrap" id="admin-inventory-wrap" hidden>
+                  <!-- Modo simple: una sucursal -->
+                  <div id="inventory-single-table" class="inventory-single-wrapper">
+                    <table class="inventory-table">
+                      <thead>
+                        <tr>
+                          <th>Producto</th>
+                          <th>Precio</th>
+                          <th>Existencia</th>
+                          <th>Minimo</th>
+                          <th>Activo</th>
+                          <th>Nota</th>
+                          <th>Estado</th>
+                          <th>Accion</th>
+                          <th>Quitar</th>
+                        </tr>
+                      </thead>
+                      <tbody id="inventory-body"></tbody>
+                    </table>
+                  </div>
+
+                  <!-- Modo comparativo: dos sucursales lado a lado -->
+                  <div id="inventory-comparison-wrapper" class="inventory-comparison-wrapper" hidden>
+                    <div class="comparison-tables">
+                      <div class="inventory-branch-column">
+                        <div class="inventory-branch-header">
+                          <h3 id="comparison-branch-1-label">Sucursal 1</h3>
+                        </div>
+                        <table class="inventory-table comparison-table">
+                          <thead>
+                            <tr>
+                              <th>Producto</th>
+                              <th>Precio</th>
+                              <th>Existencia</th>
+                              <th>Minimo</th>
+                              <th>Activo</th>
+                              <th>Nota</th>
+                              <th>Estado</th>
+                              <th>Accion</th>
+                            </tr>
+                          </thead>
+                          <tbody id="inventory-body-branch-1"></tbody>
+                        </table>
+                      </div>
+
+                      <div class="inventory-branch-column">
+                        <div class="inventory-branch-header">
+                          <h3 id="comparison-branch-2-label">Sucursal 2</h3>
+                        </div>
+                        <table class="inventory-table comparison-table">
+                          <thead>
+                            <tr>
+                              <th>Producto</th>
+                              <th>Precio</th>
+                              <th>Existencia</th>
+                              <th>Minimo</th>
+                              <th>Activo</th>
+                              <th>Nota</th>
+                              <th>Estado</th>
+                              <th>Accion</th>
+                            </tr>
+                          </thead>
+                          <tbody id="inventory-body-branch-2"></tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            <aside class="admin-secondary-column">
+              <section class="admin-summary-panel admin-overview-panel">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Resumen</p>
+                    <h2>Lectura por sucursal</h2>
+                  </div>
+                  <span class="small-pill" id="admin-metrics-status">Esperando datos</span>
+                </div>
+
+                <div class="admin-summary-grid" id="admin-summary-cards"></div>
+                <div class="shift-chips admin-shift-chips" id="admin-shift-summary"></div>
+              </section>
+
+              <section class="admin-metrics-panel admin-performance-panel">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Metricas</p>
+                    <h2>Rendimiento en vivo</h2>
+                  </div>
+                </div>
+
+                <div class="admin-metrics-grid">
+                  <article class="admin-metric-card">
+                    <span>CPU app</span>
+                    <strong id="admin-process-cpu">0%</strong>
+                  </article>
+                  <article class="admin-metric-card">
+                    <span>Memoria app</span>
+                    <strong id="admin-process-memory">0 MB</strong>
+                  </article>
+                  <article class="admin-metric-card">
+                    <span>Render catalogo</span>
+                    <strong id="admin-products-render">0 ms</strong>
+                  </article>
+                  <article class="admin-metric-card">
+                    <span>Snapshot UI</span>
+                    <strong id="admin-snapshot-render">0 ms</strong>
+                  </article>
+                  <article class="admin-metric-card">
+                    <span>Productos visibles</span>
+                    <strong id="admin-visible-products">0</strong>
+                  </article>
+                  <article class="admin-metric-card">
+                    <span>Nodos DOM</span>
+                    <strong id="admin-dom-nodes">0</strong>
+                  </article>
+                </div>
+
+                <div class="admin-system-grid">
+                  <article class="admin-system-card">
+                    <span>Servidor</span>
+                    <strong id="admin-server-runtime">0s</strong>
+                    <p id="admin-server-memory">RAM sistema 0%</p>
+                  </article>
+                  <article class="admin-system-card">
+                    <span>Cliente</span>
+                    <strong id="admin-client-memory">Sin dato</strong>
+                    <p id="admin-client-hardware">CPU 0 · RAM 0 GB</p>
+                    <p id="admin-client-network">Red sin dato</p>
+                  </article>
+                </div>
+              </section>
+
+              <section class="admin-cashiers-panel admin-side-panel">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Accesos</p>
+                    <h2>Cajeros y contraseñas</h2>
+                  </div>
+                </div>
+
+                <div class="admin-cashier-form">
+                  <label class="field">
+                    <span>Nombre del cajero</span>
+                    <input id="admin-cashier-name" type="text" maxlength="60" placeholder="Ej. Andrea" />
+                  </label>
+
+                  <label class="field">
+                    <span>Sucursal</span>
+                    <select id="admin-cashier-branch">
+                      <option value="carrizal">Carrizal</option>
+                      <option value="miradores">Miradores</option>
+                    </select>
+                  </label>
+
+                  <label class="field">
+                    <span>Contrasena</span>
+                    <input id="admin-cashier-password" type="password" maxlength="60" placeholder="Minimo 4 caracteres" />
+                  </label>
+
+                  <button class="primary-button" id="save-admin-cashier-button" type="button">
+                    Crear cajero
+                  </button>
+                </div>
+
+                <div class="admin-record-list cashier-record-list" id="admin-cashiers-list"></div>
+              </section>
+
+              <section class="admin-config-panel admin-side-panel">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Configuraciones</p>
+                    <h2>Reglas de venta</h2>
+                  </div>
+                </div>
+
+                <div class="admin-config-form">
+                  <label class="field admin-toggle-field">
+                    <span>Permitir ventas con stock negativo</span>
+                    <div class="admin-toggle-row">
+                      <input id="config-allow-negative-stock" type="checkbox" />
+                      <strong>Activar regla de contingencia</strong>
+                    </div>
+                    <small>Si esta activado, se podran vender productos aunque no haya stock suficiente.</small>
+                  </label>
+
+                  <button class="primary-button" id="save-admin-config-button" type="button">
+                    Guardar configuraciones
+                  </button>
+                </div>
+              </section>
+
+              <section class="admin-records-panel admin-audit-log-panel">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Bitacora</p>
+                    <h2>Cambios admin e importacion</h2>
+                  </div>
+                </div>
+                <div class="admin-record-list" id="admin-audit-log-list"></div>
+              </section>
+
+              <section class="admin-metrics-panel admin-dev-panel">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Dev</p>
+                    <h2>Diagnostico y soporte</h2>
+                  </div>
+                </div>
+
+                <div class="admin-metrics-grid" id="admin-dev-summary"></div>
+
+                <div class="admin-record-actions admin-dev-actions">
+                  <button class="secondary-button compact-button" id="dev-refresh-admin-button" type="button">
+                    Recargar panel
+                  </button>
+                  <button class="secondary-button compact-button" id="dev-sync-offline-button" type="button">
+                    Reintentar sync
+                  </button>
+                  <button class="ghost-button compact-button" id="dev-download-state-button" type="button">
+                    Descargar debug JSON
+                  </button>
+                </div>
+              </section>
+            </aside>
+          </div>
+
+          <section class="admin-quick-edit-shell">
+            <div class="panel-head admin-subhead admin-quick-edit-head">
               <div>
-                <p class="eyebrow">Accesos</p>
-                <h2>Cajeros y contraseñas</h2>
+                <p class="eyebrow">Edicion rapida</p>
+                <h2>Ajustes directos</h2>
               </div>
+              <p class="helper-text">
+                Corrige ventas, eventos de caja y movimientos de inventario sin perder el contexto del panel.
+              </p>
             </div>
 
-            <div class="admin-cashier-form">
-              <label class="field">
-                <span>Nombre del cajero</span>
-                <input id="admin-cashier-name" type="text" maxlength="60" placeholder="Ej. Andrea" />
-              </label>
+            <div class="admin-editor-layout">
+              <section class="admin-records-panel">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Ventas</p>
+                    <h2>Editar ventas</h2>
+                  </div>
+                </div>
+                <div class="admin-record-list" id="admin-sales-list"></div>
+              </section>
 
-              <label class="field">
-                <span>Sucursal</span>
-                <select id="admin-cashier-branch">
-                  <option value="carrizal">Carrizal</option>
-                  <option value="miradores">Miradores</option>
-                </select>
-              </label>
+              <section class="admin-records-panel">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Caja</p>
+                    <h2>Editar cortes e inicios</h2>
+                  </div>
+                </div>
+                <div class="admin-record-list" id="admin-register-events-list"></div>
+              </section>
 
-              <label class="field">
-                <span>Contrasena</span>
-                <input id="admin-cashier-password" type="password" maxlength="60" placeholder="Minimo 4 caracteres" />
-              </label>
-
-              <button class="primary-button" id="save-admin-cashier-button" type="button">
-                Crear cajero
-              </button>
+              <section class="admin-records-panel">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Inventario</p>
+                    <h2>Editar movimientos</h2>
+                  </div>
+                </div>
+                <div class="admin-record-list" id="admin-inventory-movements-list"></div>
+              </section>
             </div>
-
-            <div class="admin-record-list cashier-record-list" id="admin-cashiers-list"></div>
-          </section>
-
-          <section class="admin-config-panel">
-            <div class="panel-head admin-subhead">
-              <div>
-                <p class="eyebrow">Configuraciones</p>
-                <h2>Reglas de venta</h2>
-              </div>
-            </div>
-
-            <div class="admin-config-form">
-              <label class="field">
-                <span>Permitir ventas con stock negativo</span>
-                <input id="config-allow-negative-stock" type="checkbox" />
-                <small>Si esta activado, se podran vender productos aunque no haya stock suficiente.</small>
-              </label>
-
-              <button class="primary-button" id="save-admin-config-button" type="button">
-                Guardar configuraciones
-              </button>
-            </div>
-          </section>
-
-          <section class="admin-records-panel">
-            <div class="panel-head admin-subhead">
-              <div>
-                <p class="eyebrow">Pesado</p>
-                <h2>Auditoria de productos kg</h2>
-              </div>
-              <span class="small-pill" id="admin-weighted-audit-status">Sin auditoria cargada</span>
-            </div>
-
-            <div class="admin-cashier-form">
-              <label class="field">
-                <span>Fecha auditada</span>
-                <input id="admin-weighted-audit-date" type="date" />
-              </label>
-              <label class="field">
-                <span>Turno</span>
-                <select id="admin-weighted-audit-shift">
-                  <option value="Manana">Manana</option>
-                  <option value="Tarde" selected>Tarde</option>
-                </select>
-              </label>
-              <button class="secondary-button" id="load-weighted-audit-button" type="button">
-                Cargar
-              </button>
-              <button class="primary-button" id="create-weighted-audit-button" type="button">
-                Crear / abrir sesion
-              </button>
-            </div>
-
-            <div class="admin-record-list" id="admin-weighted-audit-sessions"></div>
-            <div class="admin-record-list" id="admin-weighted-audit-items"></div>
-
-            <div class="admin-record-actions">
-              <button class="secondary-button compact-button" id="save-weighted-audit-items-button" type="button">
-                Guardar conteos
-              </button>
-              <button class="primary-button compact-button" id="complete-weighted-audit-button" type="button">
-                Cerrar auditoria
-              </button>
-            </div>
-          </section>
-
-          <section class="admin-records-panel admin-merchandise-panel">
-            <div class="panel-head admin-subhead">
-              <div>
-                <p class="eyebrow">Solicitudes</p>
-                <h2>Mercaderia pendiente</h2>
-              </div>
-              <span class="small-pill" id="admin-merchandise-requests-status">0 pendientes</span>
-            </div>
-            <div class="admin-record-list" id="admin-merchandise-requests-list"></div>
-          </section>
-
-          <section class="admin-records-panel">
-            <div class="panel-head admin-subhead">
-              <div>
-                <p class="eyebrow">Bitacora</p>
-                <h2>Cambios admin e importacion</h2>
-              </div>
-            </div>
-            <div class="admin-record-list" id="admin-audit-log-list"></div>
-          </section>
-
-          <section class="admin-metrics-panel admin-dev-panel">
-            <div class="panel-head admin-subhead">
-              <div>
-                <p class="eyebrow">Dev</p>
-                <h2>Diagnostico y soporte</h2>
-              </div>
-            </div>
-
-            <div class="admin-metrics-grid" id="admin-dev-summary"></div>
-
-            <div class="admin-record-actions admin-dev-actions">
-              <button class="secondary-button compact-button" id="dev-refresh-admin-button" type="button">
-                Recargar panel
-              </button>
-              <button class="secondary-button compact-button" id="dev-sync-offline-button" type="button">
-                Reintentar sync
-              </button>
-              <button class="ghost-button compact-button" id="dev-download-state-button" type="button">
-                Descargar debug JSON
-              </button>
-            </div>
-          </section>
-        </div>
-
-        <div class="admin-editor-layout">
-          <section class="admin-records-panel">
-            <div class="panel-head admin-subhead">
-              <div>
-                <p class="eyebrow">Ventas</p>
-                <h2>Editar ventas</h2>
-              </div>
-            </div>
-            <div class="admin-record-list" id="admin-sales-list"></div>
-          </section>
-
-          <section class="admin-records-panel">
-            <div class="panel-head admin-subhead">
-              <div>
-                <p class="eyebrow">Caja</p>
-                <h2>Editar cortes e inicios</h2>
-              </div>
-            </div>
-            <div class="admin-record-list" id="admin-register-events-list"></div>
-          </section>
-
-          <section class="admin-records-panel">
-            <div class="panel-head admin-subhead">
-              <div>
-                <p class="eyebrow">Inventario</p>
-                <h2>Editar movimientos</h2>
-              </div>
-            </div>
-            <div class="admin-record-list" id="admin-inventory-movements-list"></div>
           </section>
         </div>
       </div>

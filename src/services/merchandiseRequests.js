@@ -117,13 +117,14 @@ function prepareMerchandiseRequestItems(incomingItems, branch) {
   return incomingItems.map((item) => {
     const productId = Number(item.productId);
     const mode = normalizeRequestMode(item.mode);
-    const quantity = roundStock(item.quantity);
+    const requestedQuantity = roundStock(item.quantity);
+    const requestedTotalValue = roundMoney(Math.abs(item.totalValue ?? item.lineTotal ?? 0));
 
     if (!Number.isInteger(productId) || productId <= 0) {
       throw createHttpError("Uno de los productos de la solicitud no es valido.");
     }
 
-    if (!Number.isFinite(quantity) || quantity <= 0) {
+    if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
       throw createHttpError("Cada producto debe tener una cantidad mayor a cero.");
     }
 
@@ -138,6 +139,18 @@ function prepareMerchandiseRequestItems(incomingItems, branch) {
     }
 
     const unitPrice = roundMoney(product.price);
+    const quantity = product.unit === "pza"
+      ? requestedQuantity
+      : roundStock(
+        requestedTotalValue > 0 && unitPrice > 0
+          ? requestedTotalValue / unitPrice
+          : requestedQuantity,
+      );
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      throw createHttpError(`No pude calcular una cantidad valida para ${product.name}.`);
+    }
+
     const stockBefore = runningStockByProductId.has(productId)
       ? roundStock(runningStockByProductId.get(productId))
       : roundStock(product.stock);
@@ -149,13 +162,16 @@ function prepareMerchandiseRequestItems(incomingItems, branch) {
     }
 
     runningStockByProductId.set(productId, stockAfter);
+    const totalMagnitude = requestedTotalValue > 0
+      ? requestedTotalValue
+      : roundMoney(unitPrice * quantity);
 
     return {
       productId,
       productName: product.name,
       quantity,
       unitPrice,
-      totalValue: roundMoney(unitPrice * quantity * (mode === "receive" ? 1 : -1)),
+      totalValue: roundMoney(totalMagnitude * (mode === "receive" ? 1 : -1)),
       mode,
     };
   });
