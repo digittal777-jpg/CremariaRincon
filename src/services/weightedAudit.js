@@ -3,6 +3,7 @@ const {
   ALL_BRANCHES,
   STORE_BRANCHES,
   STORE_SHIFTS,
+  assertBranchIsActive,
   createHttpError,
   getStoreDateKey,
   normalizeBranch,
@@ -102,9 +103,7 @@ function ensureWeightedAuditSessionInternal(payload = {}) {
   const createdBy = normalizeText(payload.createdBy || "admin", 60) || "admin";
   const notes = normalizeText(payload.notes || "", 240) || null;
 
-  if (!STORE_BRANCHES.includes(branch)) {
-    throw createHttpError("Selecciona una sucursal valida para la auditoria.");
-  }
+  assertBranchIsActive(branch, "Selecciona una sucursal activa para la auditoria.");
   if (!STORE_SHIFTS.includes(shift)) {
     throw createHttpError("Selecciona un turno valido para la auditoria.");
   }

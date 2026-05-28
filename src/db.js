@@ -3,7 +3,14 @@ const path = require("node:path");
 
 const Database = require("better-sqlite3");
 
-const { DATA_DIR, DB_PATH, ENABLE_DB_INSTALL_BACKUP } = require("./config");
+const {
+  DATA_DIR,
+  DB_PATH,
+  ENABLE_DB_INSTALL_BACKUP,
+  STORE_BRANCHES,
+  STORE_BRANCH_LABELS,
+  STORE_TIME_ZONE,
+} = require("./config");
 
 let databaseInstance;
 const SQLITE_MAGIC_HEADER = Buffer.from("SQLite format 3\u0000", "utf8");
@@ -215,13 +222,92 @@ function migrateLegacyMerchandiseTables(db) {
 
 function initializeSchema(db) {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS branches (
+      code TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      timezone TEXT NOT NULL DEFAULT '${STORE_TIME_ZONE}',
+      active INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS business_profile (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      business_name TEXT NOT NULL,
+      slug TEXT NOT NULL,
+      short_name TEXT NOT NULL,
+      currency_code TEXT NOT NULL DEFAULT 'MXN',
+      locale TEXT NOT NULL DEFAULT 'es-MX',
+      timezone TEXT NOT NULL DEFAULT '${STORE_TIME_ZONE}',
+      ticket_prefix TEXT NOT NULL DEFAULT 'POS',
+      template_key TEXT NOT NULL DEFAULT 'base',
+      branding_json TEXT NOT NULL DEFAULT '{}',
+      visible_texts_json TEXT NOT NULL DEFAULT '{}',
+      modules_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS product_categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT NOT NULL UNIQUE,
+      label TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS measurement_units (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT NOT NULL UNIQUE,
+      label TEXT NOT NULL,
+      allow_decimals INTEGER NOT NULL DEFAULT 1,
+      step REAL NOT NULL DEFAULT 0.25,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS product_attribute_definitions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT NOT NULL UNIQUE,
+      label TEXT NOT NULL,
+      value_type TEXT NOT NULL DEFAULT 'text',
+      options_json TEXT NOT NULL DEFAULT '[]',
+      required INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS product_attribute_values (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      definition_id INTEGER NOT NULL REFERENCES product_attribute_definitions(id) ON DELETE CASCADE,
+      value_text TEXT,
+      updated_at TEXT NOT NULL,
+      UNIQUE(product_id, definition_id)
+    );
+
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       price REAL NOT NULL,
       category TEXT NOT NULL,
       unit TEXT NOT NULL DEFAULT 'pza',
+      category_id INTEGER REFERENCES product_categories(id),
+      unit_id INTEGER REFERENCES measurement_units(id),
       type_code TEXT,
+      sku TEXT,
+      barcode TEXT,
+      brand TEXT,
+      supplier_name TEXT,
+      cost REAL NOT NULL DEFAULT 0,
+      pack_size REAL,
       stock REAL NOT NULL DEFAULT 0,
       min_stock REAL NOT NULL DEFAULT 0,
       stock_initialized INTEGER NOT NULL DEFAULT 0,
@@ -352,6 +438,28 @@ function initializeSchema(db) {
       last_seen_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS admin_sessions (
+      session_id TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      csrf_token TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS owner_sessions (
+      session_id TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      csrf_token TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS admin_audit_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       actor_type TEXT NOT NULL DEFAULT 'admin',
@@ -364,12 +472,152 @@ function initializeSchema(db) {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS backup_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      status TEXT NOT NULL,
+      sync_state TEXT NOT NULL DEFAULT 'unknown',
+      backup_date_key TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      sqlite_local_path TEXT,
+      workbook_local_path TEXT,
+      sqlite_bytes INTEGER NOT NULL DEFAULT 0,
+      workbook_bytes INTEGER NOT NULL DEFAULT 0,
+      sqlite_remote_key TEXT,
+      workbook_remote_key TEXT,
+      storage_mode TEXT NOT NULL DEFAULT 'unconfigured',
+      storage_bucket TEXT,
+      error_message TEXT,
+      summary_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS client_sync_reports (
+      device_id TEXT PRIMARY KEY,
+      branch TEXT,
+      actor_type TEXT NOT NULL DEFAULT 'device',
+      actor_name TEXT,
+      pending_queue_count INTEGER NOT NULL DEFAULT 0,
+      blocked_queue_count INTEGER NOT NULL DEFAULT 0,
+      register_events_count INTEGER NOT NULL DEFAULT 0,
+      online INTEGER NOT NULL DEFAULT 1,
+      reported_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
     CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);
     CREATE INDEX IF NOT EXISTS idx_inventory_movements_product_id ON inventory_movements(product_id);
     CREATE INDEX IF NOT EXISTS idx_register_events_shift_created_at ON register_events(shift, created_at);
     CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at ON admin_audit_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_backup_runs_started_at ON backup_runs(started_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_backup_runs_finished_at ON backup_runs(finished_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_client_sync_reports_reported_at ON client_sync_reports(reported_at DESC);
   `);
+
+  const branchColumns = db.prepare("PRAGMA table_info(branches)").all();
+  if (branchColumns.length > 0) {
+    if (!branchColumns.some((column) => column.name === "timezone")) {
+      db.exec(`ALTER TABLE branches ADD COLUMN timezone TEXT NOT NULL DEFAULT '${STORE_TIME_ZONE}'`);
+    }
+    if (!branchColumns.some((column) => column.name === "active")) {
+      db.exec("ALTER TABLE branches ADD COLUMN active INTEGER NOT NULL DEFAULT 1");
+    }
+    if (!branchColumns.some((column) => column.name === "sort_order")) {
+      db.exec("ALTER TABLE branches ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!branchColumns.some((column) => column.name === "created_at")) {
+      db.exec("ALTER TABLE branches ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP");
+    }
+    if (!branchColumns.some((column) => column.name === "updated_at")) {
+      db.exec("ALTER TABLE branches ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP");
+    }
+  }
+
+  const upsertBranch = db.prepare(`
+    INSERT INTO branches (code, name, timezone, active, sort_order, created_at, updated_at)
+    VALUES (?, ?, ?, 1, ?, ?, ?)
+    ON CONFLICT(code) DO UPDATE SET
+      name = COALESCE(branches.name, excluded.name),
+      timezone = COALESCE(branches.timezone, excluded.timezone),
+      updated_at = excluded.updated_at
+  `);
+  const existingBranchCount = Number(db.prepare("SELECT COUNT(*) AS count FROM branches").get().count || 0);
+  const seededAt = nowIso();
+  STORE_BRANCHES.forEach((branchCode, index) => {
+    const branchName = STORE_BRANCH_LABELS[branchCode] || branchCode;
+    if (existingBranchCount === 0) {
+      upsertBranch.run(branchCode, branchName, STORE_TIME_ZONE, index, seededAt, seededAt);
+      return;
+    }
+
+    db.prepare(`
+      INSERT INTO branches (code, name, timezone, active, sort_order, created_at, updated_at)
+      SELECT ?, ?, ?, 1, ?, ?, ?
+      WHERE NOT EXISTS (SELECT 1 FROM branches WHERE code = ?)
+    `).run(branchCode, branchName, STORE_TIME_ZONE, index, seededAt, seededAt, branchCode);
+  });
+
+  db.prepare(`
+    INSERT INTO business_profile (
+      id,
+      business_name,
+      slug,
+      short_name,
+      currency_code,
+      locale,
+      timezone,
+      ticket_prefix,
+      template_key,
+      branding_json,
+      visible_texts_json,
+      modules_json,
+      created_at,
+      updated_at
+    )
+    SELECT 1, ?, ?, ?, 'MXN', 'es-MX', ?, 'POS', 'base', ?, '{}', ?, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM business_profile WHERE id = 1)
+  `).run(
+    "Retail Base POS",
+    "retail-base-pos",
+    "Retail POS",
+    STORE_TIME_ZONE,
+    JSON.stringify({
+      logo192: "/assets/branding/retail-base-badge.svg",
+      logo512: "/assets/branding/retail-base-badge.svg",
+      logo: "/assets/branding/retail-base-badge.svg",
+    }),
+    JSON.stringify([]),
+    seededAt,
+    seededAt,
+  );
+
+  const insertCategory = db.prepare(`
+    INSERT INTO product_categories (code, label, sort_order, active, created_at, updated_at)
+    SELECT ?, ?, ?, 1, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM product_categories WHERE code = ?)
+  `);
+  [
+    ["quesos", "Quesos"],
+    ["carnes", "Carnes"],
+    ["piezas", "Piezas"],
+    ["general", "General"],
+  ].forEach(([code, label], index) => {
+    insertCategory.run(code, label, index, seededAt, seededAt, code);
+  });
+
+  const insertUnit = db.prepare(`
+    INSERT INTO measurement_units (code, label, allow_decimals, step, sort_order, active, created_at, updated_at)
+    SELECT ?, ?, ?, ?, ?, 1, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM measurement_units WHERE code = ?)
+  `);
+  [
+    ["kg", "kg", 1, 0.25],
+    ["pza", "pza", 0, 1],
+  ].forEach(([code, label, allowDecimals, step], index) => {
+    insertUnit.run(code, label, allowDecimals, step, index, seededAt, seededAt, code);
+  });
 
   const productColumns = db.prepare("PRAGMA table_info(products)").all();
   if (!productColumns.some((column) => column.name === "stock_initialized")) {
@@ -381,6 +629,69 @@ function initializeSchema(db) {
     db.exec("ALTER TABLE products ADD COLUMN branch TEXT NOT NULL DEFAULT 'carrizal'");
     db.exec("UPDATE products SET branch = 'carrizal' WHERE branch IS NULL OR branch = ''");
   }
+  if (!productColumns.some((column) => column.name === "category_id")) {
+    db.exec("ALTER TABLE products ADD COLUMN category_id INTEGER REFERENCES product_categories(id)");
+  }
+  if (!productColumns.some((column) => column.name === "unit_id")) {
+    db.exec("ALTER TABLE products ADD COLUMN unit_id INTEGER REFERENCES measurement_units(id)");
+  }
+  if (!productColumns.some((column) => column.name === "sku")) {
+    db.exec("ALTER TABLE products ADD COLUMN sku TEXT");
+  }
+  if (!productColumns.some((column) => column.name === "barcode")) {
+    db.exec("ALTER TABLE products ADD COLUMN barcode TEXT");
+  }
+  if (!productColumns.some((column) => column.name === "brand")) {
+    db.exec("ALTER TABLE products ADD COLUMN brand TEXT");
+  }
+  if (!productColumns.some((column) => column.name === "supplier_name")) {
+    db.exec("ALTER TABLE products ADD COLUMN supplier_name TEXT");
+  }
+  if (!productColumns.some((column) => column.name === "cost")) {
+    db.exec("ALTER TABLE products ADD COLUMN cost REAL NOT NULL DEFAULT 0");
+  }
+  if (!productColumns.some((column) => column.name === "pack_size")) {
+    db.exec("ALTER TABLE products ADD COLUMN pack_size REAL");
+  }
+
+  db.exec(`
+    UPDATE products
+    SET category_id = COALESCE(
+      category_id,
+      (
+        SELECT id
+        FROM product_categories
+        WHERE code = LOWER(TRIM(products.category))
+        LIMIT 1
+      ),
+      (
+        SELECT id
+        FROM product_categories
+        WHERE code = 'general'
+        LIMIT 1
+      )
+    )
+    WHERE category_id IS NULL
+  `);
+  db.exec(`
+    UPDATE products
+    SET unit_id = COALESCE(
+      unit_id,
+      (
+        SELECT id
+        FROM measurement_units
+        WHERE code = LOWER(TRIM(products.unit))
+        LIMIT 1
+      ),
+      (
+        SELECT id
+        FROM measurement_units
+        WHERE code = 'pza'
+        LIMIT 1
+      )
+    )
+    WHERE unit_id IS NULL
+  `);
 
   try {
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_name_branch ON products(name, branch)");
@@ -461,8 +772,18 @@ function initializeSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_register_events_branch_shift_created_at ON register_events(branch, shift, created_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_register_events_client_event_id_unique ON register_events(client_event_id);
     CREATE INDEX IF NOT EXISTS idx_products_branch ON products(branch);
+    CREATE INDEX IF NOT EXISTS idx_products_category_id ON products(category_id);
+    CREATE INDEX IF NOT EXISTS idx_products_unit_id ON products(unit_id);
+    CREATE INDEX IF NOT EXISTS idx_branches_active_sort ON branches(active, sort_order, name);
+    CREATE INDEX IF NOT EXISTS idx_product_categories_active_sort ON product_categories(active, sort_order, label);
+    CREATE INDEX IF NOT EXISTS idx_measurement_units_active_sort ON measurement_units(active, sort_order, label);
+    CREATE INDEX IF NOT EXISTS idx_product_attribute_definitions_active_sort ON product_attribute_definitions(active, sort_order, label);
+    CREATE INDEX IF NOT EXISTS idx_product_attribute_values_product_id ON product_attribute_values(product_id);
+    CREATE INDEX IF NOT EXISTS idx_product_attribute_values_definition_id ON product_attribute_values(definition_id);
     CREATE INDEX IF NOT EXISTS idx_cashier_sessions_cashier_id ON cashier_sessions(cashier_id);
     CREATE INDEX IF NOT EXISTS idx_cashier_sessions_expires_at ON cashier_sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at ON admin_sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_owner_sessions_expires_at ON owner_sessions(expires_at);
     CREATE INDEX IF NOT EXISTS idx_weighted_audit_sessions_branch_shift_date
       ON weighted_audit_sessions(branch, shift, audited_date_key);
     CREATE INDEX IF NOT EXISTS idx_weighted_audit_sessions_created_at

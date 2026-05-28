@@ -10,6 +10,12 @@ const settings = require("./settings");
 const audit = require("./audit");
 const merchandiseRequests = require("./merchandiseRequests");
 const weightedAudit = require("./weightedAudit");
+const branches = require("./branches");
+const businessProfile = require("./businessProfile");
+const templateProvisioning = require("./templateProvisioning");
+const backups = require("./backups");
+const { assertModuleEnabled } = require("../utils/helpers");
+const ownerConsole = require("./ownerConsole");
 
 module.exports = {
   ...products,
@@ -24,4 +30,10 @@ module.exports = {
   ...audit,
   ...merchandiseRequests,
   ...weightedAudit,
+  ...branches,
+  ...businessProfile,
+  ...templateProvisioning,
+  ...backups,
+  ...ownerConsole,
+  assertModuleEnabled,
 };

@@ -7,27 +7,424 @@ const express = require("express");
 const multer = require("multer");
 const { Server } = require("socket.io");
 
-const { PORT, ROOT_DIR, STORE_NAME } = require("./config");
+const {
+  ADMIN_SESSION_COOKIE_NAME,
+  ADMIN_SESSION_TTL_MS,
+  ALLOWED_ORIGINS,
+  BOOTSTRAP_TOKEN_HEADER_NAME,
+  OWNER_SESSION_COOKIE_NAME,
+  OWNER_SESSION_TTL_MS,
+  PORT,
+  POS_BOOTSTRAP_TOKEN,
+  ROOT_DIR,
+  SESSION_COOKIE_SECURE,
+} = require("./config");
 const { createDatabaseBackup, installDatabaseFromBuffer, nowIso } = require("./db");
 
 const services = require("./services");
 const adminAuth = require("./admin/auth");
+const ownerAuth = require("./owner/auth");
 const cashierAuth = require("./cashier/auth");
+const { getBusinessProfile } = require("./utils/helpers");
 const { getSetting, setSetting } = require("./utils/settings");
 const { getSystemMetrics } = require("./admin/metrics");
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server, {
+  cors: {
+    origin(origin, callback) {
+      if (!origin || ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error("Origen no permitido para Socket.IO"));
+    },
+    credentials: true,
+  },
+});
 
 // Configurar multer para uploads temporales en memoria
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 let lastCpuSnapshot = { usage: process.cpuUsage(), time: process.hrtime.bigint() };
-const adminSessions = new Map();
+const adminSessions = null;
 
 function getAdminActorName(request) {
-  return String(request.headers["x-admin-user"] || adminAuth.getStoredAdminUsername() || "admin");
+  return String(
+    request.adminSession?.username
+      || request.headers["x-admin-user"]
+      || adminAuth.getStoredAdminUsername()
+      || "admin",
+  );
+}
+
+function getDefaultBranchCode() {
+  return services.listBranches({ includeInactive: false })[0]?.code || "carrizal";
+}
+
+function getRequestAccessContext(request, options = {}) {
+  const cashierSession = cashierAuth.getCashierSessionFromRequest(request);
+  if (cashierSession) {
+    return {
+      authenticated: true,
+      role: "cashier",
+      cashierSession,
+      adminSession: null,
+      ownerSession: null,
+    };
+  }
+
+  const ownerSession = ownerAuth.getOwnerSession(request, {
+    touch: options.touchOwner !== false,
+  });
+  if (ownerSession) {
+    return {
+      authenticated: true,
+      role: "owner",
+      cashierSession: null,
+      adminSession: null,
+      ownerSession,
+    };
+  }
+
+  const adminSession = adminAuth.getAdminSession(request, {
+    touch: options.touchAdmin !== false,
+  });
+  if (adminSession) {
+    return {
+      authenticated: true,
+      role: "admin",
+      cashierSession: null,
+      adminSession,
+      ownerSession: null,
+    };
+  }
+
+  return {
+    authenticated: false,
+    role: "guest",
+    cashierSession: null,
+    adminSession: null,
+    ownerSession: null,
+  };
+}
+
+function resolveRequestedBranch(request, accessContext, options = {}) {
+  if (accessContext?.cashierSession?.branch) {
+    return accessContext.cashierSession.branch;
+  }
+
+  const requestedBranch = String(
+    options.branch
+      ?? request.query?.branch
+      ?? request.body?.branch
+      ?? "",
+  ).trim();
+
+  if (!requestedBranch) {
+    return getDefaultBranchCode();
+  }
+
+  if (requestedBranch === "all" && options.allowAll !== true) {
+    return getDefaultBranchCode();
+  }
+
+  return requestedBranch;
+}
+
+function buildBootstrapAuthState(accessContext) {
+  return {
+    role: accessContext.role || "guest",
+    adminAuthenticated: Boolean(accessContext.adminSession),
+    ownerAuthenticated: Boolean(accessContext.ownerSession),
+    cashierAuthenticated: Boolean(accessContext.cashierSession),
+    permissions: {
+      canViewAdmin: Boolean(accessContext.adminSession),
+      canManageBranches: Boolean(accessContext.adminSession),
+      canOperateCashier: Boolean(accessContext.cashierSession),
+    },
+    admin: accessContext.adminSession
+      ? {
+          username: accessContext.adminSession.username,
+          sessionExpiresAt: accessContext.adminSession.expiresAt,
+        }
+      : null,
+    owner: accessContext.ownerSession
+      ? {
+          username: accessContext.ownerSession.username,
+          sessionExpiresAt: accessContext.ownerSession.expiresAt,
+        }
+      : null,
+    cashier: accessContext.cashierSession
+      ? {
+          id: accessContext.cashierSession.cashierId,
+          name: accessContext.cashierSession.name,
+          branch: accessContext.cashierSession.branch,
+          expiresAt: accessContext.cashierSession.expiresAt,
+        }
+      : null,
+  };
+}
+
+function requireAuthenticatedActor(request, response, next) {
+  const accessContext = getRequestAccessContext(request);
+  if (!accessContext.authenticated) {
+    response.status(401).json({
+      message: "Necesitas iniciar sesion para acceder a esta informacion.",
+    });
+    return;
+  }
+
+  request.accessContext = accessContext;
+  next();
+}
+
+function assertDetailAccessibleToRequester(detail, accessContext) {
+  if (!detail || !accessContext?.cashierSession) {
+    return;
+  }
+
+  if (detail.branch && detail.branch !== accessContext.cashierSession.branch) {
+    const error = new Error("Actividad no encontrada");
+    error.statusCode = 404;
+    throw error;
+  }
+}
+
+function requireClientSyncReporterAuth(request, response, next) {
+  if (cashierAuth.getCashierTokenFromRequest(request)) {
+    cashierAuth.requireCashierAuth(request, response, next);
+    return;
+  }
+
+  if (ownerAuth.getOwnerSession(request, { touch: false })) {
+    ownerAuth.requireOwnerAuth(request, response, next);
+    return;
+  }
+
+  adminAuth.requireAdminAuth(request, response, next);
+}
+
+function getClientSyncReporterActor(request) {
+  if (request.cashierSession) {
+    return {
+      actorType: "cashier",
+      actorName: request.cashierSession.name,
+      branch: request.cashierSession.branch,
+    };
+  }
+
+  if (request.ownerSession) {
+    return {
+      actorType: "owner",
+      actorName: request.ownerSession.username,
+      branch: null,
+    };
+  }
+
+  if (request.adminSession) {
+    return {
+      actorType: "admin",
+      actorName: request.adminSession.username,
+      branch: null,
+    };
+  }
+
+  return {
+    actorType: "device",
+    actorName: "",
+    branch: null,
+  };
+}
+
+function setAdminSessionCookie(response, sessionId) {
+  response.cookie(ADMIN_SESSION_COOKIE_NAME, sessionId, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: SESSION_COOKIE_SECURE,
+    path: "/",
+    maxAge: ADMIN_SESSION_TTL_MS,
+  });
+}
+
+function clearAdminSessionCookie(response) {
+  response.clearCookie(ADMIN_SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: SESSION_COOKIE_SECURE,
+    path: "/",
+  });
+}
+
+function buildAdminAuthStatus(request) {
+  const configured = Boolean(adminAuth.getStoredAdminPassword());
+  const session = adminAuth.getAdminSession(request, { touch: false });
+  return {
+    configured,
+    setupAllowed: !configured && Boolean(POS_BOOTSTRAP_TOKEN),
+    username: adminAuth.getStoredAdminUsername(),
+    authenticated: Boolean(session),
+    csrfToken: session?.csrfToken || "",
+    sessionExpiresAt: session?.expiresAt || null,
+  };
+}
+
+function setOwnerSessionCookie(response, sessionId) {
+  response.cookie(OWNER_SESSION_COOKIE_NAME, sessionId, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: SESSION_COOKIE_SECURE,
+    path: "/",
+    maxAge: OWNER_SESSION_TTL_MS,
+  });
+}
+
+function clearOwnerSessionCookie(response) {
+  response.clearCookie(OWNER_SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: SESSION_COOKIE_SECURE,
+    path: "/",
+  });
+}
+
+function buildOwnerAuthStatus(request) {
+  const configured = Boolean(ownerAuth.getStoredOwnerPassword());
+  const session = ownerAuth.getOwnerSession(request, { touch: false });
+  return {
+    configured,
+    setupAllowed: !configured && Boolean(POS_BOOTSTRAP_TOKEN),
+    username: ownerAuth.getStoredOwnerUsername(),
+    authenticated: Boolean(session),
+    csrfToken: session?.csrfToken || "",
+    sessionExpiresAt: session?.expiresAt || null,
+  };
+}
+
+function getBootstrapTokenFromRequest(request) {
+  return String(request.headers[BOOTSTRAP_TOKEN_HEADER_NAME] || "").trim();
+}
+
+function assertBootstrapSetupAllowed(request, actorLabel) {
+  if (!POS_BOOTSTRAP_TOKEN) {
+    throw Object.assign(new Error(`El setup inicial de ${actorLabel} esta bloqueado en este despliegue.`), {
+      statusCode: 403,
+    });
+  }
+
+  if (getBootstrapTokenFromRequest(request) !== POS_BOOTSTRAP_TOKEN) {
+    throw Object.assign(new Error(`Necesitas un token de bootstrap valido para crear el acceso ${actorLabel}.`), {
+      statusCode: 403,
+    });
+  }
+}
+
+function getManifestMimeType(assetPath) {
+  const normalizedPath = String(assetPath || "").toLowerCase();
+  if (normalizedPath.endsWith(".svg")) {
+    return "image/svg+xml";
+  }
+  if (normalizedPath.endsWith(".png")) {
+    return "image/png";
+  }
+  if (normalizedPath.endsWith(".jpg") || normalizedPath.endsWith(".jpeg")) {
+    return "image/jpeg";
+  }
+  if (normalizedPath.endsWith(".webp")) {
+    return "image/webp";
+  }
+  return "image/png";
+}
+
+function buildManifestPayload() {
+  const profile = getBusinessProfile();
+  const businessName = profile.businessName || "Punto de Venta";
+  const shortName = profile.shortName || "POS";
+  const branding = profile.branding || {};
+  const iconCandidates = [
+    branding.logo192,
+    branding.logo512,
+    branding.logo,
+    "/assets/branding/retail-base-badge.svg",
+  ].filter(Boolean);
+  const seenIcons = new Set();
+  const icons = iconCandidates.reduce((entries, iconPath) => {
+    if (seenIcons.has(iconPath)) {
+      return entries;
+    }
+
+    seenIcons.add(iconPath);
+    entries.push({
+      src: iconPath,
+      sizes: String(iconPath).endsWith(".svg")
+        ? "any"
+        : iconPath === branding.logo192
+          ? "192x192"
+          : iconPath === branding.logo512
+            ? "512x512"
+            : "512x512",
+      type: getManifestMimeType(iconPath),
+      purpose: "any maskable",
+    });
+    return entries;
+  }, []);
+
+  return {
+    name: businessName,
+    short_name: shortName,
+    start_url: "/",
+    display: "standalone",
+    background_color: "#f4efe7",
+    theme_color: "#6f5a4a",
+    lang: profile.locale || "es-MX",
+    icons,
+  };
+}
+
+function buildBusinessTemplateSummaries() {
+  return services.listBusinessTemplates().map((template) => {
+    const loadedTemplate = services.loadBusinessTemplate(template.key);
+    return {
+      key: template.key,
+      businessName: loadedTemplate.businessName || "",
+      shortName: loadedTemplate.shortName || "",
+      description: loadedTemplate.description || "",
+      modules: Array.isArray(loadedTemplate.modules) ? loadedTemplate.modules : [],
+      categories: Array.isArray(loadedTemplate.categories) ? loadedTemplate.categories.length : 0,
+      units: Array.isArray(loadedTemplate.units) ? loadedTemplate.units.length : 0,
+      branches: Array.isArray(loadedTemplate.branches) ? loadedTemplate.branches.length : 0,
+    };
+  });
+}
+
+function applySecurityHeaders(request, response, next) {
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("X-Frame-Options", "SAMEORIGIN");
+  response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+
+  const origin = String(request.headers.origin || "").trim();
+  if (origin && ALLOWED_ORIGINS.length > 0) {
+    if (!ALLOWED_ORIGINS.includes(origin)) {
+      response.status(403).json({ message: "Origen no permitido." });
+      return;
+    }
+
+    response.setHeader("Access-Control-Allow-Origin", origin);
+    response.setHeader("Access-Control-Allow-Credentials", "true");
+    response.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Cashier-Token, X-CSRF-Token, X-Admin-User, X-Bootstrap-Token");
+    response.setHeader("Access-Control-Allow-Methods", "GET,HEAD,POST,PATCH,DELETE,OPTIONS");
+    response.setHeader("Vary", "Origin");
+  }
+
+  if (request.method === "OPTIONS") {
+    response.status(204).end();
+    return;
+  }
+
+  next();
 }
 
 function getProcessCpuPercent() {
@@ -41,7 +438,10 @@ function getProcessCpuPercent() {
 }
 
 function broadcastSnapshot(snapshot = services.getDashboardSnapshot()) {
-  io.emit("dashboard:snapshot", snapshot);
+  io.emit("dashboard:snapshot", {
+    branch: snapshot?.store?.currentBranch || null,
+    generatedAt: snapshot?.generatedAt || nowIso(),
+  });
 }
 
 function broadcastMerchandiseRequestUpdate(requestRecord) {
@@ -60,28 +460,72 @@ function broadcastMerchandiseRequestUpdate(requestRecord) {
   });
 }
 
+function requireEnabledModule(moduleCode) {
+  return (_request, _response, next) => {
+    try {
+      services.assertModuleEnabled(moduleCode);
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+function requireAdminCapability(capabilityCode) {
+  return (_request, _response, next) => {
+    try {
+      services.assertAdminCapability(capabilityCode);
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+app.disable("x-powered-by");
+app.set("trust proxy", 1);
+app.use(applySecurityHeaders);
 app.use(express.json({ limit: "1mb" }));
+
+app.get("/manifest.webmanifest", (_request, response) => {
+  response.type("application/manifest+json");
+  response.setHeader("Cache-Control", "no-store");
+  response.send(JSON.stringify(buildManifestPayload()));
+});
+
 app.use(express.static(path.join(ROOT_DIR, "public")));
 
 app.get("/api/health", (_request, response) => {
   response.json({ ok: true, generatedAt: new Date().toISOString() });
 });
 
-app.get("/api/dashboard", (request, response) => {
-  const branch = request.query.branch || "carrizal";
+app.get("/api/dashboard", requireAuthenticatedActor, (request, response) => {
+  const branch = resolveRequestedBranch(request, request.accessContext, {
+    allowAll: Boolean(request.accessContext.adminSession || request.accessContext.ownerSession),
+  });
   response.json(services.getDashboardSnapshot(branch));
 });
 
 app.get("/api/bootstrap", (request, response) => {
-  const branch = request.query.branch || "carrizal";
+  const accessContext = getRequestAccessContext(request);
+  const branch = resolveRequestedBranch(request, accessContext, {
+    allowAll: Boolean(accessContext.adminSession || accessContext.ownerSession),
+  });
 
   try {
-    // Reutilizamos EXACTAMENTE la misma función que ya tienes funcionando
-    // Esto garantiza que el snapshot sea idéntico al que ya usas en /api/dashboard
-    const snapshot = services.getDashboardSnapshot(branch);
-
-    // Opcional (pero recomendado): puedes enriquecerlo en el futuro aquí
-    // snapshot.cashiers = services.listCashiers(branch === "all" ? null : branch);
+    const snapshot = accessContext.authenticated
+      ? services.getDashboardSnapshot(branch)
+      : services.getPublicDashboardSnapshot(branch);
+    snapshot.auth = buildBootstrapAuthState(accessContext);
+    snapshot.profile = snapshot.profile || snapshot.store || {};
+    snapshot.enabledModules = Array.isArray(snapshot.enabledModules) ? snapshot.enabledModules : [];
+    snapshot.categories = Array.isArray(snapshot.categories) ? snapshot.categories : [];
+    snapshot.units = Array.isArray(snapshot.units) ? snapshot.units : [];
+    snapshot.productAttributeDefinitions = Array.isArray(snapshot.productAttributeDefinitions)
+      ? snapshot.productAttributeDefinitions
+      : [];
+    snapshot.branding = snapshot.branding || snapshot.profile?.branding || snapshot.store?.branding || {};
+    snapshot.adminCapabilities = accessContext.adminSession ? services.getAdminCapabilities() : [];
 
     response.json(snapshot);
   } catch (err) {
@@ -105,7 +549,7 @@ app.post("/api/sales", cashierAuth.requireCashierAuth, (request, response) => {
   response.status(201).json({ sale, snapshot });
 });
 
-app.post("/api/merchandise-requests", cashierAuth.requireCashierAuth, (request, response) => {
+app.post("/api/merchandise-requests", requireEnabledModule("merchandise_requests"), cashierAuth.requireCashierAuth, (request, response) => {
   const cashierSession = request.cashierSession;
   const merchandiseRequest = services.createMerchandiseRequest({
     ...(request.body || {}),
@@ -117,7 +561,7 @@ app.post("/api/merchandise-requests", cashierAuth.requireCashierAuth, (request, 
   response.status(201).json({ request: merchandiseRequest });
 });
 
-app.get("/api/merchandise-requests/my", cashierAuth.requireCashierAuth, (request, response) => {
+app.get("/api/merchandise-requests/my", requireEnabledModule("merchandise_requests"), cashierAuth.requireCashierAuth, (request, response) => {
   const cashierSession = request.cashierSession;
   const status = request.query.status || "pending";
   const limit = Number(request.query.limit || 12);
@@ -131,7 +575,11 @@ app.get("/api/merchandise-requests/my", cashierAuth.requireCashierAuth, (request
 });
 
 app.get("/api/merchandise-requests/pending", (request, response, next) => {
-  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+  requireEnabledModule("merchandise_requests")(request, response, next);
+}, (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next);
+}, (request, response, next) => {
+  requireAdminCapability("merchandise_requests")(request, response, next);
 }, (request, response) => {
   const branch = request.query.branch || "all";
   const limit = Number(request.query.limit || 60);
@@ -140,7 +588,11 @@ app.get("/api/merchandise-requests/pending", (request, response, next) => {
 });
 
 app.get("/api/merchandise-requests/:id", (request, response, next) => {
-  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+  requireEnabledModule("merchandise_requests")(request, response, next);
+}, (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next);
+}, (request, response, next) => {
+  requireAdminCapability("merchandise_requests")(request, response, next);
 }, (request, response) => {
   const requestId = Number(request.params.id);
   const merchandiseRequest = services.getMerchandiseRequestById(requestId);
@@ -153,7 +605,11 @@ app.get("/api/merchandise-requests/:id", (request, response, next) => {
 });
 
 app.post("/api/merchandise-requests/:id/approve", (request, response, next) => {
+  requireEnabledModule("merchandise_requests")(request, response, next);
+}, (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("merchandise_requests")(request, response, next);
 }, (request, response) => {
   const requestId = Number(request.params.id);
   const merchandiseRequest = services.approveMerchandiseRequest(requestId);
@@ -176,7 +632,11 @@ app.post("/api/merchandise-requests/:id/approve", (request, response, next) => {
 });
 
 app.post("/api/merchandise-requests/:id/reject", (request, response, next) => {
+  requireEnabledModule("merchandise_requests")(request, response, next);
+}, (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("merchandise_requests")(request, response, next);
 }, (request, response) => {
   const requestId = Number(request.params.id);
   const rejectionReason = request.body?.rejectionReason || request.body?.reason || "";
@@ -196,8 +656,10 @@ app.post("/api/merchandise-requests/:id/reject", (request, response, next) => {
 });
 
 
-app.get("/api/products/:id", (request, response) => {
-  const branch = request.query.branch || "carrizal";
+app.get("/api/products/:id", requireAuthenticatedActor, (request, response) => {
+  const branch = resolveRequestedBranch(request, request.accessContext, {
+    allowAll: Boolean(request.accessContext.adminSession || request.accessContext.ownerSession),
+  });
   const productId = Number(request.params.id);
   const product = services.getProductById(productId, branch);
   if (!product) {
@@ -210,37 +672,336 @@ app.get("/api/products/:id", (request, response) => {
 
 app.get("/api/admin/settings", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
 }, (_request, response) => {
-  response.json({ settings: services.listSettings() });
+  response.json(services.getAdminConfigBundle());
 });
 
 app.patch("/api/admin/settings", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
 }, (request, response) => {
-  const updates = request.body || {};
-  const settings = services.updateSettings(updates);
+  const payload = request.body || {};
+  const settingsPayload = payload.settings && typeof payload.settings === "object"
+    ? payload.settings
+    : Object.fromEntries(
+      Object.entries(payload).filter(([key]) => !["businessProfile", "enabledModules"].includes(key)),
+    );
+  const settings = Object.keys(settingsPayload).length > 0
+    ? services.updateSettings(settingsPayload)
+    : services.listSettings();
+  const businessProfile = payload.businessProfile
+    ? services.updateBusinessProfile(payload.businessProfile)
+    : getBusinessProfile();
+  const enabledModules = Array.isArray(payload.enabledModules)
+    ? services.updateEnabledModules(payload.enabledModules)
+    : services.getEnabledModules();
   services.logAdminAction({
     actorName: getAdminActorName(request),
     action: "settings_update",
     entityType: "settings",
     entityId: "app",
-    payload: updates,
+    payload,
   });
-  response.json({ settings });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.json({
+    settings,
+    businessProfile,
+    enabledModules,
+    adminCapabilities: services.getAdminCapabilities(),
+    categories: services.listProductCategories({ includeInactive: true }),
+    units: services.listMeasurementUnits({ includeInactive: true }),
+    productAttributeDefinitions: services.listProductAttributeDefinitions({ includeInactive: true }),
+  });
+});
+
+app.get("/api/admin/templates", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (_request, response) => {
+  response.json({ templates: buildBusinessTemplateSummaries(), generatedAt: nowIso() });
+});
+
+app.post("/api/admin/templates/:key/apply", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (_request, response) => {
+  response.status(403).json({
+    message: "Aplicar una plantilla completa ahora es una operacion exclusiva del owner.",
+  });
+});
+
+app.post("/api/admin/modules", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (request, response) => {
+  const enabledModules = services.updateEnabledModules(request.body?.enabledModules || []);
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "modules_update",
+    entityType: "settings",
+    entityId: "modules",
+    payload: { enabledModules },
+  });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.json({ enabledModules });
+});
+
+app.get("/api/admin/categories", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (_request, response) => {
+  response.json({
+    categories: services.listProductCategories({ includeInactive: true }),
+    generatedAt: nowIso(),
+  });
+});
+
+app.post("/api/admin/categories", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (request, response) => {
+  const category = services.createProductCategory(request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "category_create",
+    entityType: "product_category",
+    entityId: category.id,
+    payload: request.body || {},
+  });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.status(201).json({ category });
+});
+
+app.patch("/api/admin/categories/:id", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (request, response) => {
+  const category = services.updateProductCategory(request.params.id, request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "category_update",
+    entityType: "product_category",
+    entityId: category.id,
+    payload: request.body || {},
+  });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.json({ category });
+});
+
+app.delete("/api/admin/categories/:id", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (request, response) => {
+  const category = services.deactivateProductCategory(request.params.id);
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "category_deactivate",
+    entityType: "product_category",
+    entityId: category.id,
+    payload: {},
+  });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.json({ category });
+});
+
+app.get("/api/admin/units", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (_request, response) => {
+  response.json({
+    units: services.listMeasurementUnits({ includeInactive: true }),
+    generatedAt: nowIso(),
+  });
+});
+
+app.post("/api/admin/units", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (request, response) => {
+  const unit = services.createMeasurementUnit(request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "unit_create",
+    entityType: "measurement_unit",
+    entityId: unit.id,
+    payload: request.body || {},
+  });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.status(201).json({ unit });
+});
+
+app.patch("/api/admin/units/:id", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (request, response) => {
+  const unit = services.updateMeasurementUnit(request.params.id, request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "unit_update",
+    entityType: "measurement_unit",
+    entityId: unit.id,
+    payload: request.body || {},
+  });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.json({ unit });
+});
+
+app.delete("/api/admin/units/:id", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (request, response) => {
+  const unit = services.deactivateMeasurementUnit(request.params.id);
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "unit_deactivate",
+    entityType: "measurement_unit",
+    entityId: unit.id,
+    payload: {},
+  });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.json({ unit });
+});
+
+app.get("/api/admin/product-attributes", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (_request, response) => {
+  response.json({
+    productAttributeDefinitions: services.listProductAttributeDefinitions({ includeInactive: true }),
+    generatedAt: nowIso(),
+  });
+});
+
+app.post("/api/admin/product-attributes", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (request, response) => {
+  const productAttributeDefinition = services.createProductAttributeDefinition(request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "product_attribute_create",
+    entityType: "product_attribute_definition",
+    entityId: productAttributeDefinition.id,
+    payload: request.body || {},
+  });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.status(201).json({ productAttributeDefinition });
+});
+
+app.patch("/api/admin/product-attributes/:id", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (request, response) => {
+  const productAttributeDefinition = services.updateProductAttributeDefinition(request.params.id, request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "product_attribute_update",
+    entityType: "product_attribute_definition",
+    entityId: productAttributeDefinition.id,
+    payload: request.body || {},
+  });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.json({ productAttributeDefinition });
+});
+
+app.delete("/api/admin/product-attributes/:id", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (request, response) => {
+  const productAttributeDefinition = services.deactivateProductAttributeDefinition(request.params.id);
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "product_attribute_deactivate",
+    entityType: "product_attribute_definition",
+    entityId: productAttributeDefinition.id,
+    payload: {},
+  });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.json({ productAttributeDefinition });
+});
+
+app.get("/api/admin/branches", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("branches")(request, response, next);
+}, (_request, response) => {
+  response.json({
+    branches: services.listBranches({ includeInactive: true }),
+    generatedAt: nowIso(),
+  });
+});
+
+app.post("/api/admin/branches", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("branches")(request, response, next);
+}, (request, response) => {
+  const branch = services.createBranch(request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "branch_create",
+    entityType: "branch",
+    entityId: branch.code,
+    branch: branch.code,
+    payload: request.body || {},
+  });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.status(201).json({ branch });
+});
+
+app.patch("/api/admin/branches/:code", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("branches")(request, response, next);
+}, (request, response) => {
+  const branch = services.updateBranch(request.params.code, request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "branch_update",
+    entityType: "branch",
+    entityId: branch.code,
+    branch: branch.code,
+    payload: {
+      previousCode: request.params.code,
+      ...request.body,
+    },
+  });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.json({ branch });
 });
 
 
 app.get("/api/admin/auth/status", (request, response) => {
-  response.json({
-    configured: Boolean(adminAuth.getStoredAdminPassword()),
-    username: adminAuth.getStoredAdminUsername(),
-    authenticated: adminAuth.isAdminAuthenticated(request, adminSessions)
-  });
+  response.json(buildAdminAuthStatus(request));
 });
 
 app.post("/api/admin/auth/setup", (request, response) => {
   if (adminAuth.getStoredAdminPassword()) {
     response.status(409).json({ message: "La contrasena de admin ya fue configurada." });
+    return;
+  }
+  try {
+    assertBootstrapSetupAllowed(request, "admin");
+  } catch (error) {
+    response.status(error.statusCode || 403).json({ message: error.message });
     return;
   }
   const username = String(request.body?.username || "").trim().toLowerCase();
@@ -249,8 +1010,9 @@ app.post("/api/admin/auth/setup", (request, response) => {
     response.status(400).json({ message: "El usuario admin debe tener al menos 3 caracteres." });
     return;
   }
-  if (password.length < 4) {
-    response.status(400).json({ message: "La contrasena admin debe tener al menos 4 caracteres." });
+  const passwordError = adminAuth.getAdminPasswordValidationError(password);
+  if (passwordError) {
+    response.status(400).json({ message: passwordError });
     return;
   }
   adminAuth.setSetting("admin.username", username);
@@ -266,13 +1028,24 @@ app.post("/api/admin/auth/setup", (request, response) => {
 });
 
 app.post("/api/admin/auth/login", (request, response) => {
-  const username = String(request.body?.username || "").trim();
+  const username = String(request.body?.username || "").trim().toLowerCase();
   const password = String(request.body?.password || "").trim();
+  try {
+    adminAuth.assertAdminLoginAllowed(request, username);
+  } catch (error) {
+    response.status(error.statusCode || 429).json({ message: error.message });
+    return;
+  }
+
   if (!adminAuth.verifyAdminCredentials(username, password)) {
+    adminAuth.registerFailedAdminLogin(request, username);
     response.status(401).json({ message: "La contrasena de admin no es correcta." });
     return;
   }
-  const token = adminAuth.createAdminSession(adminSessions);
+
+  adminAuth.clearAdminLoginFailures(request, username);
+  const session = adminAuth.createAdminSession(request, username);
+  setAdminSessionCookie(response, session.sessionId);
   services.logAdminAction({
     actorName: username,
     action: "admin_login",
@@ -280,17 +1053,151 @@ app.post("/api/admin/auth/login", (request, response) => {
     entityId: "admin",
     payload: { username },
   });
-  response.json({ token });
+  response.json({
+    authenticated: true,
+    username: session.username,
+    csrfToken: session.csrfToken,
+    sessionExpiresAt: session.expiresAt,
+  });
 });
 
 app.post("/api/admin/auth/logout", (request, response) => {
-  adminAuth.destroyAdminSession(request, adminSessions);
+  adminAuth.destroyAdminSession(request);
+  clearAdminSessionCookie(response);
   response.json({ ok: true });
+});
+
+app.get("/api/owner/auth/status", (request, response) => {
+  response.json(buildOwnerAuthStatus(request));
+});
+
+app.post("/api/owner/auth/setup", (request, response) => {
+  if (ownerAuth.getStoredOwnerPassword()) {
+    response.status(409).json({ message: "La contrasena owner ya fue configurada." });
+    return;
+  }
+
+  try {
+    assertBootstrapSetupAllowed(request, "owner");
+    const result = ownerAuth.setStoredOwnerCredentials(request.body?.username, request.body?.password);
+    services.logAdminAction({
+      actorType: "owner",
+      actorName: result.username,
+      action: "owner_setup",
+      entityType: "auth",
+      entityId: "owner",
+      payload: { username: result.username },
+    });
+    response.status(201).json({ configured: true, username: result.username });
+  } catch (error) {
+    response.status(error.statusCode || 400).json({ message: error.message });
+  }
+});
+
+app.post("/api/owner/auth/login", (request, response) => {
+  const username = String(request.body?.username || "").trim().toLowerCase();
+  const password = String(request.body?.password || "").trim();
+
+  try {
+    ownerAuth.assertOwnerLoginAllowed(request);
+  } catch (error) {
+    response.status(error.statusCode || 429).json({ message: error.message });
+    return;
+  }
+
+  if (!ownerAuth.verifyOwnerCredentials(username, password)) {
+    ownerAuth.recordFailedOwnerLogin(request);
+    response.status(401).json({ message: "Las credenciales owner no son correctas." });
+    return;
+  }
+
+  ownerAuth.clearFailedOwnerLogin(request);
+  const session = ownerAuth.createOwnerSession(request, username);
+  setOwnerSessionCookie(response, session.sessionId);
+  services.logAdminAction({
+    actorType: "owner",
+    actorName: username,
+    action: "owner_login",
+    entityType: "auth",
+    entityId: "owner",
+    payload: { username },
+  });
+  response.json({
+    authenticated: true,
+    username: session.username,
+    csrfToken: session.csrfToken,
+    sessionExpiresAt: session.expiresAt,
+  });
+});
+
+app.post("/api/owner/auth/logout", (request, response) => {
+  ownerAuth.destroyOwnerSessionFromRequest(request);
+  clearOwnerSessionCookie(response);
+  response.json({ ok: true });
+});
+
+app.get("/api/owner/config", (request, response, next) => {
+  ownerAuth.requireOwnerAuth(request, response, next);
+}, (_request, response) => {
+  response.json(services.getOwnerConsoleBundle());
+});
+
+app.get("/api/owner/templates", (request, response, next) => {
+  ownerAuth.requireOwnerAuth(request, response, next);
+}, (_request, response) => {
+  response.json({ templates: buildBusinessTemplateSummaries(), generatedAt: nowIso() });
+});
+
+app.patch("/api/owner/config", (request, response, next) => {
+  ownerAuth.requireOwnerAuth(request, response, next);
+}, (request, response) => {
+  const result = services.updateOwnerConsoleAccess(request.body || {});
+  services.logAdminAction({
+    actorType: "owner",
+    actorName: request.ownerSession?.username || ownerAuth.getStoredOwnerUsername(),
+    action: "owner_console_update",
+    entityType: "owner_console",
+    entityId: "access",
+    payload: request.body || {},
+  });
+  broadcastSnapshot(services.getDashboardSnapshot("all"));
+  response.json(result);
+});
+
+app.post("/api/owner/templates/:key/apply", (request, response, next) => {
+  ownerAuth.requireOwnerAuth(request, response, next);
+}, async (request, response) => {
+  try {
+    const template = services.loadBusinessTemplate(request.params.key);
+    const result = await services.applyBusinessTemplateWithCatalog(template, {
+      businessName: request.body?.businessName,
+      slug: request.body?.slug,
+      workbookPath: request.body?.workbookPath,
+      confirmReset: request.body?.confirmReset === true,
+      confirmText: request.body?.confirmText,
+      actorType: "owner",
+      actorName: request.ownerSession?.username || ownerAuth.getStoredOwnerUsername(),
+    });
+    const snapshot = services.getDashboardSnapshot();
+    ownerAuth.destroyOwnerSessionFromRequest(request);
+    clearOwnerSessionCookie(response);
+    clearAdminSessionCookie(response);
+    broadcastSnapshot(snapshot);
+    response.json({
+      ...result,
+      snapshot,
+      requiresReauth: true,
+    });
+  } catch (error) {
+    response.status(error.statusCode || 400).json({ message: error.message });
+  }
 });
 
 
 app.patch("/api/products/:id", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("inventory")(request, response, next);
 }, (request, response) => {
   const productId = Number(request.params.id);
   const product = services.updateProduct(productId, request.body || {});
@@ -309,14 +1216,46 @@ app.patch("/api/products/:id", (request, response, next) => {
 
 app.get("/api/admin/metrics", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("support_tools")(request, response, next);
 }, (_request, response) => {
   const metrics = getSystemMetrics();
   metrics.process.cpuPercent = getProcessCpuPercent();
   response.json(metrics);
 });
 
+app.get("/api/admin/backups/status", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("backups")(request, response, next);
+}, (_request, response) => {
+  response.json({
+    ...services.getBackupStatusBundle(),
+    generatedAt: nowIso(),
+  });
+});
+
+app.post("/api/client-sync-health", (request, response, next) => {
+  requireClientSyncReporterAuth(request, response, next);
+}, (request, response) => {
+  try {
+    const report = services.recordClientSyncHealth(request.body || {}, getClientSyncReporterActor(request));
+    response.status(201).json({
+      ok: true,
+      report,
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    response.status(error.statusCode || 400).json({
+      message: error.message || "No pude registrar el estado de sincronizacion.",
+    });
+  }
+});
+
 app.get("/api/admin/editor-data", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
 }, (request, response) => {
   const branch = request.query.branch || "all";
   response.json({
@@ -329,12 +1268,16 @@ app.get("/api/admin/editor-data", (request, response, next) => {
 
 app.get("/api/inventory/quick-import", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("daily_flow")(request, response, next);
 }, (request, response) => {
   response.json({ items: services.getQuickImportRows(request.query.branch || "carrizal"), generatedAt: nowIso() });
 });
 
 app.post("/api/inventory/quick-import", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("daily_flow")(request, response, next);
 }, (request, response) => {
   const product = services.applyQuickInventoryEntry(request.body || {});
   services.logAdminAction({
@@ -352,13 +1295,17 @@ app.post("/api/inventory/quick-import", (request, response, next) => {
 
 app.get("/api/admin/products", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
-}, (_request, response) => {
+}, (request, response, next) => {
+  requireAdminCapability("inventory")(request, response, next);
+}, (request, response) => {
   const branch = request.query.branch || "carrizal";
   response.json({ products: services.listProducts(branch), generatedAt: nowIso() });
 });
 
 app.post("/api/admin/products", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("daily_flow")(request, response, next);
 }, async (request, response) => {
   const branch = request.body?.branch || "carrizal";
   const result = await services.ensureCatalogSeeded(request.body?.workbookPath);
@@ -376,6 +1323,8 @@ app.post("/api/admin/products", (request, response, next) => {
 
 app.post("/api/admin/products/manual", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("inventory")(request, response, next);
 }, (request, response) => {
   const product = services.createProduct(request.body || {});
   services.logAdminAction({
@@ -393,6 +1342,8 @@ app.post("/api/admin/products/manual", (request, response, next) => {
 
 app.delete("/api/admin/products/:id", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("inventory")(request, response, next);
 }, (request, response) => {
   const productId = Number(request.params.id);
   const branch = request.query.branch || "carrizal";
@@ -412,6 +1363,8 @@ app.delete("/api/admin/products/:id", (request, response, next) => {
 
 app.get("/api/admin/audit-log", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("audit_log")(request, response, next);
 }, (request, response) => {
   const branch = request.query.branch || "all";
   const limit = Number(request.query.limit || 120);
@@ -423,6 +1376,8 @@ app.get("/api/admin/audit-log", (request, response, next) => {
 
 app.get("/api/admin/download-db", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("backups")(request, response, next);
 }, async (_request, response, next) => {
   const backupPath = path.join(ROOT_DIR, "data", `download-db-${Date.now()}-${process.pid}.sqlite`);
   const cleanupBackup = () => {
@@ -453,6 +1408,9 @@ app.post(
   "/api/admin/install-db",
   (request, response, next) => {
     adminAuth.requireAdminAuth(request, response, next, adminSessions);
+  },
+  (request, response, next) => {
+    requireAdminCapability("backups")(request, response, next);
   },
   upload.single("database"),
   async (request, response, next) => {
@@ -503,6 +1461,9 @@ app.post(
   (request, response, next) => {
     adminAuth.requireAdminAuth(request, response, next, adminSessions);
   },
+  (request, response, next) => {
+    requireAdminCapability("backups")(request, response, next);
+  },
   upload.single("workbook"),
   async (request, response, next) => {
     try {
@@ -549,6 +1510,8 @@ app.post(
 
 app.get("/api/admin/cashiers", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("cashiers")(request, response, next);
 }, (request, response) => {
   const branchParam = request.query.branch;
   const branch = branchParam === "all" ? null : branchParam;
@@ -558,6 +1521,8 @@ app.get("/api/admin/cashiers", (request, response, next) => {
 
 app.post("/api/admin/cashiers", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("cashiers")(request, response, next);
 }, (request, response) => {
   try {
     const cashier = services.createCashier(request.body || {});
@@ -569,6 +1534,8 @@ app.post("/api/admin/cashiers", (request, response, next) => {
 
 app.patch("/api/admin/cashiers/:id", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("cashiers")(request, response, next);
 }, (request, response) => {
   const cashierId = Number(request.params.id);
   const cashier = services.updateCashier(cashierId, request.body || {});
@@ -577,6 +1544,8 @@ app.patch("/api/admin/cashiers/:id", (request, response, next) => {
 
 app.delete("/api/admin/cashiers/:id", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("cashiers")(request, response, next);
 }, (request, response) => {
   const cashierId = Number(request.params.id);
   const result = services.deleteCashier(cashierId);
@@ -585,6 +1554,8 @@ app.delete("/api/admin/cashiers/:id", (request, response, next) => {
 
 app.post("/api/admin/cashiers/init-test", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("cashiers")(request, response, next);
 }, (_request, response) => {
   services.initializeTestCashiers();
   response.json({ ok: true });
@@ -635,6 +1606,8 @@ app.post("/api/cashier/auth/logout", (request, response) => {
 
 app.get("/api/admin/register/start", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
 }, (request, response) => {
   const result = services.startRegister(request.query || {});
   response.json(result);
@@ -642,6 +1615,8 @@ app.get("/api/admin/register/start", (request, response, next) => {
 
 app.post("/api/admin/register/cut", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
 }, (request, response) => {
   const result = services.createRegisterCut(request.body || {});
   response.json(result);
@@ -649,6 +1624,8 @@ app.post("/api/admin/register/cut", (request, response, next) => {
 
 app.get("/api/admin/register/summary", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
 }, (request, response) => {
   const summary = services.getRegisterSummary(
     request.query.shift || "Tarde",
@@ -659,7 +1636,11 @@ app.get("/api/admin/register/summary", (request, response, next) => {
 });
 
 app.get("/api/admin/weighted-audit/sessions", (request, response, next) => {
+  requireEnabledModule("weighted_audit")(request, response, next);
+}, (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("weighted_audit")(request, response, next);
 }, (request, response) => {
   const sessions = services.listWeightedAuditSessions({
     branch: request.query.branch || "all",
@@ -671,7 +1652,11 @@ app.get("/api/admin/weighted-audit/sessions", (request, response, next) => {
 });
 
 app.post("/api/admin/weighted-audit/sessions", (request, response, next) => {
+  requireEnabledModule("weighted_audit")(request, response, next);
+}, (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("weighted_audit")(request, response, next);
 }, (request, response) => {
   const session = services.createWeightedAuditSession({
     branch: request.body?.branch || "carrizal",
@@ -695,7 +1680,11 @@ app.post("/api/admin/weighted-audit/sessions", (request, response, next) => {
 });
 
 app.get("/api/admin/weighted-audit/sessions/:id", (request, response, next) => {
+  requireEnabledModule("weighted_audit")(request, response, next);
+}, (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("weighted_audit")(request, response, next);
 }, (request, response) => {
   const sessionId = Number(request.params.id);
   const session = services.getWeightedAuditSessionById(sessionId);
@@ -708,7 +1697,11 @@ app.get("/api/admin/weighted-audit/sessions/:id", (request, response, next) => {
 });
 
 app.patch("/api/admin/weighted-audit/sessions/:id/items", (request, response, next) => {
+  requireEnabledModule("weighted_audit")(request, response, next);
+}, (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("weighted_audit")(request, response, next);
 }, (request, response) => {
   const sessionId = Number(request.params.id);
   const session = services.updateWeightedAuditItems(sessionId, request.body || {});
@@ -728,7 +1721,11 @@ app.patch("/api/admin/weighted-audit/sessions/:id/items", (request, response, ne
 });
 
 app.post("/api/admin/weighted-audit/sessions/:id/complete", (request, response, next) => {
+  requireEnabledModule("weighted_audit")(request, response, next);
+}, (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("weighted_audit")(request, response, next);
 }, (request, response) => {
   const sessionId = Number(request.params.id);
   const session = services.completeWeightedAuditSession(sessionId, {
@@ -753,6 +1750,8 @@ app.post("/api/admin/weighted-audit/sessions/:id/complete", (request, response, 
 
 app.get("/api/admin/sales/:id", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
 }, (request, response) => {
   const saleId = Number(request.params.id);
   const sale = services.getSaleById(saleId);
@@ -762,6 +1761,8 @@ app.get("/api/admin/sales/:id", (request, response, next) => {
 
 app.patch("/api/admin/sales/:id", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
 }, (request, response) => {
   const saleId = Number(request.params.id);
   const sale = services.updateSaleAdmin(saleId, request.body || {});
@@ -778,6 +1779,8 @@ app.patch("/api/admin/sales/:id", (request, response, next) => {
 
 app.get("/api/admin/register-events/:id", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
 }, (request, response) => {
   const eventId = Number(request.params.id);
   const event = services.getRegisterEventById(eventId);
@@ -787,6 +1790,8 @@ app.get("/api/admin/register-events/:id", (request, response, next) => {
 
 app.patch("/api/admin/register-events/:id", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
 }, (request, response) => {
   const eventId = Number(request.params.id);
   const event = services.updateRegisterEventAdmin(eventId, request.body || {});
@@ -803,6 +1808,8 @@ app.patch("/api/admin/register-events/:id", (request, response, next) => {
 
 app.get("/api/admin/inventory-movements/:id", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
 }, (request, response) => {
   const movementId = Number(request.params.id);
   const movement = services.getInventoryMovementById(movementId);
@@ -812,6 +1819,8 @@ app.get("/api/admin/inventory-movements/:id", (request, response, next) => {
 
 app.patch("/api/admin/inventory-movements/:id", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
 }, (request, response) => {
   const movementId = Number(request.params.id);
   const movement = services.updateInventoryMovementAdmin(movementId, request.body || {});
@@ -857,7 +1866,7 @@ app.post("/api/register/cut", cashierAuth.requireCashierAuth, (request, response
   response.json(result);
 });
 
-app.get("/api/activity/:kind/:id", (request, response) => {
+app.get("/api/activity/:kind/:id", requireAuthenticatedActor, (request, response, next) => {
   const kind = request.params.kind;
   const id = Number(request.params.id);
   let detail = null;
@@ -879,11 +1888,18 @@ app.get("/api/activity/:kind/:id", (request, response) => {
     return;
   }
 
-  response.json({ kind: foundKind, detail });
+  try {
+    assertDetailAccessibleToRequester(detail, request.accessContext);
+    response.json({ kind: foundKind, detail });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/api/export-workbook", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("backups")(request, response, next);
 }, async (request, response) => {
   const branch = request.query.branch || "all";
   const scope = request.query.scope || "store-day";
@@ -893,7 +1909,7 @@ app.get("/api/export-workbook", (request, response, next) => {
   response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   response.setHeader(
     "Content-Disposition",
-    "attachment; filename=" + `${STORE_NAME} - Exportacion-${branch}-${exportDateSuffix}.xlsx`,
+    "attachment; filename=" + `${services.getStoreName()} - Exportacion-${branch}-${exportDateSuffix}.xlsx`,
   );
   await result.workbook.xlsx.write(response);
   response.end();

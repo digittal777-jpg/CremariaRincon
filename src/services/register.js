@@ -3,6 +3,7 @@ const {
   ALL_BRANCHES,
   STORE_BRANCHES,
   STORE_SHIFTS,
+  assertBranchIsActive,
   createHttpError,
   getStoreDateKey,
   isSameStoreDay,
@@ -251,9 +252,7 @@ function startRegister(payload) {
   const notes = normalizeText(payload.notes || "", 180) || null;
   const clientEventId = normalizeClientEventId(payload.clientEventId);
 
-  if (!STORE_BRANCHES.includes(branch)) {
-    throw createHttpError("Selecciona una sucursal valida.");
-  }
+  assertBranchIsActive(branch, "Selecciona una sucursal activa para iniciar la caja.");
 
   if (!Number.isFinite(openingAmount) || openingAmount < 0) {
     throw createHttpError("El monto inicial de caja debe ser cero o mayor.");
@@ -340,9 +339,7 @@ function createRegisterCut(payload) {
   const notes = normalizeText(payload.notes || "", 180) || null;
   const clientEventId = normalizeClientEventId(payload.clientEventId);
 
-  if (!STORE_BRANCHES.includes(branch)) {
-    throw createHttpError("Selecciona una sucursal valida.");
-  }
+  assertBranchIsActive(branch, "Selecciona una sucursal activa para registrar el corte.");
 
   if (!Number.isFinite(countedAmount) || countedAmount < 0) {
     throw createHttpError("El efectivo contado debe ser cero o mayor.");

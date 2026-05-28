@@ -1,16 +1,23 @@
 const { getDb, nowIso } = require("../db");
 const {
   ALL_BRANCHES,
-  STORE_BRANCHES,
-  STORE_NAME,
   STORE_SHIFTS,
-  STORE_TIME_ZONE,
   SALES_PULSE_END_HOUR,
   SALES_PULSE_START_HOUR,
   getBranchLabel,
+  getBranchRecord,
+  getBusinessProfile,
+  getEnabledModules,
+  listConfiguredBranches,
+  listMeasurementUnits,
+  listProductAttributeDefinitions,
+  listProductCategories,
   normalizeBranch,
   roundMoney,
   roundStock,
+  getStoreHourLabel,
+  getStoreName,
+  getStoreTimeZone,
 } = require("../utils/helpers");
 
 const db = getDb();
@@ -20,7 +27,7 @@ const { listStoreDaySales, listStoreDaySaleItems, getRecentSales } = require("./
 const { getRecentInventoryMovements } = require("./inventory");
 const { getRecentRegisterEvents, getRegisterSummary } = require("./register");
 
-function getSummary(branch = STORE_BRANCHES[0]) {
+function getSummary(branch = listConfiguredBranches({ includeInactive: true })[0]?.code) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
   const todaySales = listStoreDaySales(new Date(), branch);
   const todaySaleItems = listStoreDaySaleItems(new Date(), branch);
@@ -116,16 +123,11 @@ function getLowStockProducts(branch = "carrizal", limit = 8) {
   return rows.map(mapProduct);
 }
 
-function getSalesByHour(branch = STORE_BRANCHES[0]) {
+function getSalesByHour(branch = listConfiguredBranches({ includeInactive: true })[0]?.code) {
   const salesByHourMap = new Map();
 
   listStoreDaySales(new Date(), branch).forEach((sale) => {
-    const storeHourFormatter = new Intl.DateTimeFormat("en-GB", {
-      timeZone: STORE_TIME_ZONE,
-      hour: "2-digit",
-      hour12: false,
-    });
-    const hourSlot = `${storeHourFormatter.format(new Date(sale.created_at))}:00`;
+    const hourSlot = getStoreHourLabel(sale.created_at);
     const currentValue = salesByHourMap.get(hourSlot) || 0;
     salesByHourMap.set(hourSlot, roundMoney(currentValue + roundMoney(sale.total)));
   });
@@ -142,7 +144,7 @@ function getSalesByHour(branch = STORE_BRANCHES[0]) {
   return slots;
 }
 
-function getShiftSummary(branch = STORE_BRANCHES[0]) {
+function getShiftSummary(branch = listConfiguredBranches({ includeInactive: true })[0]?.code) {
   const rowMap = new Map();
 
   listStoreDaySales(new Date(), branch).forEach((sale) => {
@@ -165,7 +167,7 @@ function getShiftSummary(branch = STORE_BRANCHES[0]) {
   );
 }
 
-function getRecentActivity(limit = 18, branch = STORE_BRANCHES[0]) {
+function getRecentActivity(limit = 18, branch = listConfiguredBranches({ includeInactive: true })[0]?.code) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
   const sales = getRecentSales(limit, normalizedBranch).map((sale) => ({
     kind: "sale",
@@ -241,20 +243,55 @@ function getRecentActivity(limit = 18, branch = STORE_BRANCHES[0]) {
     .slice(0, limit);
 }
 
-function getDashboardSnapshot(branch = STORE_BRANCHES[0]) {
+function getDashboardSnapshot(branch = listConfiguredBranches({ includeInactive: true })[0]?.code) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const activeBranches = listConfiguredBranches({ includeInactive: false });
+  const profile = getBusinessProfile();
+  const categories = listProductCategories({ includeInactive: false });
+  const units = listMeasurementUnits({ includeInactive: false });
+  const productAttributeDefinitions = listProductAttributeDefinitions({ includeInactive: false });
+  const enabledModules = getEnabledModules();
+  const knownBranch = normalizedBranch === ALL_BRANCHES
+    ? null
+    : getBranchRecord(normalizedBranch, { includeInactive: true });
+  const branchOptions = [
+    { value: ALL_BRANCHES, label: getBranchLabel(ALL_BRANCHES) },
+    ...activeBranches.map((branchRecord) => ({
+      value: branchRecord.code,
+      label: getBranchLabel(branchRecord.code),
+    })),
+  ];
+
+  if (
+    knownBranch
+    && !knownBranch.active
+    && !branchOptions.some((item) => item.value === knownBranch.code)
+  ) {
+    branchOptions.push({
+      value: knownBranch.code,
+      label: `${knownBranch.name} (inactiva)`,
+    });
+  }
+
   const snapshot = {
+    profile,
+    enabledModules,
+    categories,
+    units,
+    productAttributeDefinitions,
+    branding: profile.branding || {},
     store: {
-      name: STORE_NAME,
-      timezone: STORE_TIME_ZONE,
+      name: getStoreName(),
+      shortName: profile.shortName || profile.businessName || getStoreName(),
+      timezone: getStoreTimeZone(),
+      locale: profile.locale || "es-MX",
+      currencyCode: profile.currencyCode || "MXN",
+      slug: profile.slug || "retail-base-pos",
+      templateKey: profile.templateKey || "custom",
+      branding: profile.branding || {},
+      visibleTexts: profile.visibleTexts || {},
       shifts: STORE_SHIFTS,
-      branches: [
-        { value: ALL_BRANCHES, label: getBranchLabel(ALL_BRANCHES) },
-        ...STORE_BRANCHES.map((branchCode) => ({
-          value: branchCode,
-          label: getBranchLabel(branchCode),
-        })),
-      ],
+      branches: branchOptions,
       currentBranch: normalizedBranch,
       currentBranchLabel: getBranchLabel(normalizedBranch),
       salesPulse: {
@@ -275,10 +312,11 @@ function getDashboardSnapshot(branch = STORE_BRANCHES[0]) {
   // Si se solicita "all" (todas las sucursales), incluir inventarios comparativos
   if (normalizedBranch === ALL_BRANCHES) {
     snapshot.inventoryComparison = {
-      branches: STORE_BRANCHES.map((branchCode) => ({
-        value: branchCode,
-        label: getBranchLabel(branchCode),
-        products: listProducts(branchCode),
+      branches: listConfiguredBranches({ includeInactive: true }).map((branchRecord) => ({
+        value: branchRecord.code,
+        label: getBranchLabel(branchRecord.code),
+        active: branchRecord.active,
+        products: listProducts(branchRecord.code),
       })),
     };
   }
@@ -286,9 +324,59 @@ function getDashboardSnapshot(branch = STORE_BRANCHES[0]) {
   return snapshot;
 }
 
+function sanitizePublicProduct(product = {}) {
+  return {
+    ...product,
+    cost: 0,
+    supplierName: "",
+    packSize: null,
+    stock: 0,
+    minStock: 0,
+    stockInitialized: false,
+    attributes: {},
+    status: "capture",
+  };
+}
+
+function getPublicDashboardSummary(products = []) {
+  const activeProducts = Array.isArray(products)
+    ? products.filter((product) => product?.active !== false)
+    : [];
+
+  return {
+    ticketsToday: 0,
+    revenueToday: 0,
+    averageTicket: 0,
+    unitsSoldToday: 0,
+    catalogSize: activeProducts.length,
+    inventoryValue: 0,
+    lowStockCount: 0,
+    topProduct: null,
+  };
+}
+
+function getPublicDashboardSnapshot(branch = listConfiguredBranches({ includeInactive: true })[0]?.code) {
+  const fullSnapshot = getDashboardSnapshot(branch);
+  const products = Array.isArray(fullSnapshot.products)
+    ? fullSnapshot.products.map(sanitizePublicProduct)
+    : [];
+
+  return {
+    ...fullSnapshot,
+    summary: getPublicDashboardSummary(products),
+    products,
+    lowStock: [],
+    recentSales: [],
+    recentActivity: [],
+    salesByHour: [],
+    shiftSummary: [],
+  };
+}
+
 module.exports = {
   getDashboardSnapshot,
   getLowStockProducts,
+  getPublicDashboardSnapshot,
   getRecentActivity,
   getSalesByHour,
   getShiftSummary,

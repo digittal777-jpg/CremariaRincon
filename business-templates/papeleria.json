@@ -1,0 +1,50 @@
+{
+  "description": "Plantilla base para papeleria, utiles y material de oficina.",
+  "businessName": "Papeleria Base",
+  "shortName": "Papeleria POS",
+  "slug": "papeleria-base",
+  "currencyCode": "MXN",
+  "locale": "es-MX",
+  "timezone": "America/Mexico_City",
+  "ticketPrefix": "PAP",
+  "modules": ["merchandise_requests"],
+  "branding": {
+    "logo": "",
+    "logo192": "",
+    "logo512": ""
+  },
+  "visibleTexts": {
+    "eyebrow": "Centro de control comercial",
+    "heroCopy": "Caja agil, inventario ordenado y catalogo flexible para papeleria y oficina."
+  },
+  "branches": [
+    {
+      "code": "principal",
+      "name": "Sucursal principal",
+      "timezone": "America/Mexico_City",
+      "active": true,
+      "sortOrder": 0
+    }
+  ],
+  "categories": [
+    { "code": "cuadernos", "label": "Cuadernos", "sortOrder": 0 },
+    { "code": "escritura", "label": "Escritura", "sortOrder": 1 },
+    { "code": "oficina", "label": "Oficina", "sortOrder": 2 },
+    { "code": "arte", "label": "Arte", "sortOrder": 3 },
+    { "code": "impresion", "label": "Impresion", "sortOrder": 4 },
+    { "code": "general", "label": "General", "sortOrder": 5 }
+  ],
+  "units": [
+    { "code": "pza", "label": "Pza", "allowDecimals": false, "step": 1, "sortOrder": 0 },
+    { "code": "paq", "label": "Paquete", "allowDecimals": false, "step": 1, "sortOrder": 1 },
+    { "code": "caja", "label": "Caja", "allowDecimals": false, "step": 1, "sortOrder": 2 },
+    { "code": "metro", "label": "Metro", "allowDecimals": true, "step": 0.5, "sortOrder": 3 },
+    { "code": "rollo", "label": "Rollo", "allowDecimals": false, "step": 1, "sortOrder": 4 }
+  ],
+  "productAttributes": [
+    { "key": "marca", "label": "Marca", "valueType": "text", "required": false, "sortOrder": 0 },
+    { "key": "color", "label": "Color", "valueType": "text", "required": false, "sortOrder": 1 },
+    { "key": "modelo", "label": "Modelo", "valueType": "text", "required": false, "sortOrder": 2 },
+    { "key": "contenido_paquete", "label": "Contenido por paquete", "valueType": "number", "required": false, "sortOrder": 3 }
+  ]
+}

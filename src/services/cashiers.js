@@ -1,6 +1,6 @@
 const crypto = require("node:crypto");
 const { getDb, nowIso } = require("../db");
-const { normalizeText, normalizeBranch } = require("../utils/helpers");
+const { assertBranchIsActive, getBranchRecord, normalizeText, normalizeBranch } = require("../utils/helpers");
 
 const db = getDb();
 
@@ -11,6 +11,10 @@ function hashCashierPassword(password, salt = crypto.randomBytes(16).toString("h
 
 function verifyCashierPassword(name, branch, password) {
   const normalizedBranch = normalizeBranch(branch);
+  const branchRecord = getBranchRecord(normalizedBranch, { includeInactive: true });
+  if (!branchRecord || !branchRecord.active) {
+    return false;
+  }
   const stored = db.prepare(`
     SELECT password_hash
     FROM cashiers
@@ -67,6 +71,7 @@ function createCashier(payload) {
   if (!branch) {
     throw new Error("La sucursal del cajero es requerida.");
   }
+  assertBranchIsActive(branch, "Selecciona una sucursal activa para el cajero.");
 
   if (!password || password.length < 4) {
     throw new Error("La contrasena debe tener al menos 4 caracteres.");
@@ -137,6 +142,10 @@ function updateCashier(cashierId, payload) {
   const nextBranch = normalizeBranch(payload.branch || current.branch);
   const nextActive = payload.active === undefined ? current.active : payload.active ? 1 : 0;
   const now = nowIso();
+
+  if (nextActive) {
+    assertBranchIsActive(nextBranch, "Selecciona una sucursal activa para este cajero.");
+  }
 
   db.prepare(`
     UPDATE cashiers

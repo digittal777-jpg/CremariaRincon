@@ -1,12 +1,10 @@
-const STATIC_CACHE_NAME = "cremeria-rincon-static-v4";
-const API_CACHE_NAME = "cremeria-rincon-api-v4";
+const STATIC_CACHE_NAME = "retail-base-static-v13";
+const API_CACHE_NAME = "retail-base-api-v14";
 const APP_SHELL = [
   "/",
   "/index.html",
   "/styles.css",
-  "/manifest.webmanifest",
-  "/assets/branding/rincon-logo-gold-192.png",
-  "/assets/branding/rincon-logo-gold-512.png",
+  "/assets/branding/retail-base-badge.svg",
   "/socket.io/socket.io.js",
   "/js/config.js",
   "/js/state.js",
@@ -15,6 +13,7 @@ const APP_SHELL = [
   "/js/network.js",
   "/js/render.js",
   "/js/render-admin.js",
+  "/js/quick-import-state.js",
   "/js/quick-import.js",
   "/js/merchandise-requests.js",
   "/js/actions.js",
@@ -68,21 +67,51 @@ self.addEventListener("fetch", (event) => {
 });
 
 async function handleBootstrapRequest(request) {
+  const authenticatedBootstrapRequest = hasBootstrapAuthHeaders(request);
   const cache = await caches.open(API_CACHE_NAME);
 
   try {
     const response = await fetch(request);
     if (response.ok) {
-      cache.put(request, response.clone());
+      if (await shouldCacheGuestBootstrapResponse(request, response)) {
+        cache.put(request, response.clone());
+      } else {
+        await cache.delete(request);
+      }
     }
     return response;
   } catch (error) {
+    if (authenticatedBootstrapRequest) {
+      throw error;
+    }
+
     const cachedResponse = await cache.match(request);
     if (cachedResponse) {
       return cachedResponse;
     }
 
     throw error;
+  }
+}
+
+function hasBootstrapAuthHeaders(request) {
+  return Boolean(
+    request.headers.get("x-cashier-token")
+    || request.headers.get("x-csrf-token")
+    || request.headers.get("x-admin-user"),
+  );
+}
+
+async function shouldCacheGuestBootstrapResponse(request, response) {
+  if (hasBootstrapAuthHeaders(request)) {
+    return false;
+  }
+
+  try {
+    const payload = await response.clone().json();
+    return payload?.auth?.role === "guest";
+  } catch (_error) {
+    return false;
   }
 }
 

@@ -11,9 +11,70 @@ function openItemModal(product) {
   refs.itemQuantity.value = String(getProductMin(product));
   refs.itemUnitPrice.value = roundMoney(product.price).toFixed(2);
   refs.itemTotal.value = roundMoney(product.price * getProductMin(product)).toFixed(2);
+  renderItemQuickQuantityChips();
+  updateItemRouteDecisionState();
   setModalOpen(refs.itemModal, true);
-  refs.itemQuantity.focus();
-  refs.itemQuantity.select();
+  refs.itemTotal.focus();
+  refs.itemTotal.select();
+}
+
+function getItemQuickQuantityPresets(product) {
+  const minimum = getProductMin(product);
+  const step = getProductStep(product);
+  const allowDecimals = minimum < 1 || step < 1;
+  const sourceValues = allowDecimals
+    ? [minimum, step, 0.5, 1, 2, 5]
+    : [minimum, 2, 3, 5, 10];
+  return [...new Set(
+    sourceValues
+      .map((value) => normalizeQuantityToStep(value, product))
+      .filter((value) => value >= minimum),
+  )].slice(0, 5);
+}
+
+function renderItemQuickQuantityChips() {
+  if (!refs.itemQuickQuantities) {
+    return;
+  }
+
+  const product = state.currentProduct;
+  if (!product) {
+    refs.itemQuickQuantities.innerHTML = "";
+    return;
+  }
+
+  const selectedQuantity = normalizeQuantityToStep(
+    refs.itemQuantity.value || getProductMin(product),
+    product,
+  );
+  refs.itemQuickQuantities.innerHTML = getItemQuickQuantityPresets(product)
+    .map((quantity) => `
+      <button
+        class="quick-quantity-chip ${quantity === selectedQuantity ? "is-active" : ""}"
+        data-quantity="${quantity}"
+        type="button"
+      >
+        ${escapeHtml(formatQuantity(quantity))} ${escapeHtml(product.unit)}
+      </button>
+    `)
+    .join("");
+}
+
+function updateItemRouteDecisionState() {
+  if (!refs.itemRouteConfirmButton) {
+    return;
+  }
+
+  const product = state.currentProduct;
+  const quantity = roundStock(refs.itemQuantity?.value || 0);
+  const lineTotal = roundMoney(refs.itemTotal?.value || 0);
+  const unitPrice = roundMoney(refs.itemUnitPrice?.value || product?.price || 0);
+  refs.itemRouteConfirmButton.disabled = !(
+    product
+    && quantity > 0
+    && lineTotal > 0
+    && unitPrice > 0
+  );
 }
 
 function createClientEventId(prefix = "register") {
@@ -22,6 +83,10 @@ function createClientEventId(prefix = "register") {
 
 function closeItemModal() {
   state.currentProduct = null;
+  if (refs.itemQuickQuantities) {
+    refs.itemQuickQuantities.innerHTML = "";
+  }
+  updateItemRouteDecisionState();
   setModalOpen(refs.itemModal, false);
 }
 
@@ -34,6 +99,8 @@ function syncItemTotalFromQuantity() {
   const unitPrice = roundMoney(refs.itemUnitPrice.value || state.currentProduct.price);
   refs.itemQuantity.value = String(quantity);
   refs.itemTotal.value = roundMoney(quantity * unitPrice).toFixed(2);
+  renderItemQuickQuantityChips();
+  updateItemRouteDecisionState();
 }
 
 function syncItemQuantityFromTotal() {
@@ -53,6 +120,8 @@ function syncItemQuantityFromTotal() {
   const quantity = normalizeQuantityFromLineTotal(lineTotal, customProduct);
 
   refs.itemQuantity.value = String(quantity);
+  renderItemQuickQuantityChips();
+  updateItemRouteDecisionState();
 }
 
 function finalizeItemTotalInput() {
@@ -85,6 +154,17 @@ function adjustItemQuantity(delta) {
     roundStock(toNumber(refs.itemQuantity.value, getProductMin(state.currentProduct)) + delta * step),
   );
   refs.itemQuantity.value = String(nextValue);
+  syncItemTotalFromQuantity();
+}
+
+function applyItemQuickQuantity(quantity) {
+  if (!state.currentProduct) {
+    return;
+  }
+
+  refs.itemQuantity.value = String(
+    normalizeQuantityToStep(quantity, state.currentProduct),
+  );
   syncItemTotalFromQuantity();
 }
 
@@ -162,6 +242,9 @@ function updatePaymentView() {
 
   refs.confirmSaleButton.disabled =
     total <= 0 || (state.paymentMethod === "Efectivo" && receivedAmount < total);
+  if (refs.paymentRouteConfirmButton) {
+    refs.paymentRouteConfirmButton.disabled = refs.confirmSaleButton.disabled;
+  }
 
   refs.cashPaymentBlock.style.display =
     state.paymentMethod === "Efectivo" ? "block" : "none";
@@ -214,6 +297,20 @@ function appendMoneyInput(fragment) {
 
 function clearMoneyInput() {
   state.moneyInput = "0";
+  updatePaymentView();
+}
+
+function addMoneyShortcut(amount) {
+  const shortcutAmount = roundMoney(amount);
+  if (shortcutAmount <= 0) {
+    return;
+  }
+
+  const currentAmount = roundMoney(state.moneyInput || 0);
+  const nextAmount = currentAmount <= 0
+    ? shortcutAmount
+    : roundMoney(currentAmount + shortcutAmount);
+  state.moneyInput = String(nextAmount);
   updatePaymentView();
 }
 
@@ -278,7 +375,14 @@ async function submitSale() {
     showToast(`Venta ${response.sale.ticketNumber} registrada.`, "success");
   } catch (error) {
     if (error.message.includes("modo offline")) {
-      applyOptimisticSale(payload);
+      const tempSale = applyOptimisticSale(payload);
+      registerPendingOfflineSale(payload, {
+        tempSale,
+        queueOperationId: error.queuedOperationId || "",
+      });
+      if (typeof refreshOfflineSalesUi === "function") {
+        refreshOfflineSalesUi();
+      }
       state.cart = [];
       saveCart();
       renderCart();
@@ -567,7 +671,14 @@ async function openActivityDetail(kind, id) {
   renderDetailViewer();
 
   try {
-    const response = await performJsonRequest(`/api/activity/${encodeURIComponent(kind)}/${id}`);
+    const activityUrl = `/api/activity/${encodeURIComponent(kind)}/${id}`;
+    const response = state.cashier.token
+      ? await requestCashierJson(activityUrl)
+      : state.admin.authenticated
+        ? await requestAdminJson(activityUrl)
+        : state.owner.authenticated
+          ? await requestOwnerJson(activityUrl)
+          : await performJsonRequest(activityUrl);
     state.detailViewer.kind = response.kind;
     state.detailViewer.detail = response.detail;
   } catch (error) {

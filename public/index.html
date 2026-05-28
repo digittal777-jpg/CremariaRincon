@@ -2,9 +2,9 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#b44c59" />
-    <title>Cremeria El Rincon | Punto de Venta</title>
+    <title>Punto de Venta | POS</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -12,8 +12,8 @@
       rel="stylesheet"
     />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="icon" type="image/png" sizes="192x192" href="/assets/branding/rincon-logo-gold-192.png" />
-    <link rel="apple-touch-icon" href="/assets/branding/rincon-logo-gold-192.png" />
+    <link id="store-favicon" rel="icon" type="image/svg+xml" href="/assets/branding/retail-base-badge.svg" />
+    <link id="store-apple-touch-icon" rel="apple-touch-icon" href="/assets/branding/retail-base-badge.svg" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -26,16 +26,18 @@
         <div class="brand-lockup">
           <div class="brand-mark">
             <img
+              id="store-logo"
               class="brand-mark-image"
-              src="/assets/branding/rincon-logo-gold-192.png"
-              alt="Logo de Cremeria El Rincon"
+              src="/assets/branding/retail-base-badge.svg"
+              alt="Logo del punto de venta"
             />
+            <span class="brand-mark-fallback" id="store-logo-fallback" hidden>POS</span>
           </div>
           <div>
-            <p class="eyebrow">Centro de control comercial</p>
-            <h1>Cremeria El Rincon</h1>
-            <p class="hero-copy">
-              Caja rapida, inventario vivo y seguimiento inmediato de cada venta.
+            <p class="eyebrow" id="store-eyebrow">Centro de control comercial</p>
+            <h1 id="store-title">Punto de Venta</h1>
+            <p class="hero-copy" id="store-hero-copy">
+              Caja rapida, inventario ordenado y control claro para tu negocio.
             </p>
           </div>
         </div>
@@ -48,9 +50,14 @@
           <div class="live-pill secondary-pill">
             <span id="network-status">En linea</span>
           </div>
-          <div class="live-pill secondary-pill">
+          <button
+            class="live-pill secondary-pill live-pill-button"
+            id="sync-status-button"
+            type="button"
+            title="Descargar el registro local de ventas offline"
+          >
             <span id="sync-status">Sin pendientes</span>
-          </div>
+          </button>
           <button class="secondary-button" id="header-admin-button" type="button" title="Acceso directo al panel admin">
             Administrativo
           </button>
@@ -61,7 +68,7 @@
         </div>
       </header>
 
-      <section class="stats-grid" id="summary-cards"></section>
+      <section class="stats-grid route-full-only" id="summary-cards"></section>
 
       <main class="main-layout">
         <section class="panel pos-panel">
@@ -71,6 +78,14 @@
               <h2>Venta asistida</h2>
             </div>
             <div class="panel-actions">
+              <button
+                class="ghost-button route-mode-toggle"
+                id="toggle-route-mode-button"
+                type="button"
+                aria-pressed="false"
+              >
+                Modo ruta
+              </button>
               <button class="secondary-button" id="open-admin-button" type="button">
                 Panel administrativo
               </button>
@@ -107,6 +122,7 @@
               <span class="eyebrow">Sesion actual</span>
               <strong id="cashier-session-label">Sin iniciar sesion</strong>
               <p id="cashier-session-helper">Selecciona sucursal y entra con la clave del cajero.</p>
+              <span class="small-pill route-mode-pill" id="route-mode-pill">Vista completa</span>
             </div>
             <div class="session-toolbar-actions">
               <button class="secondary-button" id="switch-cashier-button" type="button">
@@ -160,7 +176,7 @@
                 <button class="ghost-button" id="clear-cart-button" type="button">
                   Vaciar
                 </button>
-                <button class="secondary-button" id="open-merchandise-request-button" type="button">
+                <button class="secondary-button" id="open-merchandise-request-button" type="button" data-module="merchandise_requests">
                   Solicitar mercaderia
                 </button>
                 <button class="primary-button" id="open-payment-button" type="button">
@@ -170,7 +186,7 @@
             </div>
           </section>
 
-          <section class="panel requests-panel">
+          <section class="panel requests-panel route-full-only" data-module="merchandise_requests">
             <div class="panel-head">
               <div>
                 <p class="eyebrow">Mercaderia</p>
@@ -180,7 +196,7 @@
             <div class="admin-record-list" id="my-merchandise-requests-list"></div>
           </section>
 
-          <section class="panel feed-panel">
+          <section class="panel feed-panel route-full-only">
             <div class="panel-head">
               <div>
                 <p class="eyebrow">Tiempo real</p>
@@ -190,7 +206,7 @@
             <div class="feed-list" id="recent-sales"></div>
           </section>
 
-          <section class="panel activity-panel">
+          <section class="panel activity-panel route-full-only">
             <div class="panel-head">
               <div>
                 <p class="eyebrow">Historial</p>
@@ -200,7 +216,7 @@
             <div class="activity-list" id="activity-list"></div>
           </section>
 
-          <section class="panel low-stock-panel">
+          <section class="panel low-stock-panel route-full-only">
             <div class="panel-head">
               <div>
                 <p class="eyebrow">Atencion</p>
@@ -212,7 +228,7 @@
         </aside>
       </main>
 
-      <section class="bottom-layout single-panel">
+      <section class="bottom-layout single-panel route-full-only">
         <section class="panel trend-panel">
           <div class="panel-head">
             <div>
@@ -228,7 +244,7 @@
     </div>
 
     <div class="modal-shell" id="item-modal">
-      <div class="modal-card">
+      <div class="modal-card route-swipe-surface" id="item-modal-card">
         <div class="modal-head">
           <div>
             <p class="eyebrow">Agregar al carrito</p>
@@ -243,31 +259,42 @@
             <span>Cantidad</span>
             <div class="stepper-wrap">
               <button class="stepper-button" data-step="-1" type="button">-</button>
-              <input id="item-quantity" type="number" min="0.001" step="0.25" />
+              <input id="item-quantity" type="number" min="0.001" step="0.25" inputmode="decimal" data-touch-guard="true" />
               <button class="stepper-button" data-step="1" type="button">+</button>
             </div>
+            <div class="quick-quantity-row" id="item-quick-quantities"></div>
           </label>
 
           <label class="field">
             <span>Total de la linea</span>
-            <input id="item-total" type="number" min="0" step="0.01" />
+            <input id="item-total" type="number" min="0" step="0.01" inputmode="decimal" data-touch-guard="true" />
           </label>
 
           <label class="field">
             <span>Precio por unidad/kg (mayoreo)</span>
-            <input id="item-unit-price" type="number" min="0.01" step="0.01" />
+            <input id="item-unit-price" type="number" min="0.01" step="0.01" inputmode="decimal" data-touch-guard="true" />
           </label>
         </div>
 
-        <div class="modal-actions">
+        <div class="modal-actions route-standard-actions">
           <button class="ghost-button" id="cancel-item-button" type="button">Cancelar</button>
           <button class="primary-button" id="add-item-button" type="button">Agregar</button>
+        </div>
+        <div class="route-decision-bar" id="item-route-decision-bar">
+          <button class="route-decision-zone cancel" id="item-route-cancel-button" type="button">
+            <span class="route-decision-direction">Desliza izquierda</span>
+            <strong>Cancelar</strong>
+          </button>
+          <button class="route-decision-zone accept" id="item-route-confirm-button" type="button">
+            <span class="route-decision-direction">Desliza derecha</span>
+            <strong>Agregar</strong>
+          </button>
         </div>
       </div>
     </div>
 
     <div class="modal-shell" id="payment-modal">
-      <div class="modal-card payment-card">
+      <div class="modal-card payment-card route-swipe-surface" id="payment-modal-card">
         <div class="modal-head">
           <div>
             <p class="eyebrow">Cobro</p>
@@ -296,6 +323,15 @@
 
         <div id="cash-payment-block">
           <div class="money-display" id="money-display">$0.00</div>
+          <div class="payment-shortcuts" id="payment-shortcuts">
+            <button type="button" data-amount="10">$10</button>
+            <button type="button" data-amount="20">$20</button>
+            <button type="button" data-amount="50">$50</button>
+            <button type="button" data-amount="100">$100</button>
+            <button type="button" data-amount="200">$200</button>
+            <button type="button" data-amount="500">$500</button>
+            <button type="button" data-amount="1000">$1000</button>
+          </div>
           <div class="keypad" id="payment-keypad">
             <button type="button" data-digit="1">1</button>
             <button type="button" data-digit="2">2</button>
@@ -325,7 +361,7 @@
           </div>
         </div>
 
-        <div class="modal-actions">
+        <div class="modal-actions route-standard-actions">
           <button class="ghost-button" id="cancel-payment-button" type="button">
             Cancelar
           </button>
@@ -333,12 +369,22 @@
             Completar venta
           </button>
         </div>
+        <div class="route-decision-bar" id="payment-route-decision-bar">
+          <button class="route-decision-zone cancel" id="payment-route-cancel-button" type="button">
+            <span class="route-decision-direction">Desliza izquierda</span>
+            <strong>Cancelar</strong>
+          </button>
+          <button class="route-decision-zone accept" id="payment-route-confirm-button" type="button">
+            <span class="route-decision-direction">Desliza derecha</span>
+            <strong>Cobrar</strong>
+          </button>
+        </div>
       </div>
     </div>
 
     <div class="modal-shell priority-modal" id="quick-import-modal">
       <div class="modal-card quick-import-card">
-        <div class="modal-head">
+        <div class="modal-head quick-import-modal-head">
           <div>
             <p class="eyebrow">Inventario</p>
             <h3>Importacion rapida</h3>
@@ -360,13 +406,37 @@
 
         <div class="quick-import-layout">
           <section class="quick-import-main">
-            <div class="quick-import-progress">
-              <div>
-                <span class="eyebrow">Progreso</span>
-                <strong id="quick-import-progress-text">0 de 0</strong>
+            <div class="quick-import-session-overview">
+              <div class="quick-import-progress">
+                <div>
+                  <span class="eyebrow">Progreso real</span>
+                  <strong id="quick-import-progress-text">0 de 0</strong>
+                  <p class="modal-note" id="quick-import-progress-note">
+                    Guarda por producto y navega libremente por toda la cola.
+                  </p>
+                </div>
+                <div class="quick-import-progress-bar">
+                  <span id="quick-import-progress-fill"></span>
+                </div>
               </div>
-              <div class="quick-import-progress-bar">
-                <span id="quick-import-progress-fill"></span>
+
+              <div class="quick-import-summary-grid">
+                <article class="quick-import-summary-card">
+                  <span>Total</span>
+                  <strong id="quick-import-total-count">0</strong>
+                </article>
+                <article class="quick-import-summary-card">
+                  <span>Pendientes</span>
+                  <strong id="quick-import-pending-count">0</strong>
+                </article>
+                <article class="quick-import-summary-card">
+                  <span>Guardados</span>
+                  <strong id="quick-import-saved-count">0</strong>
+                </article>
+                <article class="quick-import-summary-card">
+                  <span>Saltados</span>
+                  <strong id="quick-import-skipped-count">0</strong>
+                </article>
               </div>
             </div>
 
@@ -375,12 +445,19 @@
             </div>
 
             <div id="quick-import-content">
-              <div class="quick-import-product-head">
-                <div>
-                  <h4 id="quick-import-product-name">Producto</h4>
+              <div class="quick-import-current-shell">
+                <div class="quick-import-product-head">
+                  <div>
+                    <span class="quick-import-current-state pending" id="quick-import-current-state">
+                      Pendiente
+                    </span>
+                    <h4 id="quick-import-product-name">Producto</h4>
                   <p class="modal-note" id="quick-import-product-meta">Categoria · unidad</p>
                 </div>
-                <span class="status-chip ok" id="quick-import-product-status">Disponible</span>
+                  <div class="quick-import-product-head-actions">
+                    <span class="small-pill" id="quick-import-product-position">0 / 0</span>
+                    <span class="status-chip ok" id="quick-import-product-status">Disponible</span>
+                  </div>
               </div>
 
               <div class="quick-import-stats">
@@ -392,7 +469,7 @@
                   <span>Vendido hoy</span>
                   <strong id="quick-import-sold-today">0</strong>
                 </article>
-                <article class="quick-import-stat">
+                <article class="quick-import-stat result">
                   <span>Resultado</span>
                   <strong id="quick-import-stock-result">0</strong>
                 </article>
@@ -400,45 +477,71 @@
 
               <div class="quick-import-fields">
                 <label class="field quick-import-provider-field" id="quick-import-provider-field">
-                  <span>Proveedor (opcional)</span>
+                  <span>Proveedor de esta sesion (opcional)</span>
                   <input id="quick-import-supplier" type="text" placeholder="Ej. Lala, Sigma, rancho..." />
                 </label>
 
                 <label class="field">
                   <span id="quick-import-value-label">Cantidad a agregar</span>
-                  <input id="quick-import-value" type="number" min="0" step="0.25" />
+                  <input id="quick-import-value" type="number" min="0" step="0.25" inputmode="decimal" data-touch-guard="true" />
                 </label>
 
                 <label class="field">
-                  <span>Nota</span>
+                  <span>Nota de este producto</span>
                   <input id="quick-import-note" type="text" maxlength="120" placeholder="Opcional" />
                 </label>
               </div>
 
-              <p class="modal-note" id="quick-import-helper">
-                Presiona Enter para guardar y avanzar al siguiente producto.
+              <p class="modal-note quick-import-helper" id="quick-import-helper">
+                Enter guarda y avanza. Shift+Enter guarda sin avanzar. Flechas izquierda y derecha cambian producto.
               </p>
+              </div>
             </div>
           </section>
 
           <aside class="quick-import-side">
             <div class="quick-import-side-card">
-              <span class="eyebrow">Siguiente</span>
+              <div class="quick-import-side-top">
+                <div>
+                  <span class="eyebrow">Cola navegable</span>
+                  <strong id="quick-import-filter-summary">0 productos</strong>
+                </div>
+                <label class="field quick-import-search-field">
+                  <span>Buscar producto</span>
+                  <input
+                    id="quick-import-search"
+                    type="search"
+                    autocomplete="off"
+                    placeholder="Nombre, categoria o unidad"
+                    data-touch-guard="true"
+                  />
+                </label>
+              </div>
               <div class="quick-import-next-list" id="quick-import-next-list"></div>
             </div>
           </aside>
         </div>
 
-        <div class="modal-actions">
-          <button class="ghost-button" id="quick-import-prev-button" type="button">
-            Anterior
-          </button>
-          <button class="ghost-button" id="quick-import-skip-button" type="button">
-            Saltar
-          </button>
-          <button class="primary-button" id="quick-import-save-button" type="button">
-            Guardar y siguiente
-          </button>
+        <div class="modal-actions quick-import-actions">
+          <div class="quick-import-action-group">
+            <button class="ghost-button" id="quick-import-prev-button" type="button">
+              Anterior
+            </button>
+            <button class="ghost-button" id="quick-import-next-button" type="button">
+              Siguiente
+            </button>
+            <button class="ghost-button" id="quick-import-skip-button" type="button">
+              Saltar
+            </button>
+          </div>
+          <div class="quick-import-action-group quick-import-action-group-primary">
+            <button class="secondary-button" id="quick-import-save-current-button" type="button">
+              Guardar
+            </button>
+            <button class="primary-button" id="quick-import-save-button" type="button">
+              Guardar y avanzar
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -521,7 +624,7 @@
             <span>Cantidad</span>
             <div class="stepper-wrap">
               <button class="stepper-button" data-merchandise-step="-1" type="button">-</button>
-                <input id="merchandise-request-item-quantity" type="number" min="0.001" step="0.001" inputmode="decimal" />
+                <input id="merchandise-request-item-quantity" type="number" min="0.001" step="0.001" inputmode="decimal" data-touch-guard="true" />
               <button class="stepper-button" data-merchandise-step="1" type="button">+</button>
             </div>
           </label>
@@ -533,7 +636,7 @@
 
           <label class="field">
             <span>Valor de la linea</span>
-              <input id="merchandise-request-item-total" type="number" step="0.01" inputmode="decimal" />
+              <input id="merchandise-request-item-total" type="number" step="0.01" inputmode="decimal" data-touch-guard="true" />
           </label>
         </div>
 
@@ -611,12 +714,12 @@
         <div class="modal-body">
           <label class="field">
             <span id="register-amount-label">Monto inicial de caja</span>
-            <input id="register-amount-input" type="number" min="0" step="0.01" />
+            <input id="register-amount-input" type="number" min="0" step="0.01" inputmode="decimal" data-touch-guard="true" />
           </label>
 
           <label class="field">
             <span>Monto que se retira</span>
-            <input id="register-withdraw-input" type="number" min="0" step="0.01" value="0" />
+            <input id="register-withdraw-input" type="number" min="0" step="0.01" value="0" inputmode="decimal" data-touch-guard="true" />
             <button class="secondary-button" id="register-apply-withdraw-button" type="button">
               Aplicar retiro
             </button>
@@ -662,7 +765,7 @@
         <div class="modal-head admin-modal-head">
           <div class="admin-modal-intro">
             <p class="eyebrow">Administracion</p>
-            <h3>Panel admin</h3>
+            <h3 id="admin-modal-secret-trigger">Panel admin</h3>
             <p class="modal-note">
               Control total del catalogo, inventario y metricas en tiempo real sin cargar la caja principal.
             </p>
@@ -696,7 +799,7 @@
               </div>
 
               <div class="admin-toolbar-groups">
-                <section class="admin-action-group">
+                <section class="admin-action-group" data-admin-capability="daily_flow">
                   <div class="admin-action-group-head">
                     <p class="eyebrow">Operacion</p>
                     <h4>Flujo diario</h4>
@@ -711,7 +814,7 @@
                   </div>
                 </section>
 
-                <section class="admin-action-group">
+                <section class="admin-action-group" data-admin-capability="backups">
                   <div class="admin-action-group-head">
                     <p class="eyebrow">Respaldos</p>
                     <h4>Exportar o restaurar</h4>
@@ -755,7 +858,7 @@
 
           <div class="admin-layout">
             <div class="admin-primary-column">
-              <section class="admin-records-panel admin-merchandise-panel">
+              <section class="admin-records-panel admin-merchandise-panel" data-module="merchandise_requests" data-admin-capability="merchandise_requests">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Solicitudes</p>
@@ -766,7 +869,7 @@
                 <div class="admin-record-list" id="admin-merchandise-requests-list"></div>
               </section>
 
-              <section class="admin-records-panel admin-weighted-panel">
+              <section class="admin-records-panel admin-weighted-panel" data-module="weighted_audit" data-admin-capability="weighted_audit">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Pesado</p>
@@ -828,7 +931,7 @@
                 </div>
               </section>
 
-              <section class="panel inventory-panel admin-inventory-panel">
+              <section class="panel inventory-panel admin-inventory-panel" data-admin-capability="inventory">
                 <div class="panel-head">
                   <div>
                     <p class="eyebrow">Inventario</p>
@@ -852,22 +955,22 @@
                   <label class="field">
                     <span>Categoria</span>
                     <select id="admin-new-product-category">
-                      <option value="quesos">Quesos</option>
-                      <option value="carnes" selected>Carnes</option>
-                      <option value="piezas">Piezas</option>
-                      <option value="general">General</option>
+                      <option value="">Cargando categorias...</option>
                     </select>
                   </label>
                   <label class="field">
                     <span>Unidad</span>
                     <select id="admin-new-product-unit">
-                      <option value="kg" selected>kg</option>
-                      <option value="pza">pza</option>
+                      <option value="">Cargando unidades...</option>
                     </select>
                   </label>
                   <label class="field">
                     <span>Precio</span>
                     <input id="admin-new-product-price" type="number" min="0.01" step="0.01" />
+                  </label>
+                  <label class="field">
+                    <span>Costo</span>
+                    <input id="admin-new-product-cost" type="number" min="0" step="0.01" />
                   </label>
                   <label class="field">
                     <span>Stock inicial</span>
@@ -877,6 +980,27 @@
                     <span>Minimo</span>
                     <input id="admin-new-product-min-stock" type="number" min="0" step="0.25" value="0" />
                   </label>
+                  <label class="field">
+                    <span>SKU</span>
+                    <input id="admin-new-product-sku" type="text" maxlength="48" />
+                  </label>
+                  <label class="field">
+                    <span>Codigo barras</span>
+                    <input id="admin-new-product-barcode" type="text" maxlength="64" />
+                  </label>
+                  <label class="field">
+                    <span>Marca</span>
+                    <input id="admin-new-product-brand" type="text" maxlength="60" />
+                  </label>
+                  <label class="field">
+                    <span>Proveedor</span>
+                    <input id="admin-new-product-supplier" type="text" maxlength="80" />
+                  </label>
+                  <label class="field">
+                    <span>Pack size</span>
+                    <input id="admin-new-product-pack-size" type="number" min="0" step="0.001" />
+                  </label>
+                  <div class="field admin-attribute-grid" id="admin-new-product-attributes"></div>
                   <button class="primary-button" id="save-admin-product-button" type="button">
                     Agregar producto
                   </button>
@@ -1021,7 +1145,53 @@
                 </div>
               </section>
 
-              <section class="admin-cashiers-panel admin-side-panel">
+              <section class="admin-cashiers-panel admin-side-panel" data-admin-capability="branches">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Sucursales</p>
+                    <h2>Alta y control operativo</h2>
+                  </div>
+                </div>
+
+                <div class="admin-cashier-form admin-branch-form">
+                  <label class="field">
+                    <span>Codigo</span>
+                    <input id="admin-branch-code" type="text" maxlength="24" placeholder="Ej. centro" />
+                  </label>
+
+                  <label class="field">
+                    <span>Nombre visible</span>
+                    <input id="admin-branch-name" type="text" maxlength="80" placeholder="Ej. Centro" />
+                  </label>
+
+                  <label class="field">
+                    <span>Zona horaria</span>
+                    <input id="admin-branch-timezone" type="text" maxlength="64" value="America/Mexico_City" />
+                  </label>
+
+                  <label class="field admin-toggle-field">
+                    <span>Estado</span>
+                    <div class="admin-toggle-row">
+                      <input id="admin-branch-active" type="checkbox" checked />
+                      <strong>Mantener activa</strong>
+                    </div>
+                    <small>Si desactivas una sucursal ya no podra vender, pero se conserva el historial.</small>
+                  </label>
+
+                  <div class="admin-record-actions">
+                    <button class="primary-button" id="save-admin-branch-button" type="button">
+                      Guardar sucursal
+                    </button>
+                    <button class="ghost-button compact-button" id="reset-admin-branch-button" type="button">
+                      Limpiar
+                    </button>
+                  </div>
+                </div>
+
+                <div class="admin-record-list cashier-record-list" id="admin-branches-list"></div>
+              </section>
+
+              <section class="admin-cashiers-panel admin-side-panel" data-admin-capability="cashiers">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Accesos</p>
@@ -1056,15 +1226,43 @@
                 <div class="admin-record-list cashier-record-list" id="admin-cashiers-list"></div>
               </section>
 
-              <section class="admin-config-panel admin-side-panel">
+              <section class="admin-config-panel admin-side-panel" data-admin-capability="business_config">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Configuraciones</p>
-                    <h2>Reglas de venta</h2>
+                    <h2>Base del negocio</h2>
                   </div>
                 </div>
 
                 <div class="admin-config-form">
+                  <label class="field">
+                    <span>Nombre del negocio</span>
+                    <input id="config-business-name" type="text" maxlength="120" />
+                  </label>
+                  <label class="field">
+                    <span>Nombre corto</span>
+                    <input id="config-short-name" type="text" maxlength="60" />
+                  </label>
+                  <label class="field">
+                    <span>Slug</span>
+                    <input id="config-slug" type="text" maxlength="64" />
+                  </label>
+                  <label class="field">
+                    <span>Zona horaria</span>
+                    <input id="config-timezone" type="text" maxlength="64" placeholder="America/Mexico_City" />
+                  </label>
+                  <label class="field">
+                    <span>Locale</span>
+                    <input id="config-locale" type="text" maxlength="16" placeholder="es-MX" />
+                  </label>
+                  <label class="field">
+                    <span>Moneda</span>
+                    <input id="config-currency-code" type="text" maxlength="16" placeholder="MXN" />
+                  </label>
+                  <label class="field">
+                    <span>Prefijo ticket</span>
+                    <input id="config-ticket-prefix" type="text" maxlength="12" />
+                  </label>
                   <label class="field admin-toggle-field">
                     <span>Permitir ventas con stock negativo</span>
                     <div class="admin-toggle-row">
@@ -1074,13 +1272,72 @@
                     <small>Si esta activado, se podran vender productos aunque no haya stock suficiente.</small>
                   </label>
 
+                  <div class="field">
+                    <span>Modulos habilitados</span>
+                    <div class="admin-chip-grid" id="config-modules-wrap"></div>
+                  </div>
+
+                  <label class="field">
+                    <span>Ruta del Excel para reimportar</span>
+                    <input id="catalog-workbook-path" type="text" placeholder="Opcional: vacio usa rutas por defecto" />
+                  </label>
+
                   <button class="primary-button" id="save-admin-config-button" type="button">
                     Guardar configuraciones
                   </button>
                 </div>
+
+                <div class="admin-config-list-block">
+                  <h3>Categorias</h3>
+                  <div class="admin-inline-form">
+                    <input id="config-category-code" type="text" maxlength="40" placeholder="codigo" />
+                    <input id="config-category-label" type="text" maxlength="80" placeholder="Etiqueta visible" />
+                    <input id="config-category-sort" type="number" min="0" step="1" placeholder="Orden" />
+                    <button class="secondary-button compact-button" id="save-config-category-button" type="button">Agregar</button>
+                  </div>
+                  <div class="admin-record-list" id="config-categories-list"></div>
+                </div>
+
+                <div class="admin-config-list-block">
+                  <h3>Unidades</h3>
+                  <div class="admin-inline-form">
+                    <input id="config-unit-code" type="text" maxlength="32" placeholder="codigo" />
+                    <input id="config-unit-label" type="text" maxlength="32" placeholder="Etiqueta visible" />
+                    <input id="config-unit-step" type="number" min="0.001" step="0.001" placeholder="Paso" />
+                    <input id="config-unit-sort" type="number" min="0" step="1" placeholder="Orden" />
+                    <label class="admin-inline-check">
+                      <input id="config-unit-allow-decimals" type="checkbox" checked />
+                      <span>Permite decimales</span>
+                    </label>
+                    <button class="secondary-button compact-button" id="save-config-unit-button" type="button">Agregar</button>
+                  </div>
+                  <div class="admin-record-list" id="config-units-list"></div>
+                </div>
+
+                <div class="admin-config-list-block">
+                  <h3>Atributos de producto</h3>
+                  <div class="admin-inline-form">
+                    <input id="config-attribute-key" type="text" maxlength="48" placeholder="clave" />
+                    <input id="config-attribute-label" type="text" maxlength="80" placeholder="Etiqueta visible" />
+                    <select id="config-attribute-type">
+                      <option value="text">Texto</option>
+                      <option value="number">Numero</option>
+                      <option value="boolean">Si/No</option>
+                      <option value="select">Lista</option>
+                    </select>
+                    <input id="config-attribute-options" type="text" maxlength="240" placeholder="Opciones separadas por coma" />
+                    <input id="config-attribute-sort" type="number" min="0" step="1" placeholder="Orden" />
+                    <label class="admin-inline-check">
+                      <input id="config-attribute-required" type="checkbox" />
+                      <span>Obligatorio</span>
+                    </label>
+                    <button class="secondary-button compact-button" id="save-config-attribute-button" type="button">Agregar</button>
+                  </div>
+                  <div class="admin-record-list" id="config-attributes-list"></div>
+                </div>
               </section>
 
-              <section class="admin-records-panel admin-audit-log-panel">
+              <section class="admin-records-panel admin-audit-log-panel" data-admin-capability="audit_log">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Bitacora</p>
@@ -1090,7 +1347,7 @@
                 <div class="admin-record-list" id="admin-audit-log-list"></div>
               </section>
 
-              <section class="admin-metrics-panel admin-dev-panel">
+              <section class="admin-metrics-panel admin-dev-panel" data-admin-capability="support_tools">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Dev</p>
@@ -1111,11 +1368,32 @@
                     Descargar debug JSON
                   </button>
                 </div>
+
+                <div class="admin-config-list-block">
+                  <div class="panel-head admin-subhead compact-inline-head">
+                    <div>
+                      <p class="eyebrow">Ventas offline</p>
+                      <h3>Tickets pendientes del dispositivo</h3>
+                    </div>
+                    <span class="small-pill" id="admin-offline-sales-status">Sin ventas offline</span>
+                  </div>
+
+                  <div class="admin-record-actions admin-dev-actions">
+                    <button class="secondary-button compact-button" id="retry-offline-sales-button" type="button">
+                      Reintentar pendientes
+                    </button>
+                    <button class="ghost-button compact-button" id="download-offline-sales-button" type="button">
+                      Descargar ventas offline
+                    </button>
+                  </div>
+
+                  <div class="admin-record-list" id="admin-offline-sales-list"></div>
+                </div>
               </section>
             </aside>
           </div>
 
-          <section class="admin-quick-edit-shell">
+          <section class="admin-quick-edit-shell" data-admin-capability="quick_edit">
             <div class="panel-head admin-subhead admin-quick-edit-head">
               <div>
                 <p class="eyebrow">Edicion rapida</p>
@@ -1190,6 +1468,13 @@
             <span>Confirmar contrasena</span>
             <input id="admin-auth-confirm-password" type="password" autocomplete="new-password" />
           </label>
+
+          <p class="modal-note" id="admin-auth-bootstrap-status" hidden></p>
+
+          <label class="field" id="admin-auth-bootstrap-field" hidden>
+            <span>Token de bootstrap</span>
+            <input id="admin-auth-bootstrap-token" type="password" autocomplete="one-time-code" />
+          </label>
         </div>
 
         <div class="modal-actions">
@@ -1198,6 +1483,146 @@
           </button>
           <button class="primary-button" id="save-admin-auth-button" type="button">
             Continuar
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-shell priority-modal" id="owner-auth-modal">
+      <div class="modal-card auth-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Dev oculto</p>
+            <h3 id="owner-auth-title">Acceso owner</h3>
+            <p class="modal-note" id="owner-auth-description">
+              Acceso reservado para el desarrollador o dueño tecnico del sistema.
+            </p>
+          </div>
+          <button class="icon-button" id="close-owner-auth-modal" type="button">×</button>
+        </div>
+
+        <div class="modal-body">
+          <label class="field">
+            <span>Usuario owner</span>
+            <input id="owner-auth-username" type="text" autocomplete="username" />
+          </label>
+
+          <label class="field">
+            <span id="owner-auth-password-label">Contrasena</span>
+            <input id="owner-auth-password" type="password" autocomplete="current-password" />
+          </label>
+
+          <label class="field" id="owner-auth-confirm-field" hidden>
+            <span>Confirmar contrasena</span>
+            <input id="owner-auth-confirm-password" type="password" autocomplete="new-password" />
+          </label>
+
+          <p class="modal-note" id="owner-auth-bootstrap-status" hidden></p>
+
+          <label class="field" id="owner-auth-bootstrap-field" hidden>
+            <span>Token de bootstrap</span>
+            <input id="owner-auth-bootstrap-token" type="password" autocomplete="one-time-code" />
+          </label>
+        </div>
+
+        <div class="modal-actions">
+          <button class="ghost-button" id="cancel-owner-auth-button" type="button">
+            Cancelar
+          </button>
+          <button class="primary-button" id="save-owner-auth-button" type="button">
+            Continuar
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-shell priority-modal" id="owner-console-modal">
+      <div class="modal-card editor-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Consola owner</p>
+            <h3 id="owner-console-title">Panel dev oculto</h3>
+            <p class="modal-note" id="owner-console-description">
+              Define exactamente que modulos y secciones del admin normal puede usar este negocio.
+            </p>
+          </div>
+          <button class="icon-button" id="close-owner-console-modal" type="button">×</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="admin-config-list-block">
+            <h3>Modulos del negocio</h3>
+            <div class="admin-chip-grid" id="owner-modules-wrap"></div>
+          </div>
+
+          <div class="admin-config-list-block">
+            <h3>Secciones del panel admin</h3>
+            <div class="admin-chip-grid" id="owner-admin-sections-wrap"></div>
+          </div>
+
+          <div class="admin-config-list-block">
+            <h3>Ventas offline del dispositivo</h3>
+            <p class="modal-note" id="owner-offline-sales-status">
+              Este panel replica los tickets offline guardados localmente en este equipo.
+            </p>
+            <div class="admin-record-actions">
+              <button class="secondary-button compact-button" id="owner-retry-offline-sales-button" type="button">
+                Reintentar pendientes
+              </button>
+              <button class="ghost-button compact-button" id="owner-download-offline-sales-button" type="button">
+                Descargar ventas offline
+              </button>
+            </div>
+            <div class="admin-record-list" id="owner-offline-sales-list"></div>
+          </div>
+
+          <div class="admin-config-list-block">
+            <h3>Plantilla completa del negocio</h3>
+            <p class="modal-note" id="owner-template-status">
+              Esta accion reinicia productos, cajeros, ventas y sesiones. Requiere el slug actual y un Excel valido.
+            </p>
+            <label class="field">
+              <span>Plantilla disponible</span>
+              <select id="owner-template-select">
+                <option value="">Selecciona una plantilla</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Nombre final del negocio</span>
+              <input id="owner-template-business-name" type="text" maxlength="120" />
+            </label>
+            <label class="field">
+              <span>Slug final del negocio</span>
+              <input id="owner-template-slug" type="text" maxlength="64" />
+            </label>
+            <label class="field">
+              <span>Ruta del Excel obligatorio</span>
+              <input id="owner-template-workbook-path" type="text" placeholder="Ej. C:\catalogos\mi-negocio.xlsx" />
+            </label>
+            <label class="field">
+              <span>Escribe el slug actual para confirmar</span>
+              <input id="owner-template-confirm-text" type="text" maxlength="64" />
+              <small>Slug actual: <strong id="owner-template-current-slug">(sin slug)</strong></small>
+            </label>
+            <label class="field admin-toggle-field">
+              <span>Confirmacion total</span>
+              <div class="admin-toggle-row">
+                <input id="owner-template-confirm-reset" type="checkbox" />
+                <strong>Entiendo que esto reinicia el negocio completo</strong>
+              </div>
+            </label>
+            <button class="secondary-button" id="apply-owner-template-button" type="button">
+              Aplicar plantilla completa
+            </button>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button class="ghost-button" id="owner-logout-button" type="button">
+            Cerrar sesion owner
+          </button>
+          <button class="primary-button" id="save-owner-console-button" type="button">
+            Guardar cambios
           </button>
         </div>
       </div>
@@ -1281,6 +1706,7 @@
     <script src="/js/network.js"></script>
     <script src="/js/render.js"></script>
     <script src="/js/render-admin.js"></script>
+    <script src="/js/quick-import-state.js"></script>
     <script src="/js/quick-import.js"></script>
     <script src="/js/merchandise-requests.js"></script>
     <script src="/js/actions.js"></script>

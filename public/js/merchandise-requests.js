@@ -47,19 +47,19 @@ function getFilteredMerchandiseProducts() {
 }
 
 function getMerchandiseRequestQuantityMin(product) {
-  return product?.unit === "pza" ? 1 : 0.001;
+  return product?.allowDecimals === false ? 1 : 0.001;
 }
 
 function getMerchandiseRequestQuantityInputStep(product) {
-  return product?.unit === "pza" ? 1 : 0.001;
+  return product?.allowDecimals === false ? 1 : 0.001;
 }
 
 function getMerchandiseRequestAdjustStep(product) {
-  return product?.unit === "pza" ? 1 : 0.25;
+  return product?.allowDecimals === false ? 1 : Number(product?.unitStep || 0.25);
 }
 
 function normalizeMerchandiseRequestQuantity(value, product) {
-  if (product?.unit === "pza") {
+  if (product?.allowDecimals === false) {
     return Math.max(1, Math.round(toNumber(value, 1)));
   }
 
@@ -808,7 +808,7 @@ function renderAdminMerchandiseRequests() {
 }
 
 async function loadAdminMerchandiseRequests(branch = getAdminBranch()) {
-  if (!state.admin.token) {
+  if (!state.admin.authenticated) {
     state.admin.merchandiseRequests = [];
     renderAdminMerchandiseRequests();
     return [];

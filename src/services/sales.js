@@ -3,6 +3,7 @@ const {
   ALL_BRANCHES,
   STORE_BRANCHES,
   STORE_SHIFTS,
+  assertBranchIsActive,
   buildTicketPrefix,
   createHttpError,
   getBranchLabel,
@@ -194,9 +195,7 @@ function createSale(payload) {
     throw createHttpError("Selecciona un turno valido para registrar la venta.");
   }
 
-  if (!STORE_BRANCHES.includes(branch)) {
-    throw createHttpError("Selecciona una sucursal valida.");
-  }
+  assertBranchIsActive(branch, "Selecciona una sucursal activa para registrar la venta.");
 
   const { assertCashierCanOperate } = require("./register");
   assertCashierCanOperate({

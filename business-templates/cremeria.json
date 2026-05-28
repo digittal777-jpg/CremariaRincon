@@ -1,0 +1,50 @@
+{
+  "description": "Plantilla actual de cremeria para mantener compatibilidad con la operacion viva.",
+  "businessName": "Cremeria El Rincon",
+  "shortName": "Rincon POS",
+  "slug": "cremeria-el-rincon",
+  "currencyCode": "MXN",
+  "locale": "es-MX",
+  "timezone": "America/Mexico_City",
+  "ticketPrefix": "RIN",
+  "modules": ["weighted_audit", "merchandise_requests"],
+  "branding": {
+    "logo": "/assets/branding/rincon-logo-gold.png",
+    "logo192": "/assets/branding/rincon-logo-gold-192.png",
+    "logo512": "/assets/branding/rincon-logo-gold-512.png"
+  },
+  "visibleTexts": {
+    "eyebrow": "Centro de control comercial",
+    "heroCopy": "Caja rapida, inventario vivo y seguimiento inmediato de cada venta."
+  },
+  "branches": [
+    {
+      "code": "carrizal",
+      "name": "Carrizal",
+      "timezone": "America/Mexico_City",
+      "active": true,
+      "sortOrder": 0
+    },
+    {
+      "code": "miradores",
+      "name": "Miradores",
+      "timezone": "America/Mexico_City",
+      "active": true,
+      "sortOrder": 1
+    }
+  ],
+  "categories": [
+    { "code": "quesos", "label": "Quesos", "sortOrder": 0 },
+    { "code": "carnes", "label": "Carnes", "sortOrder": 1 },
+    { "code": "piezas", "label": "Piezas", "sortOrder": 2 },
+    { "code": "general", "label": "General", "sortOrder": 3 }
+  ],
+  "units": [
+    { "code": "kg", "label": "Kg", "allowDecimals": true, "step": 0.25, "sortOrder": 0 },
+    { "code": "pza", "label": "Pza", "allowDecimals": false, "step": 1, "sortOrder": 1 }
+  ],
+  "productAttributes": [
+    { "key": "marca", "label": "Marca", "valueType": "text", "required": false, "sortOrder": 0 },
+    { "key": "proveedor_base", "label": "Proveedor base", "valueType": "text", "required": false, "sortOrder": 1 }
+  ]
+}

@@ -2,6 +2,7 @@ const { getDb, nowIso } = require("../db");
 const {
   ALL_BRANCHES,
   STORE_BRANCHES,
+  assertBranchIsActive,
   createHttpError,
   normalizeBranch,
   normalizeText,
@@ -187,9 +188,7 @@ function createMerchandiseRequest(payload) {
     throw createHttpError("Necesito el nombre del cajero que solicita la mercaderia.");
   }
 
-  if (!STORE_BRANCHES.includes(branch)) {
-    throw createHttpError("Selecciona una sucursal valida para la solicitud.");
-  }
+  assertBranchIsActive(branch, "Selecciona una sucursal activa para la solicitud.");
 
   const preparedItems = prepareMerchandiseRequestItems(payload.items, branch);
   const totalValue = roundMoney(

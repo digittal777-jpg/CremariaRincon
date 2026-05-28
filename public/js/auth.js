@@ -2,6 +2,9 @@ const OFFLINE_CASHIER_PROFILE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const OFFLINE_CASHIER_PROFILE_ITERATIONS = 120000;
 
 function openCashierAuthModal() {
+  if (typeof syncCashierBranchOptions === "function") {
+    syncCashierBranchOptions();
+  }
   refs.cashierAuthName.value = state.cashier.name || "";
   refs.cashierAuthBranch.value = state.cashier.branch || getActiveCashierBranch();
   refs.cashierAuthPassword.value = "";
@@ -167,12 +170,30 @@ async function findOfflineCashierProfile(name, branch) {
   return nextProfiles.find((profile) => profile.key === key) || null;
 }
 
-function hasOfflineSnapshotForBranch(branch) {
-  return Boolean(
-    branch
-    && String(state.store?.currentBranch || "") === String(branch)
+async function getPreparedOfflineSnapshot(branch) {
+  const normalizedBranch = String(branch || "").trim();
+  if (!normalizedBranch) {
+    return null;
+  }
+
+  if (
+    normalizedBranch === String(state.store?.currentBranch || "")
     && Array.isArray(state.products)
-    && state.products.length > 0,
+    && state.products.length > 0
+  ) {
+    return buildPersistedSnapshot();
+  }
+
+  return restorePreparedSnapshot(normalizedBranch);
+}
+
+async function hasOfflineSnapshotForBranch(branch) {
+  const snapshot = await getPreparedOfflineSnapshot(branch);
+  return Boolean(
+    snapshot
+    && String(snapshot.store?.currentBranch || "") === String(branch)
+    && Array.isArray(snapshot.products)
+    && snapshot.products.length > 0,
   );
 }
 
@@ -190,7 +211,13 @@ async function activateOfflineCashierSession(name, branch, password) {
     throw new Error("Este celular no soporta acceso local offline para cajeros.");
   }
 
-  if (!hasOfflineSnapshotForBranch(branch)) {
+  const preparedSnapshot = await getPreparedOfflineSnapshot(branch);
+  if (
+    !preparedSnapshot
+    || String(preparedSnapshot.store?.currentBranch || "") !== String(branch)
+    || !Array.isArray(preparedSnapshot.products)
+    || preparedSnapshot.products.length === 0
+  ) {
     throw new Error("Este dispositivo no tiene datos offline guardados para esa sucursal.");
   }
 
@@ -210,6 +237,9 @@ async function activateOfflineCashierSession(name, branch, password) {
   }
 
   clearCartForSessionChange();
+  if (typeof applySnapshot === "function") {
+    applySnapshot(preparedSnapshot, { skipPersist: true });
+  }
   applyCashierSession(
     {
       id: profile.cashierId,
@@ -303,6 +333,7 @@ async function loginCashier() {
 
 async function logoutCashier() {
   clearCartForSessionChange();
+  const branchBeforeLogout = state.cashier.branch || state.store.currentBranch || "carrizal";
 
   const token = state.cashier.token;
   if (token && state.online) {
@@ -317,5 +348,15 @@ async function logoutCashier() {
   }
 
   clearCashierSessionState();
+  if (!state.admin.authenticated && !state.owner.authenticated) {
+    applyPublicSnapshot(buildPersistedSnapshot());
+  }
+  if (state.online) {
+    try {
+      await refreshCurrentSnapshot(branchBeforeLogout);
+    } catch (_error) {
+      // Mantener la salida local aunque el refresco publico falle.
+    }
+  }
   renderCashierSession();
 }

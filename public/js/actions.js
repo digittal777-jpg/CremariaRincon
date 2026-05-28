@@ -14,6 +14,7 @@ const ADMIN_WORKSPACE_TTLS_MS = {
   snapshot: 5000,
   editorData: 8000,
   auditLogs: 60000,
+  branches: 60000,
   cashiers: 60000,
   requests: 10000,
   config: 300000,
@@ -23,6 +24,7 @@ const ADMIN_WORKSPACE_SECTION_KEYS = [
   "snapshot",
   "editorData",
   "auditLogs",
+  "branches",
   "cashiers",
   "requests",
   "config",
@@ -35,6 +37,7 @@ function getAdminWorkspaceProfile(profile = "full") {
       snapshot: true,
       editorData: true,
       auditLogs: false,
+      branches: false,
       cashiers: false,
       requests: true,
       config: false,
@@ -46,6 +49,7 @@ function getAdminWorkspaceProfile(profile = "full") {
     snapshot: true,
     editorData: true,
     auditLogs: true,
+    branches: true,
     cashiers: true,
     requests: true,
     config: true,
@@ -99,6 +103,7 @@ function normalizeAdminWorkspaceOptions(options = {}) {
         snapshot: false,
         editorData: false,
         auditLogs: false,
+        branches: false,
         cashiers: false,
         requests: false,
         config: false,
@@ -113,6 +118,7 @@ function normalizeAdminWorkspaceOptions(options = {}) {
     snapshot: options.snapshot === undefined ? profileDefaults.snapshot : options.snapshot !== false,
     editorData: options.editorData === undefined ? profileDefaults.editorData : options.editorData !== false,
     auditLogs: options.auditLogs === undefined ? profileDefaults.auditLogs : options.auditLogs !== false,
+    branches: options.branches === undefined ? profileDefaults.branches : options.branches !== false,
     cashiers: options.cashiers === undefined ? profileDefaults.cashiers : options.cashiers !== false,
     requests: options.requests === undefined ? profileDefaults.requests : options.requests !== false,
     config: options.config === undefined ? profileDefaults.config : options.config !== false,
@@ -135,6 +141,7 @@ function mergeAdminWorkspaceOptions(baseOptions, nextOptions) {
     snapshot: base.snapshot || next.snapshot,
     editorData: base.editorData || next.editorData,
     auditLogs: base.auditLogs || next.auditLogs,
+    branches: base.branches || next.branches,
     cashiers: base.cashiers || next.cashiers,
     requests: base.requests || next.requests,
     config: base.config || next.config,
@@ -149,32 +156,121 @@ function getAdminWorkspaceTasks(options = {}) {
   if (normalized.snapshot && shouldRefreshAdminWorkspaceSection("snapshot", normalized)) {
     tasks.push(loadAdminSnapshot(normalized.branch));
   }
-  if (normalized.editorData && shouldRefreshAdminWorkspaceSection("editorData", normalized)) {
+  if (
+    normalized.editorData
+    && hasAdminCapability("quick_edit")
+    && shouldRefreshAdminWorkspaceSection("editorData", normalized)
+  ) {
     tasks.push(loadAdminEditorData(normalized.branch));
   }
-  if (normalized.auditLogs && shouldRefreshAdminWorkspaceSection("auditLogs", normalized)) {
+  if (
+    normalized.auditLogs
+    && hasAdminCapability("audit_log")
+    && shouldRefreshAdminWorkspaceSection("auditLogs", normalized)
+  ) {
     tasks.push(loadAdminAuditLogs(normalized.branch));
   }
-  if (normalized.cashiers && shouldRefreshAdminWorkspaceSection("cashiers", normalized)) {
+  if (
+    normalized.branches
+    && hasAdminCapability("branches")
+    && shouldRefreshAdminWorkspaceSection("branches", normalized)
+  ) {
+    tasks.push(loadAdminBranches());
+  }
+  if (
+    normalized.cashiers
+    && hasAdminCapability("cashiers")
+    && shouldRefreshAdminWorkspaceSection("cashiers", normalized)
+  ) {
     tasks.push(loadAdminCashiers(normalized.branch));
   }
-  if (normalized.requests && shouldRefreshAdminWorkspaceSection("requests", normalized)) {
+  if (
+    normalized.requests
+    && hasEnabledModule("merchandise_requests")
+    && hasAdminCapability("merchandise_requests")
+    && shouldRefreshAdminWorkspaceSection("requests", normalized)
+  ) {
     tasks.push(loadAdminMerchandiseRequests(normalized.branch));
   }
-  if (normalized.config && shouldRefreshAdminWorkspaceSection("config", normalized)) {
+  if (
+    normalized.config
+    && hasAdminCapability("business_config")
+    && shouldRefreshAdminWorkspaceSection("config", normalized)
+  ) {
     tasks.push(loadAdminConfig());
   }
-  if (normalized.weightedAudit && shouldRefreshAdminWorkspaceSection("weightedAudit", normalized)) {
+  if (
+    normalized.weightedAudit
+    && hasEnabledModule("weighted_audit")
+    && hasAdminCapability("weighted_audit")
+    && shouldRefreshAdminWorkspaceSection("weightedAudit", normalized)
+  ) {
     tasks.push(loadAdminWeightedAuditSessions(normalized.branch));
   }
 
   return tasks;
 }
 
+function applyBusinessBranding() {
+  const profile = getStoreProfile();
+  const businessName = getStoreName();
+  const shortName = profile.shortName || businessName || "POS";
+  const eyebrow = getVisibleText("eyebrow", "Centro de control comercial");
+  const heroCopy = getVisibleText(
+    "heroCopy",
+    "Caja rapida, inventario vivo y seguimiento inmediato de cada venta.",
+  );
+  const logoPath = profile.branding?.logo192 || profile.branding?.logo || "";
+  const iconPath = profile.branding?.logo192 || profile.branding?.logo || "/assets/branding/retail-base-badge.svg";
+
+  document.title = `${businessName} | Punto de Venta`;
+
+  if (refs.storeTitle) {
+    refs.storeTitle.textContent = businessName;
+  }
+  if (refs.storeEyebrow) {
+    refs.storeEyebrow.textContent = eyebrow;
+  }
+  if (refs.storeHeroCopy) {
+    refs.storeHeroCopy.textContent = heroCopy;
+  }
+  if (refs.storeLogo) {
+    if (logoPath) {
+      refs.storeLogo.hidden = false;
+      refs.storeLogo.src = logoPath;
+      refs.storeLogo.alt = `Logo de ${businessName}`;
+    } else {
+      refs.storeLogo.hidden = true;
+      refs.storeLogo.removeAttribute("src");
+    }
+  }
+  if (refs.storeLogoFallback) {
+    refs.storeLogoFallback.hidden = Boolean(logoPath);
+    refs.storeLogoFallback.textContent = String(shortName || "POS").slice(0, 3).toUpperCase();
+  }
+  if (refs.storeFavicon) {
+    refs.storeFavicon.href = iconPath;
+  }
+  if (refs.storeAppleTouchIcon) {
+    refs.storeAppleTouchIcon.href = iconPath;
+  }
+}
+
 function applySnapshot(snapshot, options = {}) {
   const renderStartedAt =
     typeof performance !== "undefined" ? performance.now() : Date.now();
+  const previousCategories = JSON.stringify((state.categories || []).map((category) => [category.id, category.code]));
+  const previousUnits = JSON.stringify((state.units || []).map((unit) => [unit.id, unit.code, unit.step]));
+  const previousAttributes = JSON.stringify((state.productAttributeDefinitions || []).map((definition) => [definition.id, definition.key]));
   state.store = snapshot.store || state.store;
+  state.profile = snapshot.profile || state.profile;
+  state.enabledModules = Array.isArray(snapshot.enabledModules) ? snapshot.enabledModules : state.enabledModules;
+  state.adminCapabilities = Array.isArray(snapshot.adminCapabilities) ? snapshot.adminCapabilities : state.adminCapabilities;
+  state.categories = Array.isArray(snapshot.categories) ? snapshot.categories : state.categories;
+  state.units = Array.isArray(snapshot.units) ? snapshot.units : state.units;
+  state.productAttributeDefinitions = Array.isArray(snapshot.productAttributeDefinitions)
+    ? snapshot.productAttributeDefinitions
+    : state.productAttributeDefinitions;
   state.products = Array.isArray(snapshot.products) ? snapshot.products : [];
   state.lowStock = Array.isArray(snapshot.lowStock) ? snapshot.lowStock : [];
   state.recentSales = Array.isArray(snapshot.recentSales) ? snapshot.recentSales : [];
@@ -183,10 +279,30 @@ function applySnapshot(snapshot, options = {}) {
   state.shiftSummary = Array.isArray(snapshot.shiftSummary) ? snapshot.shiftSummary : [];
   state.summary = snapshot.summary || state.summary;
   state.admin.editorData.sales = state.recentSales.slice(0, 16);
+  if (
+    state.selectedCategory !== "all"
+    && !state.categories.some((category) => category.code === state.selectedCategory)
+  ) {
+    state.selectedCategory = "all";
+  }
+  applyBusinessBranding();
+  updateModuleVisibility();
+  if (typeof syncCashierBranchOptions === "function") {
+    syncCashierBranchOptions();
+  }
+  const catalogsChanged =
+    previousCategories !== JSON.stringify((state.categories || []).map((category) => [category.id, category.code]))
+    || previousUnits !== JSON.stringify((state.units || []).map((unit) => [unit.id, unit.code, unit.step]))
+    || previousAttributes !== JSON.stringify((state.productAttributeDefinitions || []).map((definition) => [definition.id, definition.key]));
+  if (catalogsChanged && typeof syncAdminProductCatalogs === "function") {
+    syncAdminProductCatalogs();
+  }
   syncQuickImportItemsFromProducts();
   syncMerchandiseRequestProductsFromSnapshot();
   if (!options.skipPersist) {
-    saveSnapshot(buildPersistedSnapshot());
+    saveSnapshot(buildPersistedSnapshot(), {
+      persistPreparedSnapshot: options.persistPreparedSnapshot !== false,
+    });
   }
   renderSummary();
   renderCashierSession();
@@ -209,6 +325,15 @@ function applySnapshot(snapshot, options = {}) {
     renderAdminModal();
     renderAdminRecordLists();
   }
+}
+
+function applyPublicSnapshot(sourceSnapshot = buildPersistedSnapshot(), options = {}) {
+  const publicSnapshot = buildPublicSnapshotCacheView(sourceSnapshot);
+  applySnapshot(publicSnapshot, {
+    ...options,
+    persistPreparedSnapshot: false,
+  });
+  return publicSnapshot;
 }
 
 function rebuildInventoryDerivedState() {
@@ -291,8 +416,10 @@ function applyOptimisticSale(payload) {
   const tempSale = {
     id: `offline-${Date.now()}`,
     ticketNumber: `OFF-${Date.now().toString().slice(-6)}`,
+    clientSaleId: payload.clientSaleId || "",
     shift: payload.shift,
     cashier: payload.cashier,
+    branch: payload.branch,
     paymentMethod: payload.paymentMethod,
     subtotal: total,
     total,
@@ -364,11 +491,20 @@ function applyOptimisticSale(payload) {
   if (refs.adminModal?.classList.contains("open") && state.admin.inventoryExpanded) {
     renderInventory();
   }
+  return tempSale;
 }
 
 async function refreshCurrentSnapshot(branch = getActiveCashierBranch()) {
+  const snapshotHeaders = {
+    ...getCashierAuthHeaders(state.cashier.token || ""),
+    ...getAdminAuthHeaders(),
+    ...getOwnerAuthHeaders(),
+  };
   const snapshot = await performJsonRequest(
     `/api/bootstrap?branch=${encodeURIComponent(branch)}`,
+    {
+      headers: snapshotHeaders,
+    },
   );
   applySnapshot(snapshot);
   return snapshot;
@@ -392,7 +528,87 @@ async function loadAdminSnapshot(branch = getAdminBranch()) {
   return snapshot;
 }
 
+function getActiveAdminBranchOptions() {
+  const activeBranches = (state.admin.branches || [])
+    .filter((branch) => branch.active)
+    .map((branch) => ({
+      value: branch.code,
+      label: branch.name,
+    }));
+
+  return activeBranches.length > 0
+    ? activeBranches
+    : getBranchOptions().filter((option) => option.value !== "all");
+}
+
+function syncCashierBranchOptions() {
+  if (!refs.cashierAuthBranch) {
+    return;
+  }
+
+  const activeOptions = getBranchOptions().filter((option) => option.value !== "all");
+  const selectedValue = activeOptions.some((option) => option.value === refs.cashierAuthBranch.value)
+    ? refs.cashierAuthBranch.value
+    : state.cashier.branch || state.store.currentBranch || activeOptions[0]?.value || "";
+  setSelectOptions(refs.cashierAuthBranch, activeOptions, selectedValue);
+}
+
+function syncAdminCashierBranchOptions() {
+  if (!refs.adminCashierBranch) {
+    return;
+  }
+
+  const activeOptions = getActiveAdminBranchOptions();
+  const selectedValue = activeOptions.some((option) => option.value === refs.adminCashierBranch.value)
+    ? refs.adminCashierBranch.value
+    : activeOptions[0]?.value || "";
+  setSelectOptions(refs.adminCashierBranch, activeOptions, selectedValue);
+  syncCashierBranchOptions();
+}
+
+function resetAdminBranchForm(branch = null) {
+  if (!refs.adminBranchCode || !refs.adminBranchName || !refs.adminBranchTimezone || !refs.adminBranchActive) {
+    return;
+  }
+
+  refs.adminBranchCode.value = branch?.code || "";
+  refs.adminBranchCode.disabled = Boolean(branch?.code);
+  refs.adminBranchName.value = branch?.name || "";
+  refs.adminBranchTimezone.value = branch?.timezone || state.store.timezone || "America/Mexico_City";
+  refs.adminBranchActive.checked = branch ? Boolean(branch.active) : true;
+  if (refs.saveAdminBranchButton) {
+    refs.saveAdminBranchButton.dataset.branchCode = branch?.code || "";
+    refs.saveAdminBranchButton.textContent = branch ? "Guardar cambios" : "Guardar sucursal";
+  }
+}
+
+function openAdminBranchEditor(branchCode) {
+  const branch = (state.admin.branches || []).find((item) => item.code === branchCode);
+  if (!branch) {
+    showToast("No pude encontrar esa sucursal.", "error");
+    return;
+  }
+
+  resetAdminBranchForm(branch);
+  refs.adminBranchName?.focus();
+}
+
+async function loadAdminBranches() {
+  try {
+    const response = await requestAdminJson("/api/admin/branches");
+    state.admin.branches = Array.isArray(response.branches) ? response.branches : [];
+    markAdminWorkspaceLoaded("branches");
+  } catch (_error) {
+    state.admin.branches = [];
+  }
+
+  syncAdminCashierBranchOptions();
+  renderAdminBranches();
+  return state.admin.branches;
+}
+
 async function loadAdminCashiers(branch = getAdminBranch()) {
+  syncAdminCashierBranchOptions();
   const query =
     branch && branch !== "all" ? `?branch=${encodeURIComponent(branch)}` : "";
   try {
@@ -442,13 +658,39 @@ async function loadAdminAuditLogs(branch = getAdminBranch()) {
 }
 
 async function loadAdminConfig() {
+  state.admin.configLoading = true;
   try {
     const response = await requestAdminJson("/api/admin/settings");
     const settings = response.settings || {};
+    state.profile = response.businessProfile || state.profile;
+    state.enabledModules = Array.isArray(response.enabledModules) ? response.enabledModules : state.enabledModules;
+    state.adminCapabilities = Array.isArray(response.adminCapabilities) ? response.adminCapabilities : state.adminCapabilities;
+    state.categories = Array.isArray(response.categories)
+      ? response.categories.filter((category) => category.active !== false)
+      : state.categories;
+    state.units = Array.isArray(response.units)
+      ? response.units.filter((unit) => unit.active !== false)
+      : state.units;
+    state.productAttributeDefinitions = Array.isArray(response.productAttributeDefinitions)
+      ? response.productAttributeDefinitions.filter((definition) => definition.active !== false)
+      : state.productAttributeDefinitions;
     refs.configAllowNegativeStock.checked = settings["sales.allow_negative_stock"] === "true";
+    applyBusinessBranding();
+    updateModuleVisibility();
+    renderCategoryFilters();
+    if (typeof syncAdminProductCatalogs === "function") {
+      syncAdminProductCatalogs();
+    }
+    if (typeof renderAdminConfigPanel === "function") {
+      renderAdminConfigPanel();
+    }
     markAdminWorkspaceLoaded("config");
   } catch (error) {
-    showToast("Error al cargar configuraciones.", "error");
+    if (error.statusCode !== 403) {
+      showToast("Error al cargar configuraciones.", "error");
+    }
+  } finally {
+    state.admin.configLoading = false;
   }
 }
 
@@ -1031,10 +1273,29 @@ async function loadAdminMetrics() {
   if (typeof document !== "undefined" && document.hidden) {
     return;
   }
+  if (!hasAdminCapability("support_tools")) {
+    state.admin.metrics = null;
+    state.admin.backupsStatus = null;
+    state.admin.metricsLoading = false;
+    renderAdminModal();
+    return;
+  }
   state.admin.metricsLoading = true;
 
   try {
-    state.admin.metrics = await requestAdminJson("/api/admin/metrics");
+    const [metricsResult, backupStatusResult] = await Promise.allSettled([
+      requestAdminJson("/api/admin/metrics"),
+      hasAdminCapability("backups")
+        ? requestAdminJson("/api/admin/backups/status")
+        : Promise.resolve(null),
+    ]);
+
+    if (metricsResult.status === "fulfilled") {
+      state.admin.metrics = metricsResult.value;
+    }
+    if (backupStatusResult.status === "fulfilled") {
+      state.admin.backupsStatus = backupStatusResult.value || null;
+    }
   } catch (_error) {
     // Evita toasts repetidos si el panel admin queda abierto sin conexion.
   } finally {
@@ -1052,6 +1313,11 @@ function stopAdminMetricsPolling() {
 
 function startAdminMetricsPolling() {
   stopAdminMetricsPolling();
+  if (!hasAdminCapability("support_tools")) {
+    state.admin.metrics = null;
+    renderAdminModal();
+    return;
+  }
   void loadAdminMetrics();
   state.admin.pollTimerId = window.setInterval(() => {
     void loadAdminMetrics();
@@ -1067,21 +1333,36 @@ function toggleAdminInventoryPanel() {
 }
 
 async function openAdminModal() {
-  if (!state.admin.token) {
+  if (!state.online && !state.admin.authenticated) {
+    showToast("El admin necesita internet para validar la sesion.", "error");
+    return;
+  }
+
+  if (!state.admin.authenticated) {
     await openAdminAuthModal();
     return;
   }
 
-  try {
-    await requestAdminJson("/api/admin/auth/status");
-  } catch (error) {
-    state.admin.token = "";
-    writeStorageText(STORAGE_KEYS.adminToken, "");
-    await openAdminAuthModal();
-    return;
+  if (state.online) {
+    try {
+      await loadAdminAuthStatus();
+    } catch (error) {
+      if (!isNetworkError(error)) {
+        await openAdminAuthModal();
+        return;
+      }
+    }
+
+    if (!state.admin.authenticated) {
+      await openAdminAuthModal();
+      return;
+    }
   }
 
   setModalOpen(refs.adminModal, true);
+  if (refs.saveAdminBranchButton && !refs.saveAdminBranchButton.dataset.branchCode) {
+    resetAdminBranchForm();
+  }
   if (state.admin.inventoryExpanded) {
     renderInventory();
   }
@@ -1096,27 +1377,51 @@ function closeAdminModal() {
 }
 
 async function logoutAdmin() {
+  const branchBeforeLogout = state.cashier.branch || state.store.currentBranch || "carrizal";
   try {
-    await performJsonRequest("/api/admin/auth/logout", {
+    await requestAdminJson("/api/admin/auth/logout", {
       method: "POST",
-      headers: getAdminAuthHeaders(),
     });
   } catch (_error) {
     // Ignorar errores
   }
-  state.admin.token = "";
-  writeStorageText(STORAGE_KEYS.adminToken, "");
   state.admin.authenticated = false;
+  state.admin.csrfToken = "";
+  state.admin.sessionExpiresAt = null;
   closeAdminModal();
+  if (!state.cashier.authenticated && !state.owner.authenticated) {
+    applyPublicSnapshot(buildPersistedSnapshot());
+    if (state.online) {
+      try {
+        await refreshCurrentSnapshot(branchBeforeLogout);
+      } catch (_error) {
+        // Si falla el refresco publico, mantenemos la vista sanitizada local.
+      }
+    }
+  }
   showToast("Sesion cerrada", "info");
 }
 
 async function openAdminAuthModal() {
-  await loadAdminAuthStatus();
-  state.adminAuth.mode = state.admin.configured ? "login" : "setup";
+  if (!state.online && !state.admin.authenticated) {
+    showToast("Sin internet no puedo validar el acceso admin.", "error");
+    return;
+  }
+
+  if (state.online) {
+    await loadAdminAuthStatus();
+  }
+  state.adminAuth.mode = state.admin.configured
+    ? "login"
+    : state.admin.setupAllowed
+      ? "setup"
+      : "blocked";
   refs.adminAuthUsername.value = state.admin.username || "admin";
   refs.adminAuthPassword.value = "";
   refs.adminAuthConfirmPassword.value = "";
+  if (refs.adminAuthBootstrapToken) {
+    refs.adminAuthBootstrapToken.value = "";
+  }
   setModalOpen(refs.adminAuthModal, true);
   renderAdminAuthModal();
   window.requestAnimationFrame(() => refs.adminAuthUsername.focus());
@@ -1127,23 +1432,37 @@ function closeAdminAuthModal() {
 }
 
 async function submitAdminAuth() {
+  if (state.adminAuth.mode === "blocked") {
+    showToast("Este despliegue no permite crear el acceso admin por web.", "error");
+    return;
+  }
+
   const username = refs.adminAuthUsername.value.trim().toLowerCase();
   const password = refs.adminAuthPassword.value.trim();
   const confirmPassword = refs.adminAuthConfirmPassword.value.trim();
   const isSetup = state.adminAuth.mode === "setup";
+  const bootstrapToken = refs.adminAuthBootstrapToken?.value.trim() || "";
 
   if (username.length < 3) {
     showToast("El usuario admin debe tener al menos 3 caracteres.", "error");
     return;
   }
 
-  if (password.length < 4) {
-    showToast("La contrasena admin debe tener al menos 4 caracteres.", "error");
+  if (password.length < 8 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+    showToast("La contrasena admin debe tener 8+ caracteres, letras y numeros.", "error");
     return;
   }
 
   if (isSetup && password !== confirmPassword) {
     showToast("La confirmacion de contrasena no coincide.", "error");
+    return;
+  }
+  if (isSetup && !state.admin.setupAllowed) {
+    showToast("El setup inicial de admin esta bloqueado en este despliegue.", "error");
+    return;
+  }
+  if (isSetup && !bootstrapToken) {
+    showToast("Captura el token de bootstrap para crear el acceso admin.", "error");
     return;
   }
 
@@ -1155,6 +1474,7 @@ async function submitAdminAuth() {
       await performJsonRequest("/api/admin/auth/setup", {
         method: "POST",
         body: JSON.stringify({ username, password }),
+        headers: { "X-Bootstrap-Token": bootstrapToken },
       });
     }
 
@@ -1163,9 +1483,11 @@ async function submitAdminAuth() {
       body: JSON.stringify({ username, password }),
     });
     state.admin.username = username;
-    state.admin.token = loginResponse.token || "";
-    state.admin.authenticated = Boolean(state.admin.token);
-    writeStorageText(STORAGE_KEYS.adminToken, state.admin.token);
+    state.admin.configured = true;
+    state.admin.setupAllowed = false;
+    state.admin.authenticated = Boolean(loginResponse.authenticated);
+    state.admin.csrfToken = String(loginResponse.csrfToken || "");
+    state.admin.sessionExpiresAt = loginResponse.sessionExpiresAt || null;
     closeAdminAuthModal();
     openAdminModal();
   } catch (error) {
@@ -1176,10 +1498,391 @@ async function submitAdminAuth() {
   }
 }
 
+function registerOwnerRevealIntent() {
+  const now = Date.now();
+  if (now - state.ownerAuth.revealWindowStartedAt > 4500) {
+    state.ownerAuth.revealClicks = 0;
+  }
+
+  state.ownerAuth.revealClicks += 1;
+  state.ownerAuth.revealWindowStartedAt = now;
+  if (state.ownerAuth.revealClicks >= 5) {
+    state.ownerAuth.revealClicks = 0;
+    state.ownerAuth.revealWindowStartedAt = 0;
+    void openOwnerEntryPoint();
+  }
+}
+
+async function openOwnerEntryPoint() {
+  if (!state.online && !state.owner.authenticated) {
+    showToast("Sin internet no puedo validar el acceso owner.", "error");
+    return;
+  }
+
+  if (state.online) {
+    try {
+      await loadOwnerAuthStatus();
+    } catch (_error) {
+      // Ignorar y dejar que el modal de auth maneje el caso.
+    }
+  }
+
+  if (!state.owner.authenticated) {
+    await openOwnerAuthModal();
+    return;
+  }
+
+  await openOwnerConsoleModal();
+}
+
+async function openOwnerAuthModal() {
+  if (!state.online && !state.owner.authenticated) {
+    showToast("Sin internet no puedo validar el acceso owner.", "error");
+    return;
+  }
+
+  if (state.online) {
+    await loadOwnerAuthStatus();
+  }
+
+  state.ownerAuth.mode = state.owner.configured
+    ? "login"
+    : state.owner.setupAllowed
+      ? "setup"
+      : "blocked";
+  refs.ownerAuthUsername.value = state.owner.username || "owner";
+  refs.ownerAuthPassword.value = "";
+  refs.ownerAuthConfirmPassword.value = "";
+  if (refs.ownerAuthBootstrapToken) {
+    refs.ownerAuthBootstrapToken.value = "";
+  }
+  setModalOpen(refs.ownerAuthModal, true);
+  renderOwnerAuthModal();
+  window.requestAnimationFrame(() => refs.ownerAuthUsername.focus());
+}
+
+function closeOwnerAuthModal() {
+  setModalOpen(refs.ownerAuthModal, false);
+}
+
+async function submitOwnerAuth() {
+  if (state.ownerAuth.mode === "blocked") {
+    showToast("Este despliegue no permite crear el acceso owner por web.", "error");
+    return;
+  }
+
+  const username = refs.ownerAuthUsername.value.trim().toLowerCase();
+  const password = refs.ownerAuthPassword.value.trim();
+  const confirmPassword = refs.ownerAuthConfirmPassword.value.trim();
+  const isSetup = state.ownerAuth.mode === "setup";
+  const bootstrapToken = refs.ownerAuthBootstrapToken?.value.trim() || "";
+
+  if (username.length < 3) {
+    showToast("El usuario owner debe tener al menos 3 caracteres.", "error");
+    return;
+  }
+
+  if (password.length < 8 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+    showToast("La contrasena owner debe tener 8+ caracteres, letras y numeros.", "error");
+    return;
+  }
+
+  if (isSetup && password !== confirmPassword) {
+    showToast("La confirmacion de contrasena owner no coincide.", "error");
+    return;
+  }
+  if (isSetup && !state.owner.setupAllowed) {
+    showToast("El setup inicial de owner esta bloqueado en este despliegue.", "error");
+    return;
+  }
+  if (isSetup && !bootstrapToken) {
+    showToast("Captura el token de bootstrap para crear el owner inicial.", "error");
+    return;
+  }
+
+  state.ownerAuth.loading = true;
+  renderOwnerAuthModal();
+
+  try {
+    if (isSetup) {
+      await performJsonRequest("/api/owner/auth/setup", {
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+        headers: { "X-Bootstrap-Token": bootstrapToken },
+      });
+    }
+
+    const loginResponse = await performJsonRequest("/api/owner/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    state.owner.username = username;
+    state.owner.configured = true;
+    state.owner.setupAllowed = false;
+    state.owner.authenticated = Boolean(loginResponse.authenticated);
+    state.owner.csrfToken = String(loginResponse.csrfToken || "");
+    state.owner.sessionExpiresAt = loginResponse.sessionExpiresAt || null;
+    closeOwnerAuthModal();
+    await openOwnerConsoleModal();
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.ownerAuth.loading = false;
+    renderOwnerAuthModal();
+  }
+}
+
+function getOwnerSelectedModules() {
+  return refs.ownerModulesWrap
+    ? [...refs.ownerModulesWrap.querySelectorAll('input[type="checkbox"][data-owner-module-code]')]
+      .filter((input) => input.checked)
+      .map((input) => input.dataset.ownerModuleCode)
+    : [];
+}
+
+function getOwnerSelectedAdminCapabilities() {
+  return refs.ownerAdminSectionsWrap
+    ? [...refs.ownerAdminSectionsWrap.querySelectorAll('input[type="checkbox"][data-owner-capability-code]')]
+      .filter((input) => input.checked)
+      .map((input) => input.dataset.ownerCapabilityCode)
+    : [];
+}
+
+async function loadOwnerConsoleConfig() {
+  state.owner.loading = true;
+  renderOwnerConsoleModal();
+  try {
+    const [response, templatesResponse] = await Promise.all([
+      requestOwnerJson("/api/owner/config"),
+      requestOwnerJson("/api/owner/templates"),
+    ]);
+    state.owner.availableModules = Array.isArray(response.availableModules) ? response.availableModules : [];
+    state.owner.adminSections = Array.isArray(response.adminSections) ? response.adminSections : [];
+    state.owner.templates = Array.isArray(templatesResponse.templates) ? templatesResponse.templates : [];
+    state.enabledModules = Array.isArray(response.enabledModules) ? response.enabledModules : state.enabledModules;
+    state.adminCapabilities = Array.isArray(response.adminCapabilities) ? response.adminCapabilities : state.adminCapabilities;
+    state.profile = response.businessProfile || state.profile;
+    if (!state.owner.templates.some((template) => template.key === state.owner.templateReset.selectedTemplateKey)) {
+      state.owner.templateReset.selectedTemplateKey = state.owner.templates[0]?.key || "";
+    }
+    state.owner.templateReset.businessName = state.profile.businessName || "";
+    state.owner.templateReset.slug = state.profile.slug || "";
+    state.owner.accessLoaded = true;
+    applyBusinessBranding();
+    updateModuleVisibility();
+    if (refs.adminModal?.classList.contains("open")) {
+      renderAdminModal();
+    }
+  } catch (error) {
+    showToast(error.message || "No pude cargar la consola owner.", "error");
+  } finally {
+    state.owner.loading = false;
+    renderOwnerConsoleModal();
+  }
+}
+
+async function openOwnerConsoleModal() {
+  if (!state.owner.authenticated) {
+    await openOwnerAuthModal();
+    return;
+  }
+
+  setModalOpen(refs.ownerConsoleModal, true);
+  renderOwnerConsoleModal();
+  await loadOwnerConsoleConfig();
+}
+
+function closeOwnerConsoleModal() {
+  setModalOpen(refs.ownerConsoleModal, false);
+}
+
+async function submitOwnerConsole() {
+  if (!state.owner.authenticated) {
+    await openOwnerAuthModal();
+    return;
+  }
+
+  const selectedModules = getOwnerSelectedModules();
+  const selectedAdminCapabilities = getOwnerSelectedAdminCapabilities();
+  state.owner.saving = true;
+  renderOwnerConsoleModal();
+  try {
+    const response = await requestOwnerJson("/api/owner/config", {
+      method: "PATCH",
+      body: JSON.stringify({
+        enabledModules: selectedModules,
+        adminCapabilities: selectedAdminCapabilities,
+      }),
+    });
+    state.owner.availableModules = Array.isArray(response.availableModules) ? response.availableModules : state.owner.availableModules;
+    state.owner.adminSections = Array.isArray(response.adminSections) ? response.adminSections : state.owner.adminSections;
+    state.enabledModules = Array.isArray(response.enabledModules) ? response.enabledModules : state.enabledModules;
+    state.adminCapabilities = Array.isArray(response.adminCapabilities) ? response.adminCapabilities : state.adminCapabilities;
+    state.owner.accessLoaded = true;
+    updateModuleVisibility();
+    if (refs.adminModal?.classList.contains("open")) {
+      renderAdminModal();
+    }
+    showToast("Panel owner actualizado.", "success");
+  } catch (error) {
+    showToast(error.message || "No pude guardar la consola owner.", "error");
+  } finally {
+    state.owner.saving = false;
+    renderOwnerConsoleModal();
+  }
+}
+
+async function applyOwnerTemplateReset() {
+  if (!state.owner.authenticated) {
+    await openOwnerAuthModal();
+    return;
+  }
+
+  const selectedTemplateKey = refs.ownerTemplateSelect?.value || "";
+  const businessName = refs.ownerTemplateBusinessName?.value.trim() || "";
+  const slug = refs.ownerTemplateSlug?.value.trim() || "";
+  const workbookPath = refs.ownerTemplateWorkbookPath?.value.trim() || "";
+  const confirmText = refs.ownerTemplateConfirmText?.value.trim() || "";
+  const confirmReset = Boolean(refs.ownerTemplateConfirmReset?.checked);
+  const currentSlug = String(state.profile?.slug || "");
+
+  state.owner.templateReset.selectedTemplateKey = selectedTemplateKey;
+  state.owner.templateReset.businessName = businessName;
+  state.owner.templateReset.slug = slug;
+  state.owner.templateReset.workbookPath = workbookPath;
+  state.owner.templateReset.confirmText = confirmText;
+  state.owner.templateReset.confirmReset = confirmReset;
+
+  if (!selectedTemplateKey) {
+    showToast("Selecciona una plantilla antes de reiniciar el negocio.", "error");
+    renderOwnerConsoleModal();
+    return;
+  }
+  if (!businessName || !slug || !workbookPath) {
+    showToast("Completa nombre, slug y ruta del Excel antes de continuar.", "error");
+    renderOwnerConsoleModal();
+    return;
+  }
+  if (!confirmReset) {
+    showToast("Debes confirmar que entiendes el reinicio total del negocio.", "error");
+    renderOwnerConsoleModal();
+    return;
+  }
+  if (!currentSlug || confirmText !== currentSlug) {
+    showToast("La confirmacion debe coincidir exactamente con el slug actual.", "error");
+    renderOwnerConsoleModal();
+    return;
+  }
+
+  state.owner.templateReset.applying = true;
+  renderOwnerConsoleModal();
+
+  try {
+    const response = await requestOwnerJson(`/api/owner/templates/${encodeURIComponent(selectedTemplateKey)}/apply`, {
+      method: "POST",
+      body: JSON.stringify({
+        businessName,
+        slug,
+        workbookPath,
+        confirmReset: true,
+        confirmText,
+      }),
+      timeout: 30000,
+    });
+    state.profile = response.businessProfile || state.profile;
+    state.enabledModules = Array.isArray(response.enabledModules) ? response.enabledModules : state.enabledModules;
+    state.adminCapabilities = Array.isArray(response.adminCapabilities) ? response.adminCapabilities : state.adminCapabilities;
+    state.categories = Array.isArray(response.categories)
+      ? response.categories.filter((category) => category.active !== false)
+      : state.categories;
+    state.units = Array.isArray(response.units)
+      ? response.units.filter((unit) => unit.active !== false)
+      : state.units;
+    state.productAttributeDefinitions = Array.isArray(response.productAttributeDefinitions)
+      ? response.productAttributeDefinitions.filter((definition) => definition.active !== false)
+      : state.productAttributeDefinitions;
+    if (response.snapshot) {
+      applySnapshot(response.snapshot);
+    } else {
+      await refreshCurrentSnapshot();
+    }
+    state.admin.configured = false;
+    state.admin.authenticated = false;
+    state.admin.csrfToken = "";
+    state.admin.sessionExpiresAt = null;
+    state.admin.setupAllowed = false;
+    state.owner.configured = true;
+    state.owner.authenticated = false;
+    state.owner.csrfToken = "";
+    state.owner.sessionExpiresAt = null;
+    state.owner.setupAllowed = false;
+    state.owner.accessLoaded = false;
+    state.owner.templateReset.confirmText = "";
+    state.owner.templateReset.confirmReset = false;
+    closeOwnerConsoleModal();
+    closeOwnerAuthModal();
+    showToast("Plantilla aplicada y catalogo reconstruido. Vuelve a iniciar sesion como owner o admin.", "success");
+  } catch (error) {
+    showToast(error.message || "No pude aplicar la plantilla completa.", "error");
+  } finally {
+    state.owner.templateReset.applying = false;
+    renderOwnerConsoleModal();
+  }
+}
+
+async function logoutOwner() {
+  const branchBeforeLogout = state.cashier.branch || state.store.currentBranch || "carrizal";
+  try {
+    await requestOwnerJson("/api/owner/auth/logout", {
+      method: "POST",
+    });
+  } catch (_error) {
+    // Ignorar errores para no trabar la salida owner.
+  }
+
+  state.owner.authenticated = false;
+  state.owner.csrfToken = "";
+  state.owner.sessionExpiresAt = null;
+  state.owner.setupAllowed = false;
+  state.owner.accessLoaded = false;
+  closeOwnerConsoleModal();
+  closeOwnerAuthModal();
+  if (!state.cashier.authenticated && !state.admin.authenticated) {
+    applyPublicSnapshot(buildPersistedSnapshot());
+    if (state.online) {
+      try {
+        await refreshCurrentSnapshot(branchBeforeLogout);
+      } catch (_error) {
+        // Si falla el refresco publico, mantenemos la vista sanitizada local.
+      }
+    }
+  }
+  showToast("Sesion owner cerrada", "info");
+}
+
+async function ensureAdminActionAccess(capabilityCode, blockedMessage) {
+  if (!state.admin.authenticated) {
+    await openAdminAuthModal();
+    return false;
+  }
+
+  if (!hasAdminCapability(capabilityCode)) {
+    showToast(blockedMessage || "Esta seccion del admin esta bloqueada por el owner.", "error");
+    return false;
+  }
+
+  return true;
+}
+
 async function downloadDatabase() {
+  if (!await ensureAdminActionAccess("backups", "La descarga de base de datos esta bloqueada por el owner.")) {
+    return;
+  }
+
   try {
     const response = await fetch("/api/admin/download-db", {
       headers: getAdminAuthHeaders(),
+      credentials: "same-origin",
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
@@ -1229,6 +1932,7 @@ async function installDatabase(event) {
     const response = await fetch("/api/admin/install-db", {
       method: "POST",
       headers: getAdminAuthHeaders(),
+      credentials: "same-origin",
       body: formData,
     });
 
@@ -1255,6 +1959,11 @@ async function installDatabase(event) {
 async function installDatabaseFromPc(event) {
   const file = event.target.files?.[0];
   if (!file) {
+    return;
+  }
+
+  if (!await ensureAdminActionAccess("backups", "La instalacion de bases esta bloqueada por el owner.")) {
+    refs.installDbInput.value = "";
     return;
   }
 
@@ -1294,6 +2003,7 @@ async function installDatabaseFromPc(event) {
     const response = await fetch("/api/admin/install-db", {
       method: "POST",
       headers: getAdminAuthHeaders(),
+      credentials: "same-origin",
       body: formData,
     });
 
@@ -1323,6 +2033,11 @@ async function installDatabaseFromPc(event) {
 async function installExportWorkbookFromPc(event) {
   const file = event.target.files?.[0];
   if (!file) {
+    return;
+  }
+
+  if (!await ensureAdminActionAccess("backups", "La instalacion de workbooks esta bloqueada por el owner.")) {
+    refs.installWorkbookInput.value = "";
     return;
   }
 
@@ -1361,6 +2076,7 @@ async function installExportWorkbookFromPc(event) {
     const response = await fetch("/api/admin/install-export-workbook", {
       method: "POST",
       headers: getAdminAuthHeaders(),
+      credentials: "same-origin",
       body: formData,
     });
 
@@ -1419,10 +2135,195 @@ async function refreshAdminDevPanelData() {
 
 async function retryOfflineSyncFromDev() {
   try {
-    await syncAllOfflineData();
-    showToast("Se relanzo la sincronizacion offline.", "success");
+    await syncAllOfflineData({ forceBlocked: true });
+    const blockedQueueCount =
+      typeof getBlockedPendingOperationCount === "function" ? getBlockedPendingOperationCount() : 0;
+    showToast(
+      blockedQueueCount > 0
+        ? "Se reintento la sincronizacion, pero siguen quedando ventas pendientes con error."
+        : "Se relanzo la sincronizacion offline.",
+      blockedQueueCount > 0 ? "info" : "success",
+    );
   } catch (error) {
     showToast(error.message || "No fue posible relanzar la sincronizacion.", "error");
+  }
+}
+
+function refreshOfflineSalesUi() {
+  if (typeof renderSyncStatus === "function") {
+    renderSyncStatus();
+  }
+  if (typeof renderCashierSession === "function") {
+    renderCashierSession();
+  }
+  if (typeof renderRecentSales === "function") {
+    renderRecentSales();
+  }
+  if (typeof renderAdminDevPanel === "function") {
+    renderAdminDevPanel();
+  }
+  if (typeof renderOwnerConsoleModal === "function") {
+    renderOwnerConsoleModal();
+  }
+}
+
+function triggerJsonDownload(payload, filename) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: "application/json",
+  });
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+function buildOfflineSalesAuditPayload(options = {}) {
+  const pendingOnly = Boolean(options.pendingOnly);
+  const targetClientSaleId = String(options.clientSaleId || "").trim();
+  const records = (Array.isArray(state.offlineSales) ? state.offlineSales : [])
+    .filter((record) => {
+      if (targetClientSaleId && String(record?.clientSaleId || "") !== targetClientSaleId) {
+        return false;
+      }
+      if (pendingOnly) {
+        return isOfflineSaleOutstandingStatus(String(record?.status || "pending"));
+      }
+      return true;
+    })
+    .map((record) => {
+      const displayState = getOfflineSaleDisplayState(record);
+      return {
+        clientSaleId: record.clientSaleId,
+        localSaleId: record.localSaleId,
+        localTicketNumber: record.localTicketNumber,
+        branch: record.branch,
+        cashier: record.cashier,
+        shift: record.shift,
+        paymentMethod: record.paymentMethod,
+        total: record.total,
+        itemCount: record.itemCount,
+        createdAt: record.createdAt,
+        queuedAt: record.queuedAt,
+        status: displayState.status,
+        statusLabel: displayState.label,
+        statusNote: displayState.note,
+        retryCount: record.retryCount,
+        lastSyncAttemptAt: record.lastSyncAttemptAt,
+        syncedAt: record.syncedAt,
+        syncedTicketNumber: record.syncedTicketNumber,
+        lastError: record.lastError,
+        lastErrorCode: record.lastErrorCode,
+        rejectedAt: record.rejectedAt,
+        rejectedReason: record.rejectedReason,
+        reviewReason: record.reviewReason,
+        conflicts: displayState.conflicts,
+        requestPayload: record.requestPayload,
+        items: record.items,
+      };
+    });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    deviceId: typeof getLocalDeviceId === "function" ? getLocalDeviceId() : "",
+    online: state.online,
+    cashier: {
+      authenticated: state.cashier.authenticated,
+      name: state.cashier.name,
+      branch: state.cashier.branch,
+      hasToken: Boolean(state.cashier.token),
+    },
+    pendingQueueCount: state.pendingQueue.length,
+    offlineSales: records,
+  };
+}
+
+function downloadOfflineSalesAudit(options = {}) {
+  const payload = buildOfflineSalesAuditPayload(options);
+  if (!Array.isArray(payload.offlineSales) || payload.offlineSales.length === 0) {
+    showToast(
+      options.pendingOnly
+        ? "No hay ventas offline pendientes para descargar."
+        : "No hay ventas offline registradas en este dispositivo.",
+      "info",
+    );
+    return;
+  }
+
+  const suffix = options.pendingOnly ? "offline-pendientes" : "offline-auditoria";
+  triggerJsonDownload(
+    payload,
+    `${state.profile?.slug || "retail-pos"}-${suffix}-${toDateInputValue()}.json`,
+  );
+}
+
+function downloadOfflineSalesAuditFromStatus() {
+  downloadOfflineSalesAudit({ pendingOnly: true });
+}
+
+function downloadOfflineSalesAuditFromPanel() {
+  downloadOfflineSalesAudit();
+}
+
+async function retryAllOfflineSalesFromPanel() {
+  const pendingOfflineSalesCount = getPendingOfflineSalesCount();
+  if (pendingOfflineSalesCount === 0) {
+    showToast("No hay ventas offline pendientes por sincronizar.", "info");
+    return;
+  }
+
+  try {
+    await syncAllOfflineData({ forceBlocked: true });
+    refreshOfflineSalesUi();
+    const stillPending = getPendingOfflineSalesCount();
+    showToast(
+      stillPending > 0
+        ? `Se reintento la sincronizacion. Aun quedan ${stillPending} venta(s) por resolver.`
+        : "Se sincronizaron todas las ventas offline pendientes.",
+      stillPending > 0 ? "info" : "success",
+    );
+  } catch (error) {
+    showToast(error.message || "No pude reintentar las ventas offline.", "error");
+  }
+}
+
+async function handleOfflineSaleAction(action, clientSaleId) {
+  const safeClientSaleId = String(clientSaleId || "").trim();
+  if (!safeClientSaleId) {
+    showToast("No pude identificar esa venta offline.", "error");
+    return;
+  }
+
+  try {
+    if (action === "retry") {
+      await retryOfflineSaleByClientSaleId(safeClientSaleId);
+      showToast("Reintento programado para esa venta offline.", "success");
+    } else if (action === "reject") {
+      if (!window.confirm("Esta venta dejara de intentar sincronizarse automaticamente. ¿Quieres marcarla como rechazada?")) {
+        return;
+      }
+      markOfflineSaleRejected(
+        safeClientSaleId,
+        "Marcada manualmente como rechazada desde el panel local.",
+      );
+      showToast("Venta offline marcada como rechazada.", "info");
+    } else if (action === "reactivate") {
+      reactivateOfflineSaleRecord(safeClientSaleId);
+      showToast("Venta offline reactivada y devuelta a la cola.", "success");
+    } else if (action === "download") {
+      downloadOfflineSalesAudit({ clientSaleId: safeClientSaleId });
+      return;
+    } else {
+      showToast("Accion offline no reconocida.", "error");
+      return;
+    }
+  } catch (error) {
+    showToast(error.message || "No pude completar la accion sobre la venta offline.", "error");
+  } finally {
+    refreshOfflineSalesUi();
   }
 }
 
@@ -1433,6 +2334,7 @@ function downloadDebugStateFromDev() {
     online: state.online,
     syncingQueue: state.syncingQueue,
     pendingQueue: state.pendingQueue,
+    offlineSales: state.offlineSales,
     registerEvents: state.register.events,
     performance: state.performance,
     summary: state.summary,
@@ -1446,17 +2348,10 @@ function downloadDebugStateFromDev() {
     snapshot: buildPersistedSnapshot(),
   };
 
-  const blob = new Blob([JSON.stringify(debugPayload, null, 2)], {
-    type: "application/json",
-  });
-  const objectUrl = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = `cremeria-rincon-debug-${toDateInputValue()}.json`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(objectUrl);
+  triggerJsonDownload(
+    debugPayload,
+    `${state.profile?.slug || "retail-pos"}-debug-${toDateInputValue()}.json`,
+  );
 }
 
 async function openAdminEditor(kind, id) {
@@ -1547,6 +2442,66 @@ async function saveAdminEditor() {
   }
 }
 
+async function submitAdminBranch() {
+  const editingCode = String(refs.saveAdminBranchButton?.dataset.branchCode || "").trim();
+  const code = refs.adminBranchCode?.value.trim();
+  const name = refs.adminBranchName?.value.trim();
+  const timezone = refs.adminBranchTimezone?.value.trim() || state.store.timezone || "America/Mexico_City";
+  const active = Boolean(refs.adminBranchActive?.checked);
+
+  if ((!editingCode && !code) || !name) {
+    showToast("Completa codigo y nombre de la sucursal.", "error");
+    return;
+  }
+
+  const payload = {
+    code: editingCode || code,
+    name,
+    timezone,
+    active,
+  };
+
+  try {
+    const url = editingCode
+      ? `/api/admin/branches/${encodeURIComponent(editingCode)}`
+      : "/api/admin/branches";
+    const method = editingCode ? "PATCH" : "POST";
+    await requestAdminJson(url, {
+      method,
+      body: JSON.stringify(payload),
+    });
+    await refreshAdminWorkspace({
+      ...getAdminWorkspaceFullOptions(getAdminBranch(), true),
+      branches: true,
+      snapshot: true,
+      cashiers: true,
+    });
+    resetAdminBranchForm();
+    showToast(editingCode ? "Sucursal actualizada." : "Sucursal creada.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function toggleAdminBranch(branchCode, isActive) {
+  try {
+    await requestAdminJson(`/api/admin/branches/${encodeURIComponent(branchCode)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ active: !isActive }),
+    });
+    await refreshAdminWorkspace({
+      ...getAdminWorkspaceFullOptions(getAdminBranch(), true),
+      branches: true,
+      snapshot: true,
+      cashiers: true,
+    });
+    resetAdminBranchForm();
+    showToast("Estado de sucursal actualizado.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
 async function submitAdminCashier() {
   const name = refs.adminCashierName.value.trim();
   const branch = refs.adminCashierBranch.value;
@@ -1596,30 +2551,293 @@ async function deleteAdminCashier(cashierId) {
   }
 }
 
+function getAdminSelectedModules() {
+  if (!refs.configModulesWrap) {
+    return [];
+  }
+
+  return [...refs.configModulesWrap.querySelectorAll('input[type="checkbox"][data-module-code]')]
+    .filter((input) => input.checked)
+    .map((input) => input.dataset.moduleCode)
+    .filter(Boolean);
+}
+
+function collectAdminProductAttributes() {
+  if (!refs.adminNewProductAttributes) {
+    return {};
+  }
+
+  return [...refs.adminNewProductAttributes.querySelectorAll("[data-attribute-key]")]
+    .reduce((attributes, input) => {
+      const attributeKey = input.dataset.attributeKey;
+      if (!attributeKey) {
+        return attributes;
+      }
+
+      if (input.type === "checkbox") {
+        attributes[attributeKey] = input.checked;
+        return attributes;
+      }
+
+      const rawValue = String(input.value || "").trim();
+      if (!rawValue) {
+        return attributes;
+      }
+
+      attributes[attributeKey] = input.dataset.attributeType === "number"
+        ? toNumber(rawValue, 0)
+        : rawValue;
+      return attributes;
+    }, {});
+}
+
+function resetAdminProductForm() {
+  refs.adminNewProductName.value = "";
+  refs.adminNewProductPrice.value = "";
+  refs.adminNewProductStock.value = "0";
+  refs.adminNewProductMinStock.value = "0";
+  if (refs.adminNewProductCost) refs.adminNewProductCost.value = "";
+  if (refs.adminNewProductSku) refs.adminNewProductSku.value = "";
+  if (refs.adminNewProductBarcode) refs.adminNewProductBarcode.value = "";
+  if (refs.adminNewProductBrand) refs.adminNewProductBrand.value = "";
+  if (refs.adminNewProductSupplier) refs.adminNewProductSupplier.value = "";
+  if (refs.adminNewProductPackSize) refs.adminNewProductPackSize.value = "";
+  if (refs.adminNewProductAttributes) {
+    refs.adminNewProductAttributes.querySelectorAll("input, select").forEach((input) => {
+      if (input.type === "checkbox") {
+        input.checked = false;
+      } else {
+        input.value = "";
+      }
+    });
+  }
+}
+
 async function submitAdminConfig() {
-  const updates = {
-    "sales.allow_negative_stock": refs.configAllowNegativeStock.checked ? "true" : "false",
+  const payload = {
+    settings: {
+      "sales.allow_negative_stock": refs.configAllowNegativeStock.checked ? "true" : "false",
+    },
+    businessProfile: {
+      businessName: refs.configBusinessName?.value.trim(),
+      shortName: refs.configShortName?.value.trim(),
+      slug: refs.configSlug?.value.trim(),
+      timezone: refs.configTimezone?.value.trim(),
+      locale: refs.configLocale?.value.trim(),
+      currencyCode: refs.configCurrencyCode?.value.trim(),
+      ticketPrefix: refs.configTicketPrefix?.value.trim(),
+    },
+    enabledModules: getAdminSelectedModules(),
   };
 
   try {
-    await requestAdminJson("/api/admin/settings", {
+    const response = await requestAdminJson("/api/admin/settings", {
       method: "PATCH",
-      body: JSON.stringify(updates),
+      body: JSON.stringify(payload),
     });
+    state.profile = response.businessProfile || state.profile;
+    state.enabledModules = Array.isArray(response.enabledModules) ? response.enabledModules : state.enabledModules;
+    state.adminCapabilities = Array.isArray(response.adminCapabilities) ? response.adminCapabilities : state.adminCapabilities;
+    state.categories = Array.isArray(response.categories)
+      ? response.categories.filter((category) => category.active !== false)
+      : state.categories;
+    state.units = Array.isArray(response.units)
+      ? response.units.filter((unit) => unit.active !== false)
+      : state.units;
+    state.productAttributeDefinitions = Array.isArray(response.productAttributeDefinitions)
+      ? response.productAttributeDefinitions.filter((definition) => definition.active !== false)
+      : state.productAttributeDefinitions;
+    applyBusinessBranding();
+    updateModuleVisibility();
+    if (typeof syncAdminProductCatalogs === "function") {
+      syncAdminProductCatalogs();
+    }
+    if (typeof renderAdminConfigPanel === "function") {
+      renderAdminConfigPanel();
+    }
     showToast("Configuraciones guardadas.", "success");
   } catch (error) {
     showToast(error.message, "error");
   }
 }
 
+async function applyAdminBusinessTemplate() {
+  const templateKey = refs.configTemplateSelect?.value || "";
+  if (!templateKey) {
+    showToast("Selecciona una plantilla para aplicar.", "error");
+    return;
+  }
+
+  if (!window.confirm("Esto limpiara productos, cajeros, ventas e historial operativo del negocio actual.")) {
+    return;
+  }
+
+  try {
+    const response = await requestAdminJson(`/api/admin/templates/${encodeURIComponent(templateKey)}/apply`, {
+      method: "POST",
+      body: JSON.stringify({
+        businessName: refs.configBusinessName?.value.trim(),
+        slug: refs.configSlug?.value.trim(),
+      }),
+    });
+    state.profile = response.businessProfile || state.profile;
+    state.enabledModules = Array.isArray(response.enabledModules) ? response.enabledModules : state.enabledModules;
+    state.categories = Array.isArray(response.categories)
+      ? response.categories.filter((category) => category.active !== false)
+      : state.categories;
+    state.units = Array.isArray(response.units)
+      ? response.units.filter((unit) => unit.active !== false)
+      : state.units;
+    state.productAttributeDefinitions = Array.isArray(response.productAttributeDefinitions)
+      ? response.productAttributeDefinitions.filter((definition) => definition.active !== false)
+      : state.productAttributeDefinitions;
+    resetAdminProductForm();
+    await refreshCurrentSnapshot();
+    await refreshAdminWorkspace({ ...getAdminWorkspaceFullOptions("all", true), force: true });
+    showToast(`Plantilla ${templateKey} aplicada.`, "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function createAdminCategory() {
+  const payload = {
+    code: refs.configCategoryCode?.value.trim(),
+    label: refs.configCategoryLabel?.value.trim(),
+    sortOrder: Number(refs.configCategorySort?.value || state.categories.length),
+  };
+  if (!payload.code || !payload.label) {
+    showToast("Captura codigo y etiqueta de la categoria.", "error");
+    return;
+  }
+
+  try {
+    await requestAdminJson("/api/admin/categories", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    refs.configCategoryCode.value = "";
+    refs.configCategoryLabel.value = "";
+    refs.configCategorySort.value = "";
+    await loadAdminConfig();
+    await refreshCurrentSnapshot();
+    showToast("Categoria creada.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function deactivateAdminCategory(categoryId) {
+  try {
+    await requestAdminJson(`/api/admin/categories/${categoryId}`, { method: "DELETE" });
+    await loadAdminConfig();
+    await refreshCurrentSnapshot();
+    showToast("Categoria desactivada.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function createAdminUnit() {
+  const allowDecimals = refs.configUnitAllowDecimals?.checked !== false;
+  const payload = {
+    code: refs.configUnitCode?.value.trim(),
+    label: refs.configUnitLabel?.value.trim(),
+    step: Number(refs.configUnitStep?.value || (allowDecimals ? 0.25 : 1)),
+    allowDecimals,
+    sortOrder: Number(refs.configUnitSort?.value || state.units.length),
+  };
+  if (!payload.code || !payload.label) {
+    showToast("Captura codigo y etiqueta de la unidad.", "error");
+    return;
+  }
+
+  try {
+    await requestAdminJson("/api/admin/units", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    refs.configUnitCode.value = "";
+    refs.configUnitLabel.value = "";
+    refs.configUnitStep.value = "";
+    refs.configUnitSort.value = "";
+    refs.configUnitAllowDecimals.checked = true;
+    await loadAdminConfig();
+    await refreshCurrentSnapshot();
+    showToast("Unidad creada.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function deactivateAdminUnit(unitId) {
+  try {
+    await requestAdminJson(`/api/admin/units/${unitId}`, { method: "DELETE" });
+    await loadAdminConfig();
+    await refreshCurrentSnapshot();
+    showToast("Unidad desactivada.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function createAdminProductAttribute() {
+  const options = String(refs.configAttributeOptions?.value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const payload = {
+    key: refs.configAttributeKey?.value.trim(),
+    label: refs.configAttributeLabel?.value.trim(),
+    valueType: refs.configAttributeType?.value || "text",
+    required: Boolean(refs.configAttributeRequired?.checked),
+    sortOrder: Number(refs.configAttributeSort?.value || state.productAttributeDefinitions.length),
+    options,
+  };
+  if (!payload.key || !payload.label) {
+    showToast("Captura clave y etiqueta del atributo.", "error");
+    return;
+  }
+
+  try {
+    await requestAdminJson("/api/admin/product-attributes", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    refs.configAttributeKey.value = "";
+    refs.configAttributeLabel.value = "";
+    refs.configAttributeOptions.value = "";
+    refs.configAttributeSort.value = "";
+    refs.configAttributeRequired.checked = false;
+    await loadAdminConfig();
+    showToast("Atributo creado.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function deactivateAdminProductAttribute(attributeId) {
+  try {
+    await requestAdminJson(`/api/admin/product-attributes/${attributeId}`, { method: "DELETE" });
+    await loadAdminConfig();
+    showToast("Atributo desactivado.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
 async function reimportCatalog() {
+  if (!await ensureAdminActionAccess("daily_flow", "La reimportacion de catalogo esta bloqueada por el owner.")) {
+    return;
+  }
+
   refs.refreshCatalogButton.disabled = true;
   refs.refreshCatalogButton.textContent = "Importando...";
 
   try {
     const response = await requestAdminJson("/api/admin/products", {
       method: "POST",
-      body: JSON.stringify({ workbookPath: "Queseria El rincon V1.5.xlsx" }),
+      body: JSON.stringify({ workbookPath: refs.catalogWorkbookPath?.value.trim() || "" }),
     });
     await refreshCurrentSnapshot();
     await refreshAdminWorkspace({ ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true });
@@ -1639,11 +2857,18 @@ async function createAdminProduct() {
   const payload = {
     branch: getAdminActionBranch(),
     name: refs.adminNewProductName.value.trim(),
-    category: refs.adminNewProductCategory.value,
-    unit: refs.adminNewProductUnit.value,
+    categoryId: Number(refs.adminNewProductCategory.value || 0) || refs.adminNewProductCategory.value,
+    unitId: Number(refs.adminNewProductUnit.value || 0) || refs.adminNewProductUnit.value,
     price: roundMoney(refs.adminNewProductPrice.value),
+    cost: roundMoney(refs.adminNewProductCost?.value || 0),
     stock: roundStock(refs.adminNewProductStock.value),
     minStock: roundStock(refs.adminNewProductMinStock.value),
+    sku: refs.adminNewProductSku?.value.trim(),
+    barcode: refs.adminNewProductBarcode?.value.trim(),
+    brand: refs.adminNewProductBrand?.value.trim(),
+    supplierName: refs.adminNewProductSupplier?.value.trim(),
+    packSize: refs.adminNewProductPackSize?.value.trim(),
+    attributes: collectAdminProductAttributes(),
   };
 
   if (!payload.name) {
@@ -1656,10 +2881,7 @@ async function createAdminProduct() {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    refs.adminNewProductName.value = "";
-    refs.adminNewProductPrice.value = "";
-    refs.adminNewProductStock.value = "0";
-    refs.adminNewProductMinStock.value = "0";
+    resetAdminProductForm();
     await refreshCurrentSnapshot();
     await refreshAdminWorkspace({ ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true });
     showToast("Producto agregado correctamente.", "success");
@@ -1693,6 +2915,16 @@ async function removeAdminProduct(row) {
 }
 
 function exportWorkbook() {
+  if (!state.admin.authenticated) {
+    void openAdminAuthModal();
+    return;
+  }
+
+  if (!hasAdminCapability("backups")) {
+    showToast("La exportacion de Excel esta bloqueada por el owner.", "error");
+    return;
+  }
+
   const branch = getAdminBranch();
   const scope = "store-day";
   const selectedDate = refs.exportDateInput?.value || toDateInputValue();
@@ -1706,6 +2938,7 @@ function exportWorkbook() {
 
   fetch(`/api/export-workbook?branch=${encodeURIComponent(branch)}&scope=${encodeURIComponent(scope)}&baseDate=${encodeURIComponent(selectedDate)}`, {
     headers: getAdminAuthHeaders(),
+    credentials: "same-origin",
   })
     .then(async (response) => {
       if (!response.ok) {
@@ -1719,7 +2952,7 @@ function exportWorkbook() {
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = objectUrl;
-      anchor.download = `cremeria-rincon-export-${branch}-${selectedDate}.xlsx`;
+      anchor.download = `${state.profile?.slug || "retail-pos"}-export-${branch}-${selectedDate}.xlsx`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();

@@ -68,6 +68,9 @@ function markConnectionOffline() {
     refs.socketStatus.textContent = "Sin conexion";
   }
   renderSyncStatus();
+  if (typeof navigator === "undefined" || navigator.onLine !== false) {
+    scheduleConnectionRecovery("network-error");
+  }
 }
 
 async function performJsonRequest(url, options = {}) {
@@ -92,6 +95,7 @@ async function performJsonRequest(url, options = {}) {
       const response = await fetch(url, {
         ...fetchOptions,
         signal: requestController.signal,
+        credentials: fetchOptions.credentials || "same-origin",
         headers: {
           "Content-Type": "application/json",
           ...(headers || {}),
@@ -136,13 +140,28 @@ function isNetworkError(error) {
   return error instanceof TypeError || error?.name === "AbortError";
 }
 
+function isAdminSessionFailure(error) {
+  if (!error) {
+    return false;
+  }
+
+  if (error.statusCode === 401) {
+    return true;
+  }
+
+  if (error.statusCode !== 403) {
+    return false;
+  }
+
+  const message = String(error.message || "").toLowerCase();
+  return message.includes("sesion admin") || message.includes("validacion de seguridad");
+}
+
 function getAdminAuthHeaders() {
-  return state.admin.token
-    ? {
-        Authorization: `Bearer ${state.admin.token}`,
-        "x-admin-user": state.admin.username || "admin",
-      }
-    : {};
+  return {
+    ...(state.admin.username ? { "x-admin-user": state.admin.username } : {}),
+    ...(state.admin.csrfToken ? { "x-csrf-token": state.admin.csrfToken } : {}),
+  };
 }
 
 function getCashierAuthHeaders(token = state.cashier.token) {
@@ -153,28 +172,303 @@ function getCashierAuthHeaders(token = state.cashier.token) {
     : {};
 }
 
+function buildQueuedOperationId() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+function inferQueuedOperationKind(operation = {}) {
+  const method = String(operation.method || "GET").toUpperCase();
+  if (operation.url === "/api/sales" && method === "POST") {
+    return "sale";
+  }
+
+  return "request";
+}
+
+function normalizeQueuedOperation(operation = {}) {
+  const normalized = {
+    id: buildQueuedOperationId(),
+    kind: "request",
+    queuedAt: new Date().toISOString(),
+    headers: {},
+    syncAttempts: 0,
+    syncBlocked: false,
+    lastSyncAttemptAt: null,
+    lastSyncError: "",
+    lastSyncErrorCode: null,
+    ...operation,
+  };
+
+  normalized.headers =
+    normalized.headers && typeof normalized.headers === "object" ? normalized.headers : {};
+  normalized.syncAttempts = Math.max(0, Number(normalized.syncAttempts || 0));
+  normalized.syncBlocked = Boolean(normalized.syncBlocked);
+  normalized.lastSyncAttemptAt = normalized.lastSyncAttemptAt || null;
+  normalized.lastSyncError = String(normalized.lastSyncError || "");
+  normalized.lastSyncErrorCode = Number.isFinite(Number(normalized.lastSyncErrorCode))
+    ? Number(normalized.lastSyncErrorCode)
+    : null;
+  normalized.kind = inferQueuedOperationKind(normalized);
+
+  return normalized;
+}
+
+function getBlockedPendingOperationCount() {
+  return state.pendingQueue.filter((operation) => Boolean(operation?.syncBlocked)).length;
+}
+
+function getFirstBlockedPendingOperation() {
+  return state.pendingQueue.find((operation) => Boolean(operation?.syncBlocked)) || null;
+}
+
+let syncHealthReportTimerId = null;
+let lastSyncHealthSignature = "";
+let connectionRecoveryTimerId = null;
+let connectionRecoveryAttempt = 0;
+let connectionRecoveryPromise = null;
+const CONNECTION_RECOVERY_BASE_DELAY_MS = 2500;
+const CONNECTION_RECOVERY_MAX_DELAY_MS = 15000;
+
+function getClientSyncHealthHeaders() {
+  return {
+    ...getCashierAuthHeaders(),
+    ...getAdminAuthHeaders(),
+    ...getOwnerAuthHeaders(),
+  };
+}
+
+function getLocalDeviceId() {
+  let deviceId = typeof readStorageText === "function"
+    ? readStorageText(STORAGE_KEYS.deviceId, "")
+    : "";
+  if (deviceId) {
+    return deviceId;
+  }
+
+  deviceId = typeof crypto?.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `device-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  if (typeof persistText === "function") {
+    persistText(STORAGE_KEYS.deviceId, deviceId);
+  }
+
+  return deviceId;
+}
+
+function buildClientSyncHealthPayload() {
+  return {
+    deviceId: getLocalDeviceId(),
+    branch: state.cashier.branch || state.store.currentBranch || refs.branchSelect?.value || "carrizal",
+    pendingQueueCount: state.pendingQueue.length,
+    blockedQueueCount: getBlockedPendingOperationCount(),
+    registerEventsCount: state.register.events.filter((event) => !event?.synced).length,
+    online: state.online,
+  };
+}
+
+async function reportClientSyncHealth(options = {}) {
+  const hasSession =
+    Boolean(state.cashier.token)
+    || Boolean(state.admin.authenticated && state.admin.csrfToken)
+    || Boolean(state.owner.authenticated && state.owner.csrfToken);
+  if (!state.online || !hasSession) {
+    return null;
+  }
+
+  const payload = buildClientSyncHealthPayload();
+  const signature = JSON.stringify(payload);
+  if (!options.force && signature === lastSyncHealthSignature) {
+    return null;
+  }
+
+  try {
+    await performJsonRequest("/api/client-sync-health", {
+      method: "POST",
+      timeoutMs: 4000,
+      headers: getClientSyncHealthHeaders(),
+      body: JSON.stringify(payload),
+    });
+    lastSyncHealthSignature = signature;
+  } catch (error) {
+    if (isNetworkError(error) || error.statusCode === 401 || error.statusCode === 403) {
+      return null;
+    }
+    throw error;
+  }
+
+  return payload;
+}
+
+function scheduleClientSyncHealthReport(options = {}) {
+  if (syncHealthReportTimerId) {
+    window.clearTimeout(syncHealthReportTimerId);
+    syncHealthReportTimerId = null;
+  }
+
+  const delayMs = Math.max(0, Number(options.delayMs ?? 350));
+  syncHealthReportTimerId = window.setTimeout(() => {
+    syncHealthReportTimerId = null;
+    void reportClientSyncHealth({ force: options.force === true }).catch(() => {});
+  }, delayMs);
+}
+
+function clearConnectionRecoveryTimer() {
+  if (!connectionRecoveryTimerId || typeof window === "undefined") {
+    return;
+  }
+
+  window.clearTimeout(connectionRecoveryTimerId);
+  connectionRecoveryTimerId = null;
+}
+
+function resetConnectionRecoveryState() {
+  clearConnectionRecoveryTimer();
+  connectionRecoveryAttempt = 0;
+}
+
+function scheduleConnectionRecovery(reason = "retry", options = {}) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (connectionRecoveryPromise) {
+    return;
+  }
+
+  clearConnectionRecoveryTimer();
+  const delayMs = options.immediate === true
+    ? 0
+    : Math.min(
+        CONNECTION_RECOVERY_MAX_DELAY_MS,
+        CONNECTION_RECOVERY_BASE_DELAY_MS * Math.max(1, connectionRecoveryAttempt || 1),
+      );
+
+  connectionRecoveryTimerId = window.setTimeout(() => {
+    connectionRecoveryTimerId = null;
+    void attemptConnectionRecovery(reason).catch(() => {});
+  }, delayMs);
+}
+
+async function refreshRecoveredSessionData() {
+  if (state.pendingQueue.length > 0 || state.register.events.length > 0) {
+    await syncAllOfflineData();
+    return;
+  }
+
+  await refreshCurrentSnapshot();
+  if (state.cashier.authenticated && typeof loadRegisterSummary === "function") {
+    await loadRegisterSummary({ silent: true });
+  }
+}
+
+async function attemptConnectionRecovery(reason = "retry") {
+  if (connectionRecoveryPromise) {
+    return connectionRecoveryPromise;
+  }
+
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    markConnectionOffline();
+    return false;
+  }
+
+  connectionRecoveryAttempt += 1;
+  if (refs.socketStatus && refs.socketStatus.textContent !== "En vivo") {
+    refs.socketStatus.textContent = "Reconectando...";
+  }
+
+  connectionRecoveryPromise = (async () => {
+    try {
+      if (state.socket && typeof state.socket.connect === "function" && !state.socket.connected) {
+        state.socket.connect();
+      }
+
+      await performJsonRequest("/api/health", {
+        timeoutMs: 5000,
+        retries: 1,
+        retryDelayMs: 500,
+      });
+
+      state.online = true;
+      renderSyncStatus();
+
+      if (state.cashier.token) {
+        try {
+          await loadCashierAuthStatus();
+        } catch (error) {
+          if (isNetworkError(error)) {
+            throw error;
+          }
+        }
+      }
+
+      try {
+        await refreshRecoveredSessionData();
+      } catch (error) {
+        if (isNetworkError(error)) {
+          throw error;
+        }
+      }
+
+      if (typeof renderCashierSession === "function") {
+        renderCashierSession();
+      }
+      if (refs.socketStatus && refs.socketStatus.textContent !== "En vivo") {
+        refs.socketStatus.textContent = state.socket?.connected ? "En vivo" : "Conectado";
+      }
+      connectionRecoveryAttempt = 0;
+      clearConnectionRecoveryTimer();
+      return true;
+    } catch (error) {
+      if (isNetworkError(error)) {
+        markConnectionOffline();
+        return false;
+      }
+
+      state.online = true;
+      renderSyncStatus();
+      if (typeof renderCashierSession === "function") {
+        renderCashierSession();
+      }
+      if (refs.socketStatus && refs.socketStatus.textContent === "Reconectando...") {
+        refs.socketStatus.textContent = state.socket?.connected ? "En vivo" : "Conectado";
+      }
+      connectionRecoveryAttempt = 0;
+      clearConnectionRecoveryTimer();
+      return false;
+    } finally {
+      connectionRecoveryPromise = null;
+    }
+  })();
+
+  return connectionRecoveryPromise;
+}
+
 async function requestJson(url, options = {}) {
   if (options.queueable && !state.online) {
-    enqueueOperation({
+    const queuedOperation = enqueueOperation({
       url,
       method: options.method || "GET",
       body: options.body || null,
       headers: options.headers || {},
     });
-    throw new Error("Operacion guardada en modo offline. Se sincronizara al reconectar.");
+    const queuedError = new Error("Operacion guardada en modo offline. Se sincronizara al reconectar.");
+    queuedError.queuedOperationId = queuedOperation?.id || "";
+    throw queuedError;
   }
 
   try {
     return await performJsonRequest(url, options);
   } catch (error) {
     if (options.queueable && isNetworkError(error)) {
-      enqueueOperation({
+      const queuedOperation = enqueueOperation({
         url,
         method: options.method || "GET",
         body: options.body || null,
         headers: options.headers || {},
       });
-      throw new Error("Operacion guardada en modo offline. Se sincronizara al reconectar.");
+      const queuedError = new Error("Operacion guardada en modo offline. Se sincronizara al reconectar.");
+      queuedError.queuedOperationId = queuedOperation?.id || "";
+      throw queuedError;
     }
 
     throw error;
@@ -207,14 +501,30 @@ async function requestCashierJson(url, options = {}) {
 }
 
 async function requestAdminJson(url, options = {}) {
-  return performJsonRequest(url, {
-    timeout: options.timeout ?? options.timeoutMs ?? ADMIN_REQUEST_TIMEOUT_MS,
-    ...options,
-    headers: {
-      ...getAdminAuthHeaders(),
-      ...(options.headers || {}),
-    },
-  });
+  try {
+    return await performJsonRequest(url, {
+      timeout: options.timeout ?? options.timeoutMs ?? ADMIN_REQUEST_TIMEOUT_MS,
+      ...options,
+      headers: {
+        ...getAdminAuthHeaders(),
+        ...(options.headers || {}),
+      },
+    });
+  } catch (error) {
+    if (isAdminSessionFailure(error)) {
+      state.admin.authenticated = false;
+      state.admin.csrfToken = "";
+      state.admin.sessionExpiresAt = null;
+      if (typeof closeAdminModal === "function") {
+        closeAdminModal();
+      }
+      if (typeof renderAdminModal === "function") {
+        renderAdminModal();
+      }
+    }
+
+    throw error;
+  }
 }
 
 async function loadAdminAuthStatus() {
@@ -223,8 +533,64 @@ async function loadAdminAuthStatus() {
     headers: getAdminAuthHeaders(),
   });
   state.admin.configured = Boolean(response.configured);
+  state.admin.setupAllowed = Boolean(response.setupAllowed);
   state.admin.username = String(response.username || state.admin.username || "admin");
-  state.admin.authenticated = Boolean(response.authenticated) && Boolean(state.admin.token);
+  state.admin.authenticated = Boolean(response.authenticated);
+  state.admin.csrfToken = state.admin.authenticated ? String(response.csrfToken || "") : "";
+  state.admin.sessionExpiresAt = response.sessionExpiresAt || null;
+  if (state.online) {
+    scheduleClientSyncHealthReport({ force: true, delayMs: 0 });
+  }
+  return response;
+}
+
+function getOwnerAuthHeaders() {
+  return state.owner.authenticated && state.owner.csrfToken
+    ? { "X-CSRF-Token": state.owner.csrfToken }
+    : {};
+}
+
+async function requestOwnerJson(url, options = {}) {
+  try {
+    return await performJsonRequest(url, {
+      timeout: options.timeout ?? options.timeoutMs ?? ADMIN_REQUEST_TIMEOUT_MS,
+      ...options,
+      headers: {
+        ...getOwnerAuthHeaders(),
+        ...(options.headers || {}),
+      },
+    });
+  } catch (error) {
+    if (error.statusCode === 401 || error.statusCode === 403) {
+      state.owner.authenticated = false;
+      state.owner.csrfToken = "";
+      state.owner.sessionExpiresAt = null;
+      if (typeof closeOwnerConsoleModal === "function") {
+        closeOwnerConsoleModal();
+      }
+      if (typeof closeOwnerAuthModal === "function") {
+        closeOwnerAuthModal();
+      }
+    }
+
+    throw error;
+  }
+}
+
+async function loadOwnerAuthStatus() {
+  const response = await performJsonRequest("/api/owner/auth/status", {
+    timeout: AUTH_STATUS_TIMEOUT_MS,
+    headers: getOwnerAuthHeaders(),
+  });
+  state.owner.configured = Boolean(response.configured);
+  state.owner.setupAllowed = Boolean(response.setupAllowed);
+  state.owner.username = String(response.username || state.owner.username || "owner");
+  state.owner.authenticated = Boolean(response.authenticated);
+  state.owner.csrfToken = state.owner.authenticated ? String(response.csrfToken || "") : "";
+  state.owner.sessionExpiresAt = response.sessionExpiresAt || null;
+  if (state.online) {
+    scheduleClientSyncHealthReport({ force: true, delayMs: 0 });
+  }
   return response;
 }
 
@@ -247,6 +613,9 @@ async function loadCashierAuthStatus() {
     if (typeof renderCashierSession === "function") {
       renderCashierSession();
     }
+    if (state.online) {
+      scheduleClientSyncHealthReport({ force: true, delayMs: 0 });
+    }
     return response;
   }
 
@@ -263,21 +632,69 @@ async function loadCashierAuthStatus() {
   if (typeof renderCashierSession === "function") {
     renderCashierSession();
   }
+  if (state.online) {
+    scheduleClientSyncHealthReport({ force: true, delayMs: 0 });
+  }
   return response;
 }
 
 function enqueueOperation(operation) {
-  state.pendingQueue.push({
-    id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-    queuedAt: new Date().toISOString(),
-    headers: {},
-    ...operation,
-  });
+  const normalizedOperation = normalizeQueuedOperation(operation);
+  state.pendingQueue.push(normalizedOperation);
   saveQueue();
   renderSyncStatus();
+  return normalizedOperation;
+}
+
+function getQueuedSalePayload(operation = {}) {
+  if (String(operation?.url || "") !== "/api/sales") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(operation.body || "{}");
+  } catch (_error) {
+    return null;
+  }
+}
+
+function getQueuedSaleClientSaleId(operation = {}) {
+  return String(getQueuedSalePayload(operation)?.clientSaleId || "").trim();
+}
+
+function getQueuedSaleOperationIndexByClientSaleId(clientSaleId) {
+  const safeClientSaleId = String(clientSaleId || "").trim();
+  if (!safeClientSaleId) {
+    return -1;
+  }
+
+  return state.pendingQueue.findIndex((operation) =>
+    getQueuedSaleClientSaleId(operation) === safeClientSaleId,
+  );
+}
+
+function classifyOfflineSaleReviewReason(error) {
+  const message = String(error?.message || "").toLowerCase();
+  if (
+    message.includes("stock")
+    || message.includes("disponible")
+    || message.includes("agot")
+    || message.includes("corte final")
+    || message.includes("producto")
+    || message.includes("sucursal")
+    || message.includes("cajero")
+  ) {
+    return "stock_conflict";
+  }
+
+  return "sync_error";
 }
 
 function renderSyncStatus() {
+  if (state.online) {
+    scheduleClientSyncHealthReport();
+  }
+
   if (refs.networkStatus) {
     refs.networkStatus.textContent = state.online ? "En linea" : "Offline";
   }
@@ -286,18 +703,56 @@ function renderSyncStatus() {
     return;
   }
 
+  const syncStatusTarget = refs.syncStatusButton || refs.syncStatus;
+
   if (state.syncingQueue) {
     refs.syncStatus.textContent = `Sincronizando ${state.pendingQueue.length}`;
+    syncStatusTarget.title = "Sincronizando ventas offline pendientes.";
     return;
   }
 
-  refs.syncStatus.textContent =
-    state.pendingQueue.length > 0
-      ? `${state.pendingQueue.length} pendientes`
-      : "Sin pendientes";
+  const blockedCount = getBlockedPendingOperationCount();
+  const offlineSalesSummary = typeof getOfflineSalesStatusSummary === "function"
+    ? getOfflineSalesStatusSummary()
+    : {
+        pending: 0,
+        requiresReview: 0,
+        synced: 0,
+        rejected: 0,
+        outstanding: state.pendingQueue.length,
+      };
+  const pendingSalesCount = typeof getPendingOfflineSalesCount === "function"
+    ? getPendingOfflineSalesCount()
+    : offlineSalesSummary.outstanding;
+  const needsCashierReauth = Boolean(
+    state.online
+    && pendingSalesCount > 0
+    && (!state.cashier.authenticated || !state.cashier.token),
+  );
+  const reviewCount = Math.max(blockedCount, offlineSalesSummary.requiresReview);
+  if (reviewCount > 0) {
+    refs.syncStatus.textContent = reviewCount === 1
+      ? "1 venta requiere revision"
+      : `${reviewCount} ventas requieren revision`;
+    syncStatusTarget.title = "Toca para descargar el registro local de ventas offline.";
+    return;
+  }
+
+  refs.syncStatus.textContent = pendingSalesCount > 0
+    ? needsCashierReauth
+      ? `${pendingSalesCount} pendientes · iniciar sesion`
+      : `${pendingSalesCount} pendientes`
+    : "Sin pendientes";
+  syncStatusTarget.title = pendingSalesCount > 0
+    ? "Toca para descargar el registro local de ventas offline."
+    : "Sin ventas offline pendientes.";
+
 }
 
-async function syncPendingQueue() {
+async function syncPendingQueue(options = {}) {
+  const forceBlocked = Boolean(options.forceBlocked);
+  const targetClientSaleId = String(options.targetClientSaleId || "").trim();
+  const stopAfterTarget = Boolean(targetClientSaleId && options.stopAfterTarget !== false);
   if (!state.online || state.syncingQueue || state.pendingQueue.length === 0) {
     renderSyncStatus();
     return;
@@ -307,7 +762,27 @@ async function syncPendingQueue() {
   renderSyncStatus();
 
   while (state.pendingQueue.length > 0) {
-    const operation = state.pendingQueue[0];
+    const queueIndex = targetClientSaleId
+      ? getQueuedSaleOperationIndexByClientSaleId(targetClientSaleId)
+      : 0;
+    if (queueIndex < 0) {
+      break;
+    }
+
+    const operation = normalizeQueuedOperation(state.pendingQueue[queueIndex]);
+    state.pendingQueue[queueIndex] = operation;
+    const clientSaleId = getQueuedSaleClientSaleId(operation);
+
+    if (operation.syncBlocked && !forceBlocked) {
+      saveQueue();
+      renderSyncStatus();
+      break;
+    }
+
+    operation.syncAttempts += 1;
+    operation.lastSyncAttemptAt = new Date().toISOString();
+    saveQueue();
+
     let fallbackHeaders = {};
     if (Object.keys(operation.headers || {}).length === 0) {
       try {
@@ -330,41 +805,140 @@ async function syncPendingQueue() {
       : fallbackHeaders;
 
     try {
-      await performJsonRequest(operation.url, {
+      const response = await performJsonRequest(operation.url, {
         method: operation.method,
         body: operation.body,
         headers: operationHeaders,
       });
-      state.pendingQueue.shift();
+      state.pendingQueue.splice(queueIndex, 1);
       saveQueue();
+      if (clientSaleId) {
+        markOfflineSaleSynced(clientSaleId, response?.sale || null);
+      }
+      if (typeof refreshOfflineSalesUi === "function") {
+        refreshOfflineSalesUi();
+      }
       renderSyncStatus();
+      if (stopAfterTarget) {
+        break;
+      }
     } catch (error) {
       if (isNetworkError(error) || error.statusCode === 401 || error.statusCode === 403) {
         if (error.statusCode === 401 || error.statusCode === 403) {
+          if (clientSaleId) {
+            markOfflineSaleForReview(clientSaleId, {
+              status: "pending",
+              retryCount: operation.syncAttempts,
+              lastSyncAttemptAt: operation.lastSyncAttemptAt,
+              lastError: "La sesion del cajero necesita reactivarse para sincronizar esta venta.",
+              lastErrorCode: error.statusCode,
+              reviewReason: "auth_required",
+              queueOperationId: operation.id,
+            });
+          }
+          if (typeof refreshOfflineSalesUi === "function") {
+            refreshOfflineSalesUi();
+          }
           showToast("Hay ventas pendientes, pero la sesion del cajero necesita reactivarse.", "error");
         }
         break;
       }
 
-      state.pendingQueue.shift();
+      operation.syncBlocked = true;
+      operation.lastSyncError = error.message || "Error del servidor";
+      operation.lastSyncErrorCode = Number.isFinite(Number(error.statusCode))
+        ? Number(error.statusCode)
+        : null;
       saveQueue();
-      showToast("Una operacion pendiente fue descartada por error del servidor.", "error");
+      if (clientSaleId) {
+        markOfflineSaleForReview(clientSaleId, {
+          status: "requires_review",
+          retryCount: operation.syncAttempts,
+          lastSyncAttemptAt: operation.lastSyncAttemptAt,
+          lastError: operation.lastSyncError,
+          lastErrorCode: operation.lastSyncErrorCode,
+          reviewReason: classifyOfflineSaleReviewReason(error),
+          queueOperationId: operation.id,
+        });
+      }
+      if (typeof refreshOfflineSalesUi === "function") {
+        refreshOfflineSalesUi();
+      }
+      renderSyncStatus();
+      showToast(
+        "Una venta offline fue rechazada por el servidor. Sigue pendiente para revision manual y no se descarto.",
+        "error",
+      );
+      break;
     }
   }
 
   state.syncingQueue = false;
   renderSyncStatus();
 
-  if (state.online) {
+  if (state.online && state.pendingQueue.length === 0) {
     try {
       await refreshCurrentSnapshot();
-      if (state.pendingQueue.length === 0) {
-        showToast("Sincronizacion completada.", "success");
-      }
+      showToast("Sincronizacion completada.", "success");
     } catch (_error) {
       renderSyncStatus();
     }
   }
+}
+
+async function retryOfflineSaleByClientSaleId(clientSaleId) {
+  const safeClientSaleId = String(clientSaleId || "").trim();
+  if (!safeClientSaleId) {
+    throw new Error("No pude identificar la venta offline a reintentar.");
+  }
+
+  let queueIndex = getQueuedSaleOperationIndexByClientSaleId(safeClientSaleId);
+  if (queueIndex < 0) {
+    const reactivatedRecord = reactivateOfflineSaleRecord(safeClientSaleId);
+    if (!reactivatedRecord) {
+      throw new Error("No encontre la venta offline en el dispositivo.");
+    }
+    queueIndex = getQueuedSaleOperationIndexByClientSaleId(safeClientSaleId);
+  }
+
+  if (queueIndex < 0) {
+    throw new Error("No pude rearmar la venta offline para reintentarla.");
+  }
+
+  const operation = normalizeQueuedOperation(state.pendingQueue[queueIndex]);
+  operation.syncBlocked = false;
+  operation.lastSyncError = "";
+  operation.lastSyncErrorCode = null;
+  operation.lastSyncAttemptAt = null;
+  state.pendingQueue[queueIndex] = operation;
+  saveQueue();
+  markOfflineSaleForReview(safeClientSaleId, {
+    status: "pending",
+    lastError: "",
+    lastErrorCode: null,
+    reviewReason: "",
+    queueOperationId: operation.id,
+  });
+  renderSyncStatus();
+
+  if (!state.online) {
+    return;
+  }
+
+  const hasStoredCashierToken = Boolean(
+    Object.entries(operation.headers || {}).find(([headerName, headerValue]) =>
+      String(headerName || "").toLowerCase() === "x-cashier-token" && String(headerValue || "").trim(),
+    ),
+  );
+  if (!hasStoredCashierToken && (!state.cashier.authenticated || !state.cashier.token)) {
+    throw new Error("Vuelve a iniciar sesion del cajero para sincronizar esta venta.");
+  }
+
+  await syncPendingQueue({
+    forceBlocked: true,
+    targetClientSaleId: safeClientSaleId,
+    stopAfterTarget: true,
+  });
 }
 
 // Sincronizar eventos de caja offline con el servidor
@@ -426,8 +1000,13 @@ async function syncRegisterEvents() {
 }
 
 // Sincronizar todo (cola + eventos de caja)
-async function syncAllOfflineData() {
-  await syncPendingQueue();
+async function syncAllOfflineData(options = {}) {
+  await syncPendingQueue(options);
+  if (state.pendingQueue.length > 0) {
+    // Evita sincronizar cortes contra un snapshot que todavia no incluye ventas offline pendientes.
+    return;
+  }
+
   await syncRegisterEvents();
   if (state.online) {
     try {
@@ -446,16 +1025,46 @@ function registerConnectionEvents() {
     state.online = true;
     refs.socketStatus.textContent = "Reconectando...";
     renderSyncStatus();
-    if (state.cashier.token) {
-      void loadCashierAuthStatus().catch(() => {});
+    const pendingSalesCount = typeof getPendingOfflineSalesCount === "function"
+      ? getPendingOfflineSalesCount()
+      : 0;
+    if (pendingSalesCount > 0) {
+      showToast(
+        state.cashier.token
+          ? `Tienes ${pendingSalesCount} ventas pendientes. Intentando sincronizarlas ahora.`
+          : `Tienes ${pendingSalesCount} ventas pendientes. Vuelve a iniciar sesion para sincronizarlas.`,
+        "info",
+      );
     }
-    syncAllOfflineData();
+    if (typeof renderCashierSession === "function") {
+      renderCashierSession();
+    }
+    scheduleConnectionRecovery("browser-online", { immediate: true });
   });
 
   window.addEventListener("offline", () => {
     state.online = false;
     refs.socketStatus.textContent = "Sin conexion";
     renderSyncStatus();
+  });
+
+  window.addEventListener("focus", () => {
+    if (
+      (typeof navigator === "undefined" || navigator.onLine !== false)
+      && (!state.online || !state.socket?.connected)
+    ) {
+      scheduleConnectionRecovery("window-focus", { immediate: true });
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (
+      document.visibilityState === "visible"
+      && (typeof navigator === "undefined" || navigator.onLine !== false)
+      && (!state.online || !state.socket?.connected)
+    ) {
+      scheduleConnectionRecovery("visibility-change", { immediate: true });
+    }
   });
 }
 
@@ -464,16 +1073,49 @@ function connectSocket() {
     return;
   }
 
-  state.socket = io();
+  state.socket = io({
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    timeout: 8000,
+    transports: ["websocket", "polling"],
+  });
 
   state.socket.on("connect", () => {
+    const previousSocketStatus = refs.socketStatus?.textContent || "";
+    const shouldRefreshAfterSocketConnect = Boolean(
+      previousSocketStatus === "Reconectando..."
+      || connectionRecoveryAttempt > 0
+      || state.pendingQueue.length > 0
+      || state.register.events.length > 0,
+    );
+    resetConnectionRecoveryState();
     refs.socketStatus.textContent = "En vivo";
     state.online = true;
     renderSyncStatus();
+    if (typeof renderCashierSession === "function") {
+      renderCashierSession();
+    }
+    if (shouldRefreshAfterSocketConnect) {
+      void attemptConnectionRecovery("socket-connect").catch(() => {});
+    }
   });
 
   state.socket.on("disconnect", () => {
     refs.socketStatus.textContent = state.online ? "Reconectando..." : "Sin conexion";
+    if (typeof navigator === "undefined" || navigator.onLine !== false) {
+      scheduleConnectionRecovery("socket-disconnect");
+    }
+  });
+
+  state.socket.on("connect_error", () => {
+    if (refs.socketStatus && refs.socketStatus.textContent !== "Sin conexion") {
+      refs.socketStatus.textContent = "Reconectando...";
+    }
+    if (typeof navigator === "undefined" || navigator.onLine !== false) {
+      scheduleConnectionRecovery("socket-connect-error");
+    }
   });
 
   state.socket.on("dashboard:snapshot", () => {
@@ -482,7 +1124,7 @@ function connectSocket() {
     }
 
     void refreshCurrentSnapshot().catch(() => {});
-    if (refs.adminModal?.classList.contains("open") && state.admin.token) {
+    if (refs.adminModal?.classList.contains("open") && state.admin.authenticated) {
       void refreshAdminWorkspace(getAdminWorkspaceLiveOptions(getAdminBranch())).catch(() => {});
     }
   });
@@ -500,7 +1142,7 @@ function connectSocket() {
       void loadMyMerchandiseRequests({ silent: true }).catch(() => {});
     }
 
-    if (refs.adminModal?.classList.contains("open") && state.admin.token) {
+    if (refs.adminModal?.classList.contains("open") && state.admin.authenticated) {
       void loadAdminMerchandiseRequests(getAdminBranch()).catch(() => {});
     }
 
@@ -508,7 +1150,7 @@ function connectSocket() {
       refs.merchandiseRequestDetailModal?.classList.contains("open")
       && state.merchandise.detailAdminMode
       && Number(state.merchandise.detailRequest?.id) === Number(event.id)
-      && state.admin.token
+      && state.admin.authenticated
     ) {
       void openAdminMerchandiseRequestDetail(event.id).catch(() => {});
     }

@@ -1,14 +1,18 @@
 {
-  "name": "cremaria-rincon-pos",
+  "name": "retail-base-pos",
   "version": "1.0.0",
-  "description": "Punto de venta profesional con inventario y ventas en tiempo real para Cremeria El Rincon.",
+  "description": "Base maestra retail para generar POS limpios por negocio con inventario, caja y sucursales.",
   "main": "src/server.js",
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "rebuild:native": "npm rebuild better-sqlite3",
+    "backup:nightly": "node scripts/backup-nightly.js",
+    "build:starter-catalog": "node scripts/build-starter-catalog.js",
     "import:excel": "node scripts/import-workbook.js",
     "install:excel-export": "node scripts/install-export-workbook.js",
+    "seed:business": "node scripts/seed-business-template.js",
+    "clone:business": "node scripts/clone-business.js",
     "test": "node --test"
   },
   "keywords": [],
@@ -16,6 +20,7 @@
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.922.0",
     "better-sqlite3": "^12.9.0",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",

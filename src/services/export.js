@@ -3,8 +3,6 @@ const {
   EXPORT_LOOKBACK_DAYS,
   SALES_PULSE_START_HOUR,
   SALES_PULSE_END_HOUR,
-  STORE_NAME,
-  STORE_TIME_ZONE,
 } = require("../config");
 const {
   ALL_BRANCHES,
@@ -13,6 +11,8 @@ const {
   getBranchLabel,
   getStoreDateKey,
   getStoreHourLabel,
+  getStoreName,
+  getStoreTimeZone,
   isSameStoreDay,
   normalizeBranch,
   nowIso,
@@ -113,7 +113,7 @@ function getBar(total, maxTotal) {
 }
 
 const reportDateTimeFormatter = new Intl.DateTimeFormat("es-MX", {
-  timeZone: STORE_TIME_ZONE,
+  timeZone: getStoreTimeZone(),
   year: "numeric",
   month: "2-digit",
   day: "2-digit",
@@ -132,7 +132,7 @@ function addSummarySheet(workbook, ctx, branchCode, suffix = "") {
   const sheet = workbook.addWorksheet(`Resumen${suffix}`);
   styleSheetHeader(
     sheet,
-    `${STORE_NAME} - Resumen ${branchLabel}`,
+    `${getStoreName()} - Resumen ${branchLabel}`,
     `Generado: ${ctx.generatedAt} · Alcance: ${ctx.scopeLabel}`,
     6,
   );
@@ -200,7 +200,7 @@ function addSummarySheet(workbook, ctx, branchCode, suffix = "") {
 
 function addSalesDetailSheet(workbook, ctx, suffix = "") {
   const sheet = workbook.addWorksheet(`Ventas Detalle${suffix}`);
-  styleSheetHeader(sheet, `${STORE_NAME} - Ventas detalle${suffix}`, `Generado: ${ctx.generatedAt}`, 15);
+  styleSheetHeader(sheet, `${getStoreName()} - Ventas detalle${suffix}`, `Generado: ${ctx.generatedAt}`, 15);
   sheet.addRow([]);
   const header = sheet.addRow([
     "Ticket",
@@ -249,7 +249,7 @@ function addSalesDetailSheet(workbook, ctx, suffix = "") {
 
 function addSalesProductsSheet(workbook, ctx, suffix = "") {
   const sheet = workbook.addWorksheet(`Ventas Productos${suffix}`);
-  styleSheetHeader(sheet, `${STORE_NAME} - Ventas por producto${suffix}`, `Generado: ${ctx.generatedAt}`, 8);
+  styleSheetHeader(sheet, `${getStoreName()} - Ventas por producto${suffix}`, `Generado: ${ctx.generatedAt}`, 8);
   sheet.addRow([]);
   const header = sheet.addRow([
     "Producto",
@@ -304,7 +304,7 @@ function addSalesProductsSheet(workbook, ctx, suffix = "") {
 
 function addRegisterSheet(workbook, ctx, suffix = "") {
   const sheet = workbook.addWorksheet(`Caja y Cortes${suffix}`);
-  styleSheetHeader(sheet, `${STORE_NAME} - Caja y cortes${suffix}`, `Generado: ${ctx.generatedAt}`, 12);
+  styleSheetHeader(sheet, `${getStoreName()} - Caja y cortes${suffix}`, `Generado: ${ctx.generatedAt}`, 12);
   sheet.addRow([]);
   const summaryHeader = sheet.addRow(["Indicador", "Valor"]);
   styleTableHeader(summaryHeader);
@@ -374,7 +374,7 @@ function addRegisterSheet(workbook, ctx, suffix = "") {
 
 function addInventorySheet(workbook, ctx, suffix = "") {
   const sheet = workbook.addWorksheet(`Inventario${suffix}`);
-  styleSheetHeader(sheet, `${STORE_NAME} - Inventario${suffix}`, `Generado: ${ctx.generatedAt}`, 10);
+  styleSheetHeader(sheet, `${getStoreName()} - Inventario${suffix}`, `Generado: ${ctx.generatedAt}`, 10);
   sheet.addRow([]);
   const header = sheet.addRow([
     "ID",
@@ -411,7 +411,7 @@ function addInventorySheet(workbook, ctx, suffix = "") {
 
 function addMovementsSheet(workbook, ctx, suffix = "") {
   const sheet = workbook.addWorksheet(`Movimientos${suffix}`);
-  styleSheetHeader(sheet, `${STORE_NAME} - Movimientos${suffix}`, `Generado: ${ctx.generatedAt}`, 12);
+  styleSheetHeader(sheet, `${getStoreName()} - Movimientos${suffix}`, `Generado: ${ctx.generatedAt}`, 12);
   sheet.addRow([]);
   const header = sheet.addRow([
     "ID",
@@ -454,7 +454,7 @@ function addSalesPulseSheet(workbook, ctx, suffix = "") {
   const sheet = workbook.addWorksheet(`Pulso Ventas${suffix}`);
   styleSheetHeader(
     sheet,
-    `${STORE_NAME} - Pulso por hora${suffix}`,
+    `${getStoreName()} - Pulso por hora${suffix}`,
     `Ventana ${String(SALES_PULSE_START_HOUR).padStart(2, "0")}:00 - ${String(SALES_PULSE_END_HOUR).padStart(2, "0")}:00`,
     6,
   );
@@ -488,7 +488,7 @@ function addWeightedAuditSheet(workbook, ctx, suffix = "") {
   const sheet = workbook.addWorksheet(`Auditoria Pesado${suffix}`);
   styleSheetHeader(
     sheet,
-    `${STORE_NAME} - Auditoria de pesado${suffix}`,
+    `${getStoreName()} - Auditoria de pesado${suffix}`,
     `Generado: ${ctx.generatedAt}`,
     14,
   );
@@ -631,11 +631,11 @@ function toBranchContext(baseRows, branchCode, scope, baseDate, generatedAt, sco
 
 async function exportWorkbookReport(options = {}) {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = STORE_NAME;
+  workbook.creator = getStoreName();
   workbook.created = new Date();
   workbook.modified = new Date();
   workbook.subject = "Exportacion operacional del POS";
-  workbook.title = `${STORE_NAME} - Exportacion`;
+  workbook.title = `${getStoreName()} - Exportacion`;
 
   const generatedAt = nowIso();
   const scope = options.scope === "all-time" ? "all-time" : "store-day";

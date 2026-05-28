@@ -23,12 +23,41 @@ let filteredProductsCache = {
 };
 let productsRenderQueued = false;
 
+function renderRouteMode() {
+  const enabled = isRouteModeEnabled();
+  const mobileUi = shouldUseRouteMobileUi();
+  if (typeof document !== "undefined") {
+    document.body.classList.toggle("route-mode", enabled);
+    document.body.classList.toggle("route-mobile-mode", mobileUi);
+  }
+  if (refs.toggleRouteModeButton) {
+    refs.toggleRouteModeButton.classList.toggle("is-active", enabled);
+    refs.toggleRouteModeButton.setAttribute("aria-pressed", enabled ? "true" : "false");
+    refs.toggleRouteModeButton.textContent = enabled ? "Modo ruta activo" : "Modo ruta";
+  }
+  if (refs.routeModePill) {
+    refs.routeModePill.textContent = enabled ? "Ruta agilizada" : "Vista completa";
+  }
+}
+
 function renderCashierSession() {
   const branchLabel = getBranchLabel(getActiveCashierBranch());
   const cashierLabel = state.cashier.name || "Sin sesion";
   const sessionText = state.cashier.authenticated
     ? `${cashierLabel} en ${branchLabel}`
     : "Sin iniciar sesion";
+  const offlineSalesSummary = typeof getOfflineSalesStatusSummary === "function"
+    ? getOfflineSalesStatusSummary()
+    : {
+        pending: 0,
+        requiresReview: 0,
+        synced: 0,
+        rejected: 0,
+        outstanding: 0,
+      };
+  const pendingOfflineSalesCount = typeof getPendingOfflineSalesCount === "function"
+    ? getPendingOfflineSalesCount()
+    : 0;
 
   if (refs.branchDisplay) {
     refs.branchDisplay.value = branchLabel;
@@ -44,9 +73,17 @@ function renderCashierSession() {
 
   if (refs.cashierSessionHelper) {
     refs.cashierSessionHelper.textContent = state.cashier.authenticated
-      ? "Puedes cambiar de sucursal o cerrar la sesion del cajero cuando lo necesites."
+      ? pendingOfflineSalesCount > 0
+        ? offlineSalesSummary.requiresReview > 0
+          ? `Este dispositivo tiene ${pendingOfflineSalesCount} venta(s) offline pendientes; ${offlineSalesSummary.requiresReview} requiere(n) revision antes de cerrar la cola.`
+          : `Este dispositivo tiene ${pendingOfflineSalesCount} venta(s) offline pendientes por sincronizar.`
+        : "Puedes cambiar de sucursal o cerrar la sesion del cajero cuando lo necesites."
       : state.online
-        ? "Selecciona sucursal y entra con la clave del cajero para empezar a vender."
+        ? pendingOfflineSalesCount > 0
+          ? offlineSalesSummary.requiresReview > 0
+            ? `Tienes ${pendingOfflineSalesCount} venta(s) offline pendientes. Inicia sesion del mismo cajero y revisa las que quedaron en conflicto.`
+            : `Tienes ${pendingOfflineSalesCount} venta(s) offline pendientes. Inicia sesion del mismo cajero para sincronizarlas.`
+          : "Selecciona sucursal y entra con la clave del cajero para empezar a vender."
         : "Sin internet: si este cajero ya entro antes en este dispositivo y sucursal, puedes iniciar con su clave para seguir vendiendo offline.";
   }
 
@@ -67,6 +104,8 @@ function renderCashierSession() {
   if (refs.openFinalCutButton) {
     refs.openFinalCutButton.disabled = isLocked;
   }
+
+  renderRouteMode();
 }
 
 function renderSummary() {
@@ -99,26 +138,21 @@ function renderSummary() {
 }
 
 function renderCategoryFilters() {
-  const categories = ["all"];
-  state.products.forEach((product) => {
-    if (!categories.includes(product.category)) {
-      categories.push(product.category);
-    }
-  });
-
-  categories.sort(
-    (left, right) => CATEGORY_ORDER.indexOf(left) - CATEGORY_ORDER.indexOf(right),
+  const products = Array.isArray(state.products) ? state.products : [];
+  const categoriesInProducts = new Set(products.map((product) => product.category).filter(Boolean));
+  const categories = getCategoryCatalog(true).filter((category) =>
+    category.code === "all" || categoriesInProducts.has(category.code)
   );
 
   refs.categoryFilters.innerHTML = categories
     .map(
       (category) => `
         <button
-          class="category-chip ${state.selectedCategory === category ? "active" : ""}"
-          data-category="${category}"
+          class="category-chip ${state.selectedCategory === category.code ? "active" : ""}"
+          data-category="${category.code}"
           type="button"
         >
-          ${escapeHtml(CATEGORY_LABELS[category] || category)}
+          ${escapeHtml(category.label || category.code)}
         </button>
       `,
     )
@@ -312,6 +346,19 @@ function renderRecentSales() {
                 .map((item) => `${item.productName || item.name || "Producto"} x${formatQuantity(item.quantity || 0)}`)
                 .join(" · ")
             : `Venta de ${formatQuantity(sale.itemCount || 0)} articulos`);
+        const offlineState =
+          String(sale.id || "").startsWith("offline-")
+            ? getOfflineSaleDisplayState(
+                getOfflineSaleRecordByClientSaleId(sale.clientSaleId)
+                || {
+                  status: "pending",
+                  clientSaleId: sale.clientSaleId || "",
+                  branch: sale.branch,
+                  cashier: sale.cashier,
+                  items: sale.items,
+                },
+              )
+            : null;
         return `
         <button
           class="feed-item"
@@ -322,10 +369,14 @@ function renderRecentSales() {
         >
           <div class="feed-meta">
             <strong>${escapeHtml(sale.ticketNumber)}</strong>
-            <span class="feed-total">${formatCurrency(sale.total)}</span>
+            <div class="feed-meta-side">
+              ${offlineState ? `<span class="offline-sale-status-pill ${offlineState.status}">${escapeHtml(offlineState.label)}</span>` : ""}
+              <span class="feed-total">${formatCurrency(sale.total)}</span>
+            </div>
           </div>
           <p>${escapeHtml(itemsSummary)}</p>
           <p>${escapeHtml(sale.cashier)} · ${escapeHtml(sale.shift)} · ${escapeHtml(dateTimeFormatter.format(new Date(sale.createdAt)))}</p>
+          ${offlineState ? `<p>${escapeHtml(offlineState.note)}</p>` : ""}
         </button>
       `;
       },

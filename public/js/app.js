@@ -1,3 +1,69 @@
+const TOUCH_DOUBLE_TAP_WINDOW_MS = 320;
+const ROUTE_SWIPE_TRIGGER_PX = 84;
+const ROUTE_SWIPE_LOCK_PX = 18;
+const TOUCH_DOUBLE_TAP_SELECTOR = [
+  "button",
+  ".product-card",
+  ".category-chip",
+  ".payment-method",
+  ".quick-import-next-item",
+  ".stepper-button",
+  ".sale-card-button",
+  ".activity-item",
+  ".feed-item",
+  ".admin-record-item",
+  ".shift-chip",
+  '[data-touch-guard="true"]',
+].join(", ");
+
+function shouldUseTouchOptimizations() {
+  return Boolean(
+    window.matchMedia?.("(pointer: coarse)")?.matches
+      || navigator.maxTouchPoints > 0,
+  );
+}
+
+function installTouchOptimizations() {
+  if (typeof document === "undefined" || !shouldUseTouchOptimizations()) {
+    return;
+  }
+
+  let lastTouchEndedAt = 0;
+
+  document.addEventListener(
+    "touchend",
+    (event) => {
+      const target = event.target instanceof Element
+        ? event.target.closest(TOUCH_DOUBLE_TAP_SELECTOR)
+        : null;
+      if (!target) {
+        return;
+      }
+
+      const now = Date.now();
+      const elapsed = now - lastTouchEndedAt;
+      lastTouchEndedAt = now;
+      if (elapsed <= 0 || elapsed > TOUCH_DOUBLE_TAP_WINDOW_MS) {
+        return;
+      }
+
+      event.preventDefault();
+      if (target instanceof HTMLInputElement) {
+        target.focus({ preventScroll: true });
+        target.select?.();
+        return;
+      }
+
+      if ("disabled" in target && target.disabled) {
+        return;
+      }
+
+      target.click();
+    },
+    { passive: false },
+  );
+}
+
 function updateClock() {
   const now = new Date();
   refs.liveDate.textContent = dateFormatter.format(now);
@@ -9,12 +75,150 @@ function registerServiceWorker() {
     return;
   }
 
-  navigator.serviceWorker.register("/sw.js").catch(() => {
+  const serviceWorkerUrl = "/sw.js?v=13";
+  let controllerRefreshScheduled = false;
+
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (controllerRefreshScheduled) {
+      return;
+    }
+    controllerRefreshScheduled = true;
+    window.location.reload();
+  });
+
+  navigator.serviceWorker.register(serviceWorkerUrl, { updateViaCache: "none" }).then((registration) => {
+    void registration.update();
+  }).catch(() => {
     showToast("No fue posible activar el modo offline completo.", "error");
   });
 }
 
+function setRouteMode(enabled) {
+  state.ui.routeMode = Boolean(enabled);
+  persistPreferences();
+  renderRouteMode();
+}
+
+function toggleRouteMode() {
+  const nextValue = !isRouteModeEnabled();
+  setRouteMode(nextValue);
+  showToast(
+    nextValue
+      ? "Modo ruta activado. La vista ahora prioriza vender mas rapido."
+      : "Modo ruta desactivado. Regresaste a la vista completa.",
+    "info",
+  );
+}
+
+function updateRouteSwipeVisualState(bar, surface, deltaX = 0) {
+  if (!bar) {
+    if (surface) {
+      surface.classList.remove("is-swiping-left", "is-swiping-right");
+    }
+    return;
+  }
+
+  bar.classList.toggle("is-swiping-left", deltaX <= -ROUTE_SWIPE_LOCK_PX);
+  bar.classList.toggle("is-swiping-right", deltaX >= ROUTE_SWIPE_LOCK_PX);
+  if (surface) {
+    surface.classList.toggle("is-swiping-left", deltaX <= -ROUTE_SWIPE_LOCK_PX);
+    surface.classList.toggle("is-swiping-right", deltaX >= ROUTE_SWIPE_LOCK_PX);
+  }
+}
+
+function installRouteSwipeDecisionSurface(surface, options = {}) {
+  if (!surface) {
+    return;
+  }
+
+  const bar = options.bar || null;
+  let gesture = null;
+
+  const resetGesture = () => {
+    gesture = null;
+    updateRouteSwipeVisualState(bar, surface, 0);
+  };
+
+  const shouldHandleSwipe = () =>
+    shouldUseRouteMobileUi()
+    && surface.closest(".modal-shell")?.classList.contains("open");
+
+  const onTouchStart = (event) => {
+    if (!shouldHandleSwipe()) {
+      resetGesture();
+      return;
+    }
+
+    const touch = event.touches?.[0];
+    if (!touch) {
+      return;
+    }
+
+    gesture = {
+      startX: touch.clientX,
+      startY: touch.clientY,
+    };
+  };
+
+  const onTouchMove = (event) => {
+    if (!gesture || !shouldHandleSwipe()) {
+      return;
+    }
+
+    const touch = event.touches?.[0];
+    if (!touch) {
+      return;
+    }
+
+    const deltaX = touch.clientX - gesture.startX;
+    const deltaY = touch.clientY - gesture.startY;
+    if (Math.abs(deltaX) < ROUTE_SWIPE_LOCK_PX || Math.abs(deltaX) <= Math.abs(deltaY)) {
+      updateRouteSwipeVisualState(bar, surface, 0);
+      return;
+    }
+
+    event.preventDefault();
+    updateRouteSwipeVisualState(bar, surface, deltaX);
+  };
+
+  const onTouchEnd = (event) => {
+    if (!gesture) {
+      return;
+    }
+
+    const touch = event.changedTouches?.[0];
+    if (!touch) {
+      resetGesture();
+      return;
+    }
+
+    const deltaX = touch.clientX - gesture.startX;
+    const deltaY = touch.clientY - gesture.startY;
+    const horizontalIntent =
+      Math.abs(deltaX) >= ROUTE_SWIPE_TRIGGER_PX
+      && Math.abs(deltaX) > Math.abs(deltaY) * 1.35;
+
+    if (shouldHandleSwipe() && horizontalIntent) {
+      event.preventDefault();
+      if (deltaX > 0) {
+        options.onRight?.();
+      } else {
+        options.onLeft?.();
+      }
+    }
+
+    resetGesture();
+  };
+
+  surface.addEventListener("touchstart", onTouchStart, { passive: true });
+  surface.addEventListener("touchmove", onTouchMove, { passive: false });
+  surface.addEventListener("touchend", onTouchEnd, { passive: false });
+  surface.addEventListener("touchcancel", resetGesture, { passive: true });
+}
+
 async function bootstrap() {
+  installTouchOptimizations();
+
   refs.summaryCards = $("summary-cards");
   refs.productsGrid = $("products-grid");
   refs.categoryFilters = $("category-filters");
@@ -28,9 +232,18 @@ async function bootstrap() {
   refs.shiftSummary = $("shift-summary");
   refs.inventoryBody = $("inventory-body");
   refs.toastRegion = $("toast-region");
+  refs.storeLogo = $("store-logo");
+  refs.storeLogoFallback = $("store-logo-fallback");
+  refs.storeEyebrow = $("store-eyebrow");
+  refs.storeTitle = $("store-title");
+  refs.storeHeroCopy = $("store-hero-copy");
+  refs.storeFavicon = $("store-favicon");
+  refs.storeAppleTouchIcon = $("store-apple-touch-icon");
   refs.shiftSelect = $("shift-select");
   refs.cashierInput = $("cashier-input");
   refs.searchInput = $("search-input");
+  refs.toggleRouteModeButton = $("toggle-route-mode-button");
+  refs.routeModePill = $("route-mode-pill");
   refs.openAdminButton = $("open-admin-button");
   refs.headerAdminButton = $("header-admin-button");
   refs.branchDisplay = $("branch-display");
@@ -55,28 +268,44 @@ async function bootstrap() {
   refs.openPaymentButton = $("open-payment-button");
   refs.clearCartButton = $("clear-cart-button");
   refs.itemModal = $("item-modal");
+  refs.itemModalCard = $("item-modal-card");
   refs.itemModalName = $("item-modal-name");
   refs.itemModalMeta = $("item-modal-meta");
   refs.itemQuantity = $("item-quantity");
+  refs.itemQuickQuantities = $("item-quick-quantities");
+  refs.itemRouteDecisionBar = $("item-route-decision-bar");
+  refs.itemRouteCancelButton = $("item-route-cancel-button");
+  refs.itemRouteConfirmButton = $("item-route-confirm-button");
   refs.itemTotal = $("item-total");
   refs.itemUnitPrice = $("item-unit-price");
   refs.paymentModal = $("payment-modal");
+  refs.paymentModalCard = $("payment-modal-card");
   refs.paymentTotal = $("payment-total");
   refs.paymentMethods = $("payment-methods");
   refs.moneyDisplay = $("money-display");
   refs.paymentReceived = $("payment-received");
   refs.paymentChange = $("payment-change");
   refs.confirmSaleButton = $("confirm-sale-button");
+  refs.paymentRouteDecisionBar = $("payment-route-decision-bar");
+  refs.paymentRouteCancelButton = $("payment-route-cancel-button");
+  refs.paymentRouteConfirmButton = $("payment-route-confirm-button");
   refs.cashPaymentBlock = $("cash-payment-block");
   refs.quickImportModal = $("quick-import-modal");
   refs.quickImportModeBar = $("quick-import-mode-bar");
   refs.quickImportDescription = $("quick-import-description");
   refs.quickImportProgressText = $("quick-import-progress-text");
+  refs.quickImportProgressNote = $("quick-import-progress-note");
   refs.quickImportProgressFill = $("quick-import-progress-fill");
+  refs.quickImportTotalCount = $("quick-import-total-count");
+  refs.quickImportPendingCount = $("quick-import-pending-count");
+  refs.quickImportSavedCount = $("quick-import-saved-count");
+  refs.quickImportSkippedCount = $("quick-import-skipped-count");
   refs.quickImportEmpty = $("quick-import-empty");
   refs.quickImportContent = $("quick-import-content");
+  refs.quickImportCurrentState = $("quick-import-current-state");
   refs.quickImportProductName = $("quick-import-product-name");
   refs.quickImportProductMeta = $("quick-import-product-meta");
+  refs.quickImportProductPosition = $("quick-import-product-position");
   refs.quickImportProductStatus = $("quick-import-product-status");
   refs.quickImportStockBefore = $("quick-import-stock-before");
   refs.quickImportSoldToday = $("quick-import-sold-today");
@@ -87,9 +316,13 @@ async function bootstrap() {
   refs.quickImportValue = $("quick-import-value");
   refs.quickImportNote = $("quick-import-note");
   refs.quickImportHelper = $("quick-import-helper");
+  refs.quickImportFilterSummary = $("quick-import-filter-summary");
+  refs.quickImportSearch = $("quick-import-search");
   refs.quickImportNextList = $("quick-import-next-list");
   refs.quickImportPrevButton = $("quick-import-prev-button");
+  refs.quickImportNextButton = $("quick-import-next-button");
   refs.quickImportSkipButton = $("quick-import-skip-button");
+  refs.quickImportSaveCurrentButton = $("quick-import-save-current-button");
   refs.quickImportSaveButton = $("quick-import-save-button");
   refs.myMerchandiseRequestsList = $("my-merchandise-requests-list");
   refs.merchandiseRequestModal = $("merchandise-request-modal");
@@ -163,6 +396,10 @@ async function bootstrap() {
   refs.devRefreshAdminButton = $("dev-refresh-admin-button");
   refs.devSyncOfflineButton = $("dev-sync-offline-button");
   refs.devDownloadStateButton = $("dev-download-state-button");
+  refs.adminOfflineSalesStatus = $("admin-offline-sales-status");
+  refs.adminOfflineSalesList = $("admin-offline-sales-list");
+  refs.retryOfflineSalesButton = $("retry-offline-sales-button");
+  refs.downloadOfflineSalesButton = $("download-offline-sales-button");
   refs.adminInventoryWrap = $("admin-inventory-wrap");
   refs.inventoryBodyWrapper = $("admin-inventory-wrap");
   refs.adminInventoryStatus = $("admin-inventory-status");
@@ -171,14 +408,28 @@ async function bootstrap() {
   refs.adminNewProductCategory = $("admin-new-product-category");
   refs.adminNewProductUnit = $("admin-new-product-unit");
   refs.adminNewProductPrice = $("admin-new-product-price");
+  refs.adminNewProductCost = $("admin-new-product-cost");
   refs.adminNewProductStock = $("admin-new-product-stock");
   refs.adminNewProductMinStock = $("admin-new-product-min-stock");
+  refs.adminNewProductSku = $("admin-new-product-sku");
+  refs.adminNewProductBarcode = $("admin-new-product-barcode");
+  refs.adminNewProductBrand = $("admin-new-product-brand");
+  refs.adminNewProductSupplier = $("admin-new-product-supplier");
+  refs.adminNewProductPackSize = $("admin-new-product-pack-size");
+  refs.adminNewProductAttributes = $("admin-new-product-attributes");
   refs.saveAdminProductButton = $("save-admin-product-button");
   refs.adminCashierName = $("admin-cashier-name");
   refs.adminCashierBranch = $("admin-cashier-branch");
   refs.adminCashierPassword = $("admin-cashier-password");
   refs.saveAdminCashierButton = $("save-admin-cashier-button");
   refs.adminCashiersList = $("admin-cashiers-list");
+  refs.adminBranchCode = $("admin-branch-code");
+  refs.adminBranchName = $("admin-branch-name");
+  refs.adminBranchTimezone = $("admin-branch-timezone");
+  refs.adminBranchActive = $("admin-branch-active");
+  refs.saveAdminBranchButton = $("save-admin-branch-button");
+  refs.resetAdminBranchButton = $("reset-admin-branch-button");
+  refs.adminBranchesList = $("admin-branches-list");
   refs.adminMerchandiseRequestsList = $("admin-merchandise-requests-list");
   refs.adminMerchandiseRequestsStatus = $("admin-merchandise-requests-status");
   refs.adminWeightedAuditDate = $("admin-weighted-audit-date");
@@ -196,8 +447,40 @@ async function bootstrap() {
   refs.fillWeightedAuditVisibleButton = $("fill-weighted-audit-visible-button");
   refs.clearWeightedAuditVisibleButton = $("clear-weighted-audit-visible-button");
   refs.configAllowNegativeStock = $("config-allow-negative-stock");
+  refs.configBusinessName = $("config-business-name");
+  refs.configShortName = $("config-short-name");
+  refs.configSlug = $("config-slug");
+  refs.configTimezone = $("config-timezone");
+  refs.configLocale = $("config-locale");
+  refs.configCurrencyCode = $("config-currency-code");
+  refs.configTicketPrefix = $("config-ticket-prefix");
+  refs.configTemplateSelect = $("config-template-select");
+  refs.applyAdminTemplateButton = $("apply-admin-template-button");
+  refs.configModulesWrap = $("config-modules-wrap");
+  refs.catalogWorkbookPath = $("catalog-workbook-path");
+  refs.configCategoryCode = $("config-category-code");
+  refs.configCategoryLabel = $("config-category-label");
+  refs.configCategorySort = $("config-category-sort");
+  refs.saveConfigCategoryButton = $("save-config-category-button");
+  refs.configCategoriesList = $("config-categories-list");
+  refs.configUnitCode = $("config-unit-code");
+  refs.configUnitLabel = $("config-unit-label");
+  refs.configUnitStep = $("config-unit-step");
+  refs.configUnitSort = $("config-unit-sort");
+  refs.configUnitAllowDecimals = $("config-unit-allow-decimals");
+  refs.saveConfigUnitButton = $("save-config-unit-button");
+  refs.configUnitsList = $("config-units-list");
+  refs.configAttributeKey = $("config-attribute-key");
+  refs.configAttributeLabel = $("config-attribute-label");
+  refs.configAttributeType = $("config-attribute-type");
+  refs.configAttributeOptions = $("config-attribute-options");
+  refs.configAttributeSort = $("config-attribute-sort");
+  refs.configAttributeRequired = $("config-attribute-required");
+  refs.saveConfigAttributeButton = $("save-config-attribute-button");
+  refs.configAttributesList = $("config-attributes-list");
   refs.saveAdminConfigButton = $("save-admin-config-button");
   refs.adminAuthModal = $("admin-auth-modal");
+  refs.adminModalSecretTrigger = $("admin-modal-secret-trigger");
   refs.adminAuthTitle = $("admin-auth-title");
   refs.adminAuthDescription = $("admin-auth-description");
   refs.adminAuthUsername = $("admin-auth-username");
@@ -205,7 +488,42 @@ async function bootstrap() {
   refs.adminAuthPassword = $("admin-auth-password");
   refs.adminAuthConfirmField = $("admin-auth-confirm-field");
   refs.adminAuthConfirmPassword = $("admin-auth-confirm-password");
+  refs.adminAuthBootstrapStatus = $("admin-auth-bootstrap-status");
+  refs.adminAuthBootstrapField = $("admin-auth-bootstrap-field");
+  refs.adminAuthBootstrapToken = $("admin-auth-bootstrap-token");
   refs.saveAdminAuthButton = $("save-admin-auth-button");
+  refs.ownerAuthModal = $("owner-auth-modal");
+  refs.ownerAuthTitle = $("owner-auth-title");
+  refs.ownerAuthDescription = $("owner-auth-description");
+  refs.ownerAuthUsername = $("owner-auth-username");
+  refs.ownerAuthPasswordLabel = $("owner-auth-password-label");
+  refs.ownerAuthPassword = $("owner-auth-password");
+  refs.ownerAuthConfirmField = $("owner-auth-confirm-field");
+  refs.ownerAuthConfirmPassword = $("owner-auth-confirm-password");
+  refs.ownerAuthBootstrapStatus = $("owner-auth-bootstrap-status");
+  refs.ownerAuthBootstrapField = $("owner-auth-bootstrap-field");
+  refs.ownerAuthBootstrapToken = $("owner-auth-bootstrap-token");
+  refs.saveOwnerAuthButton = $("save-owner-auth-button");
+  refs.ownerConsoleModal = $("owner-console-modal");
+  refs.ownerConsoleTitle = $("owner-console-title");
+  refs.ownerConsoleDescription = $("owner-console-description");
+  refs.ownerModulesWrap = $("owner-modules-wrap");
+  refs.ownerAdminSectionsWrap = $("owner-admin-sections-wrap");
+  refs.ownerTemplateSelect = $("owner-template-select");
+  refs.ownerTemplateBusinessName = $("owner-template-business-name");
+  refs.ownerTemplateSlug = $("owner-template-slug");
+  refs.ownerTemplateWorkbookPath = $("owner-template-workbook-path");
+  refs.ownerTemplateConfirmText = $("owner-template-confirm-text");
+  refs.ownerTemplateConfirmReset = $("owner-template-confirm-reset");
+  refs.ownerTemplateCurrentSlug = $("owner-template-current-slug");
+  refs.ownerTemplateStatus = $("owner-template-status");
+  refs.applyOwnerTemplateButton = $("apply-owner-template-button");
+  refs.ownerOfflineSalesStatus = $("owner-offline-sales-status");
+  refs.ownerOfflineSalesList = $("owner-offline-sales-list");
+  refs.ownerRetryOfflineSalesButton = $("owner-retry-offline-sales-button");
+  refs.ownerDownloadOfflineSalesButton = $("owner-download-offline-sales-button");
+  refs.saveOwnerConsoleButton = $("save-owner-console-button");
+  refs.ownerLogoutButton = $("owner-logout-button");
   refs.adminEditorModal = $("admin-editor-modal");
   refs.adminEditorTitle = $("admin-editor-title");
   refs.adminEditorDescription = $("admin-editor-description");
@@ -216,6 +534,7 @@ async function bootstrap() {
   refs.socketStatus = $("socket-status");
   refs.networkStatus = $("network-status");
   refs.syncStatus = $("sync-status");
+  refs.syncStatusButton = $("sync-status-button");
   refs.cashierAuthModal = $("cashier-auth-modal");
   refs.cashierAuthName = $("cashier-auth-name");
   refs.cashierAuthBranch = $("cashier-auth-branch");
@@ -240,12 +559,20 @@ async function bootstrap() {
   await restorePreferences();
   await restoreCart();
   await restoreQueue();
+  await restoreOfflineSales();
+  syncOfflineSalesAuditWithQueue();
   await restoreRegisterEvents();
   await restoreCashierSession();
-  state.admin.token = readStorageText(STORAGE_KEYS.adminToken, "");
   const cachedSnapshot = await restoreSnapshot();
   if (cachedSnapshot) {
-    applySnapshot(cachedSnapshot, { skipPersist: true });
+    const initialSnapshot =
+      !state.online && state.cashier.authenticated
+        ? cachedSnapshot
+        : buildPublicSnapshotCacheView(cachedSnapshot);
+    applySnapshot(initialSnapshot, {
+      skipPersist: true,
+      persistPreparedSnapshot: false,
+    });
   }
   try {
     if (state.cashier.token) {
@@ -257,17 +584,15 @@ async function bootstrap() {
     }
   }
   try {
-    if (state.admin.token) {
+    if (state.online) {
       await loadAdminAuthStatus();
-      if (!state.admin.authenticated) {
-        state.admin.token = "";
-        writeStorageText(STORAGE_KEYS.adminToken, "");
-      }
     }
   } catch (error) {
     if (!isNetworkError(error)) {
       state.admin.configured = false;
+      state.admin.setupAllowed = false;
       state.admin.authenticated = false;
+      state.admin.csrfToken = "";
     }
   }
 
@@ -291,18 +616,40 @@ async function bootstrap() {
   renderCashierAuthModal();
   updateClock();
   renderSyncStatus();
+  renderRouteMode();
   window.setInterval(updateClock, 1000);
+  window.addEventListener("resize", renderRouteMode);
+  installRouteSwipeDecisionSurface(refs.itemModalCard, {
+    bar: refs.itemRouteDecisionBar,
+    onLeft: closeItemModal,
+    onRight: () => {
+      if (!refs.itemRouteConfirmButton?.disabled) {
+        addCurrentProductToCart();
+      }
+    },
+  });
+  installRouteSwipeDecisionSurface(refs.paymentModalCard, {
+    bar: refs.paymentRouteDecisionBar,
+    onLeft: closePaymentModal,
+    onRight: () => {
+      if (!refs.paymentRouteConfirmButton?.disabled) {
+        submitSale();
+      }
+    },
+  });
 
   // === Registro de eventos ===
 
   // Buscador
   refs.searchInput.addEventListener("input", () => requestProductsRender(true));
+  refs.toggleRouteModeButton?.addEventListener("click", toggleRouteMode);
 
   // Admin
   refs.openAdminButton.addEventListener("click", openAdminModal);
   if (refs.headerAdminButton) {
     refs.headerAdminButton.addEventListener("click", openAdminModal);
   }
+  refs.adminModalSecretTrigger?.addEventListener("click", registerOwnerRevealIntent);
   refs.adminBranchSelect.addEventListener("change", async () => {
     const branch = refs.adminBranchSelect.value;
     try {
@@ -381,6 +728,7 @@ async function bootstrap() {
   refs.installWorkbookInput.addEventListener("change", installExportWorkbookFromPc);
   refs.toggleAdminInventoryButton.addEventListener("click", toggleAdminInventoryPanel);
   refs.saveAdminProductButton.addEventListener("click", createAdminProduct);
+  refs.adminNewProductUnit?.addEventListener("change", syncAdminProductCatalogs);
 
   // Carrito y venta
   refs.openPaymentButton.addEventListener("click", openPaymentModal);
@@ -412,6 +760,37 @@ async function bootstrap() {
     }
   });
 
+  // Modal Auth Owner
+  $("close-owner-auth-modal").addEventListener("click", closeOwnerAuthModal);
+  $("cancel-owner-auth-button").addEventListener("click", closeOwnerAuthModal);
+  refs.saveOwnerAuthButton.addEventListener("click", submitOwnerAuth);
+  refs.ownerAuthUsername.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitOwnerAuth();
+    }
+  });
+  refs.ownerAuthPassword.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitOwnerAuth();
+    }
+  });
+  refs.ownerAuthConfirmPassword.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitOwnerAuth();
+    }
+  });
+
+  // Owner Console
+  $("close-owner-console-modal").addEventListener("click", closeOwnerConsoleModal);
+  refs.ownerLogoutButton.addEventListener("click", logoutOwner);
+  refs.saveOwnerConsoleButton.addEventListener("click", submitOwnerConsole);
+  refs.applyOwnerTemplateButton?.addEventListener("click", applyOwnerTemplateReset);
+  refs.ownerRetryOfflineSalesButton?.addEventListener("click", retryAllOfflineSalesFromPanel);
+  refs.ownerDownloadOfflineSalesButton?.addEventListener("click", downloadOfflineSalesAuditFromPanel);
+
   // Modal Editor Admin
   $("close-admin-editor-modal").addEventListener("click", closeAdminEditor);
   $("cancel-admin-editor-button").addEventListener("click", closeAdminEditor);
@@ -421,22 +800,39 @@ async function bootstrap() {
   $("close-item-modal").addEventListener("click", closeItemModal);
   $("cancel-item-button").addEventListener("click", closeItemModal);
   $("add-item-button").addEventListener("click", addCurrentProductToCart);
+  refs.itemRouteCancelButton?.addEventListener("click", closeItemModal);
+  refs.itemRouteConfirmButton?.addEventListener("click", addCurrentProductToCart);
   refs.itemQuantity.addEventListener("input", syncItemTotalFromQuantity);
   refs.itemTotal.addEventListener("input", syncItemQuantityFromTotal);
   refs.itemUnitPrice.addEventListener("input", syncItemTotalFromQuantity);
   refs.itemTotal.addEventListener("blur", finalizeItemTotalInput);
   refs.itemTotal.addEventListener("focus", () => refs.itemTotal.select());
+  refs.itemQuickQuantities?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-quantity]");
+    if (!button) {
+      return;
+    }
+    applyItemQuickQuantity(Number(button.dataset.quantity));
+  });
 
   // Modal Payment
   $("close-payment-modal").addEventListener("click", closePaymentModal);
   $("cancel-payment-button").addEventListener("click", closePaymentModal);
   refs.confirmSaleButton.addEventListener("click", submitSale);
+  refs.paymentRouteCancelButton?.addEventListener("click", closePaymentModal);
+  refs.paymentRouteConfirmButton?.addEventListener("click", submitSale);
 
   // Modal Quick Import
   $("close-quick-import-modal").addEventListener("click", closeQuickImportModal);
   refs.quickImportPrevButton.addEventListener("click", goToPreviousQuickImportItem);
+  refs.quickImportNextButton.addEventListener("click", goToNextQuickImportItem);
   refs.quickImportSkipButton.addEventListener("click", skipQuickImportItem);
-  refs.quickImportSaveButton.addEventListener("click", saveQuickImportEntry);
+  refs.quickImportSaveCurrentButton.addEventListener("click", () => {
+    saveQuickImportEntry({ advance: false });
+  });
+  refs.quickImportSaveButton.addEventListener("click", () => {
+    saveQuickImportEntry({ advance: true });
+  });
   refs.quickImportModeBar.addEventListener("click", (event) => {
     const button = event.target.closest("[data-mode]");
     if (!button) {
@@ -451,15 +847,28 @@ async function bootstrap() {
     }
     setQuickImportIndex(Number(button.dataset.index));
   });
+  refs.quickImportSearch.addEventListener("input", () => {
+    updateQuickImportSearch(refs.quickImportSearch.value);
+  });
   refs.quickImportSupplier.addEventListener("input", () => {
     state.quickImport.supplierName = refs.quickImportSupplier.value;
   });
   refs.quickImportValue.addEventListener("input", () => {
-    state.quickImport.currentValue = refs.quickImportValue.value;
-    updateQuickImportResult();
+    updateCurrentQuickImportDraft({ quantity: refs.quickImportValue.value });
   });
   refs.quickImportNote.addEventListener("input", () => {
-    state.quickImport.note = refs.quickImportNote.value;
+    updateCurrentQuickImportDraft({ note: refs.quickImportNote.value });
+  });
+  refs.quickImportSearch.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusQuickImportListItem();
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      focusQuickImportValue();
+    }
   });
   refs.quickImportSupplier.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -470,15 +879,16 @@ async function bootstrap() {
   refs.quickImportValue.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      saveQuickImportEntry();
+      saveQuickImportEntry({ advance: !event.shiftKey });
     }
   });
   refs.quickImportNote.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      saveQuickImportEntry();
+      saveQuickImportEntry({ advance: !event.shiftKey });
     }
   });
+  refs.quickImportModal.addEventListener("keydown", handleQuickImportModalKeydown);
 
   // Modal Solicitud de mercaderia
   $("close-merchandise-request-modal").addEventListener("click", closeMerchandiseRequestModal);
@@ -780,6 +1190,19 @@ async function bootstrap() {
     }
   });
 
+  refs.adminBranchesList?.addEventListener("click", (event) => {
+    const editButton = event.target.closest('[data-action="edit-branch"]');
+    if (editButton) {
+      openAdminBranchEditor(editButton.dataset.code);
+      return;
+    }
+
+    const toggleButton = event.target.closest('[data-action="toggle-branch"]');
+    if (toggleButton) {
+      void toggleAdminBranch(toggleButton.dataset.code, toggleButton.dataset.active === "1");
+    }
+  });
+
   refs.adminMerchandiseRequestsList.addEventListener("click", (event) => {
     const button = event.target.closest('[data-action="open-admin-merchandise-request"]');
     if (!button) {
@@ -848,11 +1271,66 @@ async function bootstrap() {
   $("close-detail-viewer-modal").addEventListener("click", closeDetailViewer);
   refs.closeCashierAuthModal.addEventListener("click", closeCashierAuthModal);
   refs.loginCashierButton.addEventListener("click", loginCashier);
+  refs.saveAdminBranchButton?.addEventListener("click", submitAdminBranch);
+  refs.resetAdminBranchButton?.addEventListener("click", resetAdminBranchForm);
   refs.saveAdminCashierButton.addEventListener("click", submitAdminCashier);
   refs.saveAdminConfigButton.addEventListener("click", submitAdminConfig);
+  refs.applyAdminTemplateButton?.addEventListener("click", applyAdminBusinessTemplate);
+  refs.saveConfigCategoryButton?.addEventListener("click", createAdminCategory);
+  refs.saveConfigUnitButton?.addEventListener("click", createAdminUnit);
+  refs.saveConfigAttributeButton?.addEventListener("click", createAdminProductAttribute);
   refs.devRefreshAdminButton?.addEventListener("click", refreshAdminDevPanelData);
   refs.devSyncOfflineButton?.addEventListener("click", retryOfflineSyncFromDev);
   refs.devDownloadStateButton?.addEventListener("click", downloadDebugStateFromDev);
+  refs.retryOfflineSalesButton?.addEventListener("click", retryAllOfflineSalesFromPanel);
+  refs.downloadOfflineSalesButton?.addEventListener("click", downloadOfflineSalesAuditFromPanel);
+  refs.syncStatusButton?.addEventListener("click", downloadOfflineSalesAuditFromStatus);
+
+  refs.adminOfflineSalesList?.addEventListener("click", (event) => {
+    const actionButton = event.target.closest("[data-offline-sale-action]");
+    if (!actionButton) {
+      return;
+    }
+    void handleOfflineSaleAction(
+      actionButton.dataset.offlineSaleAction,
+      actionButton.dataset.clientSaleId,
+    );
+  });
+
+  refs.ownerOfflineSalesList?.addEventListener("click", (event) => {
+    const actionButton = event.target.closest("[data-offline-sale-action]");
+    if (!actionButton) {
+      return;
+    }
+    void handleOfflineSaleAction(
+      actionButton.dataset.offlineSaleAction,
+      actionButton.dataset.clientSaleId,
+    );
+  });
+
+  refs.configCategoriesList?.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="deactivate-category"]');
+    if (!button) {
+      return;
+    }
+    void deactivateAdminCategory(button.dataset.categoryId);
+  });
+
+  refs.configUnitsList?.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="deactivate-unit"]');
+    if (!button) {
+      return;
+    }
+    void deactivateAdminUnit(button.dataset.unitId);
+  });
+
+  refs.configAttributesList?.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="deactivate-attribute"]');
+    if (!button) {
+      return;
+    }
+    void deactivateAdminProductAttribute(button.dataset.attributeId);
+  });
 
   // Teclado en auth cajero
   refs.cashierAuthName.addEventListener("keydown", (event) => {
@@ -912,6 +1390,15 @@ async function bootstrap() {
   });
 
   // Inventario (modo simple y comparación) - Delegado en contenedor padre
+  $("payment-shortcuts").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-amount]");
+    if (!button) {
+      return;
+    }
+
+    addMoneyShortcut(Number(button.dataset.amount));
+  });
+
   if (refs.inventoryBodyWrapper) {
     refs.inventoryBodyWrapper.addEventListener("click", (event) => {
       const saveButton = event.target.closest('[data-action="save-product"]');
@@ -933,6 +1420,12 @@ async function bootstrap() {
 
   // Keyboard shortcuts globales
   document.addEventListener("keydown", (event) => {
+    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "o") {
+      event.preventDefault();
+      void openOwnerEntryPoint();
+      return;
+    }
+
     if (event.key === "/" && document.activeElement !== refs.searchInput) {
       event.preventDefault();
       refs.searchInput.focus();
@@ -949,6 +1442,8 @@ async function bootstrap() {
       closeDetailViewer();
       closeAdminModal();
       closeAdminAuthModal();
+      closeOwnerAuthModal();
+      closeOwnerConsoleModal();
       closeAdminEditor();
     }
   });
@@ -968,9 +1463,15 @@ async function bootstrap() {
 
   if (!bootstrapLoaded) {
     try {
+      const snapshotHeaders = {
+        ...getCashierAuthHeaders(state.cashier.token || ""),
+        ...getAdminAuthHeaders(),
+        ...getOwnerAuthHeaders(),
+      };
       const snapshot = await performJsonRequest(
         `/api/bootstrap?branch=${encodeURIComponent(getActiveCashierBranch())}`,
         {
+          headers: snapshotHeaders,
           timeout: 15000,
           retries: 2,
         }

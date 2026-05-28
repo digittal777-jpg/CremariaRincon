@@ -33,12 +33,15 @@ const CATEGORY_LABELS = {
 const STORAGE_KEYS = {
   cart: "cremeria.cart",
   shift: "cremeria.shift",
+  routeMode: "cremeria.routeMode",
   cashierSession: "cremeria.cashier.session",
   cashierOfflineProfiles: "cremeria.cashier.offlineProfiles",
   snapshot: "cremeria.snapshot",
+  preparedSnapshots: "cremeria.preparedSnapshots",
   queue: "cremeria.queue",
-  adminToken: "cremeria.adminToken",
+  offlineSales: "cremeria.offlineSales",
   registerEvents: "cremeria.registerEvents",  // Eventos de caja offline
+  deviceId: "cremeria.deviceId",
 };
 
 const OFFLINE_DB_NAME = "cremeria-rincon-offline";

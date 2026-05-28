@@ -2,6 +2,7 @@ const { getDb, nowIso } = require("../db");
 const {
   ALL_BRANCHES,
   STORE_BRANCHES,
+  assertBranchIsActive,
   createHttpError,
   getBranchLabel,
   getInventoryMovementTypeLabel,
@@ -131,9 +132,7 @@ function applyQuickInventoryEntry(payload) {
   const branch = normalizeBranch(payload.branch);
   const current = findQuickImportProduct(payload, branch);
 
-  if (!STORE_BRANCHES.includes(branch)) {
-    throw createHttpError("Selecciona una sucursal valida.");
-  }
+  assertBranchIsActive(branch, "Selecciona una sucursal activa para mover inventario.");
 
   if (!current) {
     throw createHttpError("Selecciona un producto valido para la captura rapida.");
@@ -161,7 +160,7 @@ function applyQuickInventoryEntry(payload) {
 
   let quantityDelta = 0;
   let stockAfter = stockBefore;
-  let movementType = "inventory_in";
+  let movementType = "supplier";
   let referenceType = "inventory-control";
   let note = customNote;
 
@@ -169,7 +168,7 @@ function applyQuickInventoryEntry(payload) {
     // Entrada de inventario: suma la cantidad
     quantityDelta = rawQuantity;
     stockAfter = roundStock(stockBefore + quantityDelta);
-    movementType = "inventory_in";
+    movementType = "supplier";
     note = note || (supplierName ? `Entrada de inventario: ${supplierName}` : "Entrada de inventario");
   }
 
@@ -182,7 +181,7 @@ function applyQuickInventoryEntry(payload) {
       throw createHttpError("No puedes retirar mas producto del que existe en inventario.");
     }
 
-    movementType = "inventory_out";
+    movementType = "supplier_out";
     note = note || (supplierName ? `Retorno de proveedor: ${supplierName}` : "Retorno de inventario");
   }
 
@@ -331,7 +330,7 @@ function updateInventoryMovementAdmin(movementId, payload) {
   );
   const quantityDiff = roundStock(nextQuantityDelta - current.quantityDelta);
   const currentProduct = db.prepare(`
-    SELECT stock
+    SELECT stock, branch
     FROM products
     WHERE id = ?
   `).get(current.productId);
@@ -372,7 +371,7 @@ function updateInventoryMovementAdmin(movementId, payload) {
         UPDATE products
         SET stock = stock + ?, updated_at = ?
         WHERE id = ? AND branch = ?
-      `).run(quantityDiff, nowIso(), current.productId, branch);
+      `).run(quantityDiff, nowIso(), current.productId, current.branch || currentProduct?.branch || null);
     } else {
       db.prepare(`
         UPDATE inventory_movements

@@ -6,23 +6,18 @@ const ExcelJS = require("exceljs");
 const { DATA_DIR, DB_PATH, ENABLE_DB_INSTALL_BACKUP } = require("../config");
 const { createDatabaseBackup, getDb, nowIso } = require("../db");
 const {
-  STORE_BRANCHES,
-  STORE_BRANCH_LABELS,
   createHttpError,
+  listConfiguredBranches,
+  listMeasurementUnits,
+  listProductCategories,
   normalizeBranch,
   normalizeText,
   roundMoney,
   roundStock,
 } = require("../utils/helpers");
+const { buildBranchNameFromCode, ensureBranchesExist, normalizeBranchCode } = require("./branches");
 
 const db = getDb();
-
-const BRANCH_LABEL_TO_CODE = new Map(
-  Object.entries(STORE_BRANCH_LABELS).flatMap(([branchCode, label]) => ([
-    [normalizeLookupKey(branchCode), branchCode],
-    [normalizeLookupKey(label), branchCode],
-  ])),
-);
 
 function normalizeLookupKey(value) {
   return String(value || "")
@@ -31,6 +26,46 @@ function normalizeLookupKey(value) {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function getBranchLabelToCodeMap() {
+  const branchMap = new Map();
+  const configuredBranches = listConfiguredBranches({ includeInactive: true });
+
+  configuredBranches.forEach((branch) => {
+    const code = normalizeBranchCode(branch.code);
+    if (!code) {
+      return;
+    }
+
+    branchMap.set(normalizeLookupKey(code), code);
+    branchMap.set(normalizeLookupKey(branch.name || code), code);
+
+    const generatedName = buildBranchNameFromCode(code);
+    if (generatedName) {
+      branchMap.set(normalizeLookupKey(generatedName), code);
+    }
+  });
+
+  return branchMap;
+}
+
+function resolveWorkbookCategory(categoryValue) {
+  return (
+    getProductCategoryRecord(categoryValue, { includeInactive: true })
+    || listProductCategories({ includeInactive: false })[0]
+    || getProductCategoryRecord("general", { includeInactive: true })
+    || null
+  );
+}
+
+function resolveWorkbookUnit(unitValue) {
+  return (
+    getMeasurementUnitRecord(unitValue, { includeInactive: true })
+    || listMeasurementUnits({ includeInactive: false })[0]
+    || getMeasurementUnitRecord("pza", { includeInactive: true })
+    || null
+  );
 }
 
 function normalizeWorkbookText(value) {
@@ -138,13 +173,14 @@ function getBranchCodeFromText(value) {
     return null;
   }
 
-  for (const [lookupValue, branchCode] of BRANCH_LABEL_TO_CODE.entries()) {
+  for (const [lookupValue, branchCode] of getBranchLabelToCodeMap().entries()) {
     if (normalized === lookupValue || normalized.includes(lookupValue)) {
       return branchCode;
     }
   }
 
-  return null;
+  const fallbackCode = normalizeBranchCode(normalized.replace(/\s+/g, "-"));
+  return fallbackCode && fallbackCode !== "all" ? fallbackCode : null;
 }
 
 function findHeaderMap(worksheet, requiredHeaders) {
@@ -305,9 +341,9 @@ function parseInventorySheets(workbook, defaultBranch) {
       branchProducts.push({
         name,
         category: normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Categoria"), 24)
-          .toLowerCase() || "general",
+          .toLowerCase(),
         unit: normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Unidad"), 12)
-          .toLowerCase() || "kg",
+          .toLowerCase(),
         price: roundMoney(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Precio"))),
         stock: roundStock(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Existencia"))),
         minStock: roundStock(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Minimo"))),
@@ -583,11 +619,7 @@ function buildUniqueImportedTicketNumber(ticketNumber, existingTickets) {
 }
 
 function validateParsedWorkbook(parsedWorkbook) {
-  parsedWorkbook.branches.forEach((branch) => {
-    if (!STORE_BRANCHES.includes(branch)) {
-      throw createHttpError(`La sucursal "${branch}" no es valida para esta instalacion.`);
-    }
-  });
+  ensureBranchesExist(parsedWorkbook.branches);
 
   parsedWorkbook.sales.forEach((sale) => {
     if (!parsedWorkbook.productsByBranch.has(sale.branch)) {
@@ -615,6 +647,7 @@ function validateParsedWorkbook(parsedWorkbook) {
 }
 
 function installParsedWorkbookData(parsedWorkbook) {
+  ensureBranchesExist(parsedWorkbook.branches);
   validateParsedWorkbook(parsedWorkbook);
 
   const deleteInventoryMovementsByBranch = db.prepare(
@@ -628,9 +661,17 @@ function installParsedWorkbookData(parsedWorkbook) {
     INSERT INTO products (
       name,
       price,
+      cost,
       category,
       unit,
+      category_id,
+      unit_id,
       type_code,
+      sku,
+      barcode,
+      brand,
+      supplier_name,
+      pack_size,
       stock,
       min_stock,
       stock_initialized,
@@ -639,7 +680,7 @@ function installParsedWorkbookData(parsedWorkbook) {
       branch,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertSale = db.prepare(`
     INSERT INTO sales (
@@ -727,14 +768,30 @@ function installParsedWorkbookData(parsedWorkbook) {
     parsedWorkbook.branches.forEach((branch) => {
       const products = parsedWorkbook.productsByBranch.get(branch) || [];
       products.forEach((product) => {
+        const categoryRecord = resolveWorkbookCategory(product.category);
+        const unitRecord = resolveWorkbookUnit(product.unit);
+        if (!categoryRecord) {
+          throw createHttpError(`No encontre una categoria valida para "${product.name}".`, 400);
+        }
+        if (!unitRecord) {
+          throw createHttpError(`No encontre una unidad valida para "${product.name}".`, 400);
+        }
         const insert = insertProduct.run(
           product.name,
           roundMoney(product.price),
-          ["quesos", "carnes", "piezas", "general"].includes(product.category)
-            ? product.category
-            : "general",
-          ["kg", "pza"].includes(product.unit) ? product.unit : "kg",
-          null,
+          roundMoney(product.cost || 0),
+          categoryRecord.code,
+          unitRecord.code,
+          categoryRecord.id,
+          unitRecord.id,
+          normalizeText(product.typeCode || "", 8).toUpperCase() || null,
+          normalizeText(product.sku || "", 48) || null,
+          normalizeText(product.barcode || "", 64) || null,
+          normalizeText(product.brand || "", 60) || null,
+          normalizeText(product.supplierName || product.supplier_name || "", 80) || null,
+          product.packSize == null || product.packSize === ""
+            ? null
+            : roundStock(product.packSize),
           roundStock(product.stock),
           Math.max(0, roundStock(product.minStock)),
           1,

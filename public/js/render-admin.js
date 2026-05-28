@@ -119,20 +119,331 @@ function renderAdminModal() {
       : "Vista compacta. Abre inventario solo cuando lo necesites.";
   }
 
+  updateModuleVisibility();
   renderAdminDevPanel();
+  renderAdminBranches();
   renderAdminWeightedAuditPanel();
+  updateModuleVisibility();
 } // FIX: llave de cierre de renderAdminModal que faltaba
+
+const ADMIN_AVAILABLE_MODULES = [
+  { code: "merchandise_requests", label: "Solicitudes de mercaderia" },
+  { code: "weighted_audit", label: "Auditoria de pesado" },
+];
+
+function syncAdminProductCatalogs() {
+  if (refs.adminNewProductCategory) {
+    const categoryOptions = state.categories.map((category) => ({
+      value: String(category.id),
+      label: category.label,
+    }));
+    setSelectOptions(
+      refs.adminNewProductCategory,
+      categoryOptions,
+      refs.adminNewProductCategory.value || String(categoryOptions[0]?.value || ""),
+    );
+  }
+
+  if (refs.adminNewProductUnit) {
+    const unitOptions = state.units.map((unit) => ({
+      value: String(unit.id),
+      label: unit.label,
+    }));
+    setSelectOptions(
+      refs.adminNewProductUnit,
+      unitOptions,
+      refs.adminNewProductUnit.value || String(unitOptions[0]?.value || ""),
+    );
+    const selectedUnit = getUnitRecord(Number(refs.adminNewProductUnit.value) || refs.adminNewProductUnit.value)
+      || state.units[0]
+      || null;
+    const numericStep = Number(selectedUnit?.step || 0.25);
+    const numericMin = selectedUnit?.allowDecimals === false ? 1 : Math.min(numericStep, 0.25);
+    if (refs.adminNewProductStock) {
+      refs.adminNewProductStock.step = String(numericStep);
+      refs.adminNewProductStock.min = "0";
+    }
+    if (refs.adminNewProductMinStock) {
+      refs.adminNewProductMinStock.step = String(numericStep);
+      refs.adminNewProductMinStock.min = String(numericMin);
+    }
+    if (refs.adminNewProductPackSize) {
+      refs.adminNewProductPackSize.step = String(numericStep);
+    }
+  }
+
+  if (refs.adminNewProductAttributes) {
+    const definitions = getProductAttributeDefinitions();
+    refs.adminNewProductAttributes.innerHTML = definitions.length
+      ? definitions
+          .map((definition) => {
+            if (definition.valueType === "boolean") {
+              return `
+                <label class="field">
+                  <span>${escapeHtml(definition.label)}</span>
+                  <label class="admin-inline-check">
+                    <input
+                      type="checkbox"
+                      data-attribute-key="${escapeHtml(definition.key)}"
+                      data-attribute-type="${escapeHtml(definition.valueType)}"
+                    />
+                    <span>Activo</span>
+                  </label>
+                </label>
+              `;
+            }
+
+            if (definition.valueType === "select") {
+              const options = Array.isArray(definition.options) ? definition.options : [];
+              return `
+                <label class="field">
+                  <span>${escapeHtml(definition.label)}</span>
+                  <select
+                    data-attribute-key="${escapeHtml(definition.key)}"
+                    data-attribute-type="${escapeHtml(definition.valueType)}"
+                  >
+                    <option value="">Selecciona</option>
+                    ${options.map((option) => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join("")}
+                  </select>
+                </label>
+              `;
+            }
+
+            return `
+              <label class="field">
+                <span>${escapeHtml(definition.label)}</span>
+                <input
+                  type="${definition.valueType === "number" ? "number" : "text"}"
+                  ${definition.valueType === "number" ? 'step="0.01"' : ""}
+                  data-attribute-key="${escapeHtml(definition.key)}"
+                  data-attribute-type="${escapeHtml(definition.valueType)}"
+                />
+              </label>
+            `;
+          })
+          .join("")
+      : `<small class="helper-text">Sin atributos extra activos para este negocio.</small>`;
+  }
+}
+
+function renderAdminConfigPanel() {
+  if (!refs.adminModal?.classList.contains("open")) {
+    return;
+  }
+
+  const profile = getStoreProfile();
+  if (refs.configBusinessName) refs.configBusinessName.value = profile.businessName || "";
+  if (refs.configShortName) refs.configShortName.value = profile.shortName || "";
+  if (refs.configSlug) refs.configSlug.value = profile.slug || "";
+  if (refs.configTimezone) refs.configTimezone.value = profile.timezone || state.store.timezone || "America/Mexico_City";
+  if (refs.configLocale) refs.configLocale.value = profile.locale || "es-MX";
+  if (refs.configCurrencyCode) refs.configCurrencyCode.value = profile.currencyCode || "MXN";
+  if (refs.configTicketPrefix) refs.configTicketPrefix.value = profile.ticketPrefix || "";
+
+  if (refs.configTemplateSelect) {
+    setSelectOptions(
+      refs.configTemplateSelect,
+      state.businessTemplates.map((template) => ({
+        value: template.key,
+        label: `${template.key} - ${template.description || template.businessName || template.key}`,
+      })),
+      profile.templateKey || state.businessTemplates[0]?.key || "",
+    );
+  }
+
+  if (refs.configModulesWrap) {
+    refs.configModulesWrap.innerHTML = ADMIN_AVAILABLE_MODULES
+      .map((module) => `
+        <label class="admin-module-chip">
+          <input
+            type="checkbox"
+            data-module-code="${escapeHtml(module.code)}"
+            ${hasEnabledModule(module.code) ? "checked" : ""}
+          />
+          <span>${escapeHtml(module.label)}</span>
+        </label>
+      `)
+      .join("");
+  }
+
+  if (refs.configCategoriesList) {
+    refs.configCategoriesList.innerHTML = state.categories.length
+      ? state.categories
+          .map((category) => `
+            <div class="admin-record-item">
+              <div class="admin-record-item-head">
+                <strong>${escapeHtml(category.label)}</strong>
+                <span class="small-pill">${escapeHtml(category.code)}</span>
+              </div>
+              <p>Orden ${formatQuantity(category.sortOrder || 0)}</p>
+              <button
+                class="ghost-button compact-button"
+                data-action="deactivate-category"
+                data-category-id="${category.id}"
+                type="button"
+              >
+                Desactivar
+              </button>
+            </div>
+          `)
+          .join("")
+      : `<div class="empty-state">No hay categorias activas.</div>`;
+  }
+
+  if (refs.configUnitsList) {
+    refs.configUnitsList.innerHTML = state.units.length
+      ? state.units
+          .map((unit) => `
+            <div class="admin-record-item">
+              <div class="admin-record-item-head">
+                <strong>${escapeHtml(unit.label)}</strong>
+                <span class="small-pill">${escapeHtml(unit.code)}</span>
+              </div>
+              <p>Paso ${formatQuantity(unit.step || 0.25)} Â· ${unit.allowDecimals ? "decimales" : "enteros"}</p>
+              <button
+                class="ghost-button compact-button"
+                data-action="deactivate-unit"
+                data-unit-id="${unit.id}"
+                type="button"
+              >
+                Desactivar
+              </button>
+            </div>
+          `)
+          .join("")
+      : `<div class="empty-state">No hay unidades activas.</div>`;
+  }
+
+  if (refs.configAttributesList) {
+    refs.configAttributesList.innerHTML = state.productAttributeDefinitions.length
+      ? state.productAttributeDefinitions
+          .map((definition) => `
+            <div class="admin-record-item">
+              <div class="admin-record-item-head">
+                <strong>${escapeHtml(definition.label)}</strong>
+                <span class="small-pill">${escapeHtml(definition.key)}</span>
+              </div>
+              <p>${escapeHtml(definition.valueType)}${definition.required ? " Â· obligatorio" : ""}${definition.options?.length ? ` Â· ${escapeHtml(definition.options.join(", "))}` : ""}</p>
+              <button
+                class="ghost-button compact-button"
+                data-action="deactivate-attribute"
+                data-attribute-id="${definition.id}"
+                type="button"
+              >
+                Desactivar
+              </button>
+            </div>
+          `)
+          .join("")
+      : `<div class="empty-state">No hay atributos de producto activos.</div>`;
+  }
+}
+
+function buildOfflineSaleRecordMarkup(record) {
+  const displayState = getOfflineSaleDisplayState(record);
+  const syncTimestamp = record.syncedAt || record.lastSyncAttemptAt || record.rejectedAt || record.queuedAt || record.createdAt;
+  const syncLabel = syncTimestamp
+    ? dateTimeFormatter.format(new Date(syncTimestamp))
+    : "Sin fecha";
+  const stateSummary = displayState.status === "synced"
+    ? `Sincronizada ${syncLabel}`
+    : displayState.status === "rejected"
+      ? `Rechazada ${syncLabel}`
+      : `Cola ${syncLabel}`;
+
+  return `
+    <article class="admin-record-item offline-sale-record">
+      <div class="admin-record-item-head">
+        <strong>${escapeHtml(record.localTicketNumber || record.syncedTicketNumber || "Venta offline")}</strong>
+        <span class="offline-sale-status-pill ${displayState.status}">${escapeHtml(displayState.label)}</span>
+      </div>
+      <p>${escapeHtml(getBranchLabel(record.branch))} · ${escapeHtml(record.cashier || "Cajero")} · ${escapeHtml(record.shift || "Tarde")} · ${formatCurrency(record.total || 0)}</p>
+      <p>${escapeHtml(stateSummary)} · ${escapeHtml(displayState.note)}</p>
+      <p>${escapeHtml((record.items || []).map((item) => `${item.productName} x${formatQuantity(item.quantity || 0)}`).join(" · ") || "Sin detalle de productos.")}</p>
+      <div class="admin-record-actions">
+        ${displayState.canRetry ? `<button class="secondary-button compact-button" data-offline-sale-action="retry" data-client-sale-id="${escapeHtml(record.clientSaleId)}" type="button">Reintentar</button>` : ""}
+        ${displayState.canReject ? `<button class="ghost-button compact-button" data-offline-sale-action="reject" data-client-sale-id="${escapeHtml(record.clientSaleId)}" type="button">Marcar rechazada</button>` : ""}
+        ${displayState.canReactivate ? `<button class="secondary-button compact-button" data-offline-sale-action="reactivate" data-client-sale-id="${escapeHtml(record.clientSaleId)}" type="button">Reactivar</button>` : ""}
+        <button class="ghost-button compact-button" data-offline-sale-action="download" data-client-sale-id="${escapeHtml(record.clientSaleId)}" type="button">Descargar</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderOfflineSalesPanel(listElement, statusElement) {
+  if (!listElement || !statusElement) {
+    return;
+  }
+
+  const records = Array.isArray(state.offlineSales) ? state.offlineSales : [];
+  const summary = typeof getOfflineSalesStatusSummary === "function"
+    ? getOfflineSalesStatusSummary(records)
+    : {
+        pending: 0,
+        requiresReview: 0,
+        synced: 0,
+        rejected: 0,
+        outstanding: 0,
+      };
+  const pendingCount = summary.pending;
+  const reviewCount = summary.requiresReview;
+  const syncedCount = summary.synced;
+  const rejectedCount = summary.rejected;
+
+  statusElement.textContent = records.length > 0
+    ? `${pendingCount} pendientes · ${reviewCount} revision · ${syncedCount} sincronizadas · ${rejectedCount} rechazadas`
+    : "Sin ventas offline";
+
+  listElement.innerHTML = records.length > 0
+    ? records.map((record) => buildOfflineSaleRecordMarkup(record)).join("")
+    : `<div class="empty-state">No hay tickets offline guardados en este dispositivo.</div>`;
+}
 
 function renderAdminDevPanel() {
   if (!refs.adminDevSummary) {
     return;
   }
 
+  const backupStatusBundle = state.admin.backupsStatus;
+  const lastBackupRun = backupStatusBundle?.lastRun || null;
+  const backupLabel = lastBackupRun
+    ? lastBackupRun.status === "ok"
+      ? "OK"
+      : lastBackupRun.status === "partial"
+        ? "Parcial"
+        : lastBackupRun.status === "failed"
+          ? "Fallido"
+          : "Corriendo"
+    : hasAdminCapability("backups")
+      ? "Sin corridas"
+      : "Bloqueado";
   const snapshotBytes = estimateSerializedBytes(buildPersistedSnapshot());
   const queueBytes = estimateSerializedBytes(state.pendingQueue);
   const registerBytes = estimateSerializedBytes(state.register.events);
   const auditBytes = estimateSerializedBytes(state.admin.auditLogs);
-  const statusText = state.syncingQueue ? "Sincronizando" : state.online ? "En linea" : "Offline";
+  const blockedQueueCount =
+    typeof getBlockedPendingOperationCount === "function" ? getBlockedPendingOperationCount() : 0;
+  const blockedOperation =
+    typeof getFirstBlockedPendingOperation === "function" ? getFirstBlockedPendingOperation() : null;
+  const statusText = state.syncingQueue
+    ? "Sincronizando"
+    : blockedQueueCount > 0
+      ? "Revision requerida"
+      : state.online
+        ? "En linea"
+        : "Offline";
+  const queueDetailText = blockedQueueCount > 0
+    ? `${state.pendingQueue.length} pendientes · ${blockedQueueCount} con error`
+    : `${state.pendingQueue.length} pendientes · ${state.register.events.length} eventos caja`;
+  const queueStatusNote = blockedOperation?.lastSyncError
+    ? escapeHtml(blockedOperation.lastSyncError)
+    : `Cola ${formatBytes(queueBytes)} · cortes ${formatBytes(registerBytes)}`;
+
+  const backupNote = lastBackupRun
+    ? `${lastBackupRun.backupDateKey} Â· SQLite ${formatBytes(lastBackupRun.sqliteBytes || 0)} Â· Excel ${formatBytes(lastBackupRun.workbookBytes || 0)}`
+    : hasAdminCapability("backups")
+      ? "Activa el job nocturno para ver respaldos."
+      : "El owner bloqueo respaldos.";
 
   refs.adminDevSummary.innerHTML = `
     <article class="admin-metric-card">
@@ -153,9 +464,36 @@ function renderAdminDevPanel() {
     <article class="admin-metric-card">
       <span>Vista actual</span>
       <strong>${escapeHtml(getBranchLabel(getAdminBranch()))}</strong>
-      <p>Productos render ${state.performance.renderedProductCount} · token ${state.admin.token ? "activo" : "sin token"}</p>
+      <p>Productos render ${state.performance.renderedProductCount} · sesion ${state.admin.authenticated ? "activa" : "cerrada"}</p>
     </article>
   `;
+
+  refs.adminDevSummary.insertAdjacentHTML("beforeend", `
+    <article class="admin-metric-card">
+      <span>Ultimo backup</span>
+      <strong>${backupLabel}</strong>
+      <p>${escapeHtml(backupNote)}</p>
+    </article>
+  `);
+
+  const devSummaryNotes = refs.adminDevSummary.querySelectorAll(".admin-metric-card p");
+  if (devSummaryNotes[0]) {
+    devSummaryNotes[0].textContent = queueDetailText;
+  }
+  if (devSummaryNotes[1]) {
+    devSummaryNotes[1].textContent = blockedOperation?.lastSyncError
+      ? blockedOperation.lastSyncError
+      : `Cola ${formatBytes(queueBytes)} · cortes ${formatBytes(registerBytes)}`;
+  }
+  if (devSummaryNotes[4]) {
+    devSummaryNotes[4].textContent = lastBackupRun?.errorMessage
+      ? lastBackupRun.errorMessage
+      : lastBackupRun?.syncState === "partial"
+        ? `${backupStatusBundle?.syncHealth?.pendingReportCount || 0} equipos con cola pendiente`
+        : backupNote;
+  }
+
+  renderOfflineSalesPanel(refs.adminOfflineSalesList, refs.adminOfflineSalesStatus);
 }
 
 function renderAdminRecordLists() {
@@ -274,27 +612,231 @@ function renderAdminCashiers() {
     : `<div class="empty-state">No hay cajeros registrados para esta vista.</div>`;
 }
 
+function renderAdminBranches() {
+  if (!refs.adminBranchesList) {
+    return;
+  }
+  if (!refs.adminModal?.classList.contains("open")) {
+    return;
+  }
+
+  if (refs.adminBranchTimezone && !refs.adminBranchTimezone.value) {
+    refs.adminBranchTimezone.value = state.store.timezone || "America/Mexico_City";
+  }
+
+  refs.adminBranchesList.innerHTML = state.admin.branches.length
+    ? state.admin.branches
+        .map(
+          (branch) => `
+            <article class="admin-record-item">
+              <div class="admin-record-item-head">
+                <strong>${escapeHtml(branch.name)}</strong>
+                <span class="small-pill">${escapeHtml(branch.code)}</span>
+              </div>
+              <p>${branch.active ? "Activa" : "Inactiva"} · ${escapeHtml(branch.timezone || "America/Mexico_City")}</p>
+              <p>Orden ${escapeHtml(String(branch.sortOrder ?? 0))}</p>
+              <div class="admin-record-actions">
+                <button class="secondary-button compact-button" data-action="edit-branch" data-code="${escapeHtml(branch.code)}" type="button">
+                  Editar
+                </button>
+                <button class="ghost-button compact-button ${branch.active ? "" : "is-active"}" data-action="toggle-branch" data-code="${escapeHtml(branch.code)}" data-active="${branch.active ? "1" : "0"}" type="button">
+                  ${branch.active ? "Desactivar" : "Activar"}
+                </button>
+              </div>
+            </article>
+          `,
+        )
+        .join("")
+    : `<div class="empty-state">No hay sucursales configuradas todavia.</div>`;
+}
+
 function renderAdminAuthModal() {
   if (!refs.adminAuthModal) {
     return;
   }
 
   const isSetup = state.adminAuth.mode === "setup";
-  refs.adminAuthTitle.textContent = isSetup ? "Crear acceso admin" : "Acceso admin";
-  refs.adminAuthDescription.textContent = isSetup
-    ? "Crea usuario y contrasena para proteger el panel admin."
-    : "Ingresa usuario y contrasena para abrir el panel admin.";
+  const isBlocked = state.adminAuth.mode === "blocked";
+  refs.adminAuthTitle.textContent = isBlocked
+    ? "Bootstrap admin bloqueado"
+    : isSetup
+      ? "Crear acceso admin"
+      : "Acceso admin";
+  refs.adminAuthDescription.textContent = isBlocked
+    ? "Este despliegue no permite crear el acceso admin por web. Configura POS_BOOTSTRAP_TOKEN o prepara credenciales antes de exponerlo."
+    : isSetup
+      ? "Crea usuario y contrasena para proteger el panel admin."
+      : "Ingresa usuario y contrasena para abrir el panel admin.";
   refs.adminAuthPasswordLabel.textContent = isSetup ? "Nueva contrasena" : "Contrasena";
   refs.adminAuthConfirmField.hidden = !isSetup;
+  if (refs.adminAuthBootstrapStatus) {
+    refs.adminAuthBootstrapStatus.hidden = !isSetup;
+    refs.adminAuthBootstrapStatus.textContent = state.admin.setupAllowed
+      ? "Captura el token de bootstrap para habilitar la creacion inicial."
+      : "La creacion web de admin esta deshabilitada en este despliegue.";
+  }
+  if (refs.adminAuthBootstrapField) {
+    refs.adminAuthBootstrapField.hidden = !isSetup || !state.admin.setupAllowed;
+  }
   refs.saveAdminAuthButton.textContent = state.adminAuth.loading
     ? "Guardando..."
-    : isSetup
+    : isBlocked
+      ? "Bloqueado"
+      : isSetup
       ? "Crear contrasena"
       : "Entrar";
-  refs.saveAdminAuthButton.disabled = state.adminAuth.loading;
-  refs.adminAuthUsername.disabled = state.adminAuth.loading;
-  refs.adminAuthPassword.disabled = state.adminAuth.loading;
-  refs.adminAuthConfirmPassword.disabled = state.adminAuth.loading;
+  refs.saveAdminAuthButton.disabled = state.adminAuth.loading || isBlocked;
+  refs.adminAuthUsername.disabled = state.adminAuth.loading || isBlocked;
+  refs.adminAuthPassword.disabled = state.adminAuth.loading || isBlocked;
+  refs.adminAuthConfirmPassword.disabled = state.adminAuth.loading || isBlocked;
+  if (refs.adminAuthBootstrapToken) {
+    refs.adminAuthBootstrapToken.disabled = state.adminAuth.loading || isBlocked || !isSetup || !state.admin.setupAllowed;
+  }
+}
+
+function renderOwnerAuthModal() {
+  if (!refs.ownerAuthModal) {
+    return;
+  }
+
+  const isSetup = state.ownerAuth.mode === "setup";
+  const isBlocked = state.ownerAuth.mode === "blocked";
+  refs.ownerAuthTitle.textContent = isBlocked
+    ? "Bootstrap owner bloqueado"
+    : isSetup
+      ? "Crear acceso owner"
+      : "Acceso owner";
+  refs.ownerAuthDescription.textContent = isBlocked
+    ? "Este despliegue no permite crear el acceso owner por web. Configura POS_BOOTSTRAP_TOKEN o prepara el owner antes de publicarlo."
+    : isSetup
+      ? "Crea tu usuario y contrasena maestra para abrir la consola dev oculta."
+      : "Ingresa tu usuario y contrasena maestra para abrir la consola dev oculta.";
+  refs.ownerAuthPasswordLabel.textContent = isSetup ? "Nueva contrasena" : "Contrasena";
+  refs.ownerAuthConfirmField.hidden = !isSetup;
+  if (refs.ownerAuthBootstrapStatus) {
+    refs.ownerAuthBootstrapStatus.hidden = !isSetup;
+    refs.ownerAuthBootstrapStatus.textContent = state.owner.setupAllowed
+      ? "Captura el token de bootstrap para crear el owner inicial."
+      : "La creacion web de owner esta deshabilitada en este despliegue.";
+  }
+  if (refs.ownerAuthBootstrapField) {
+    refs.ownerAuthBootstrapField.hidden = !isSetup || !state.owner.setupAllowed;
+  }
+  refs.saveOwnerAuthButton.textContent = state.ownerAuth.loading
+    ? "Guardando..."
+    : isBlocked
+      ? "Bloqueado"
+      : isSetup
+      ? "Crear acceso"
+      : "Entrar";
+  refs.saveOwnerAuthButton.disabled = state.ownerAuth.loading || isBlocked;
+  refs.ownerAuthUsername.disabled = state.ownerAuth.loading || isBlocked;
+  refs.ownerAuthPassword.disabled = state.ownerAuth.loading || isBlocked;
+  refs.ownerAuthConfirmPassword.disabled = state.ownerAuth.loading || isBlocked;
+  if (refs.ownerAuthBootstrapToken) {
+    refs.ownerAuthBootstrapToken.disabled = state.ownerAuth.loading || isBlocked || !isSetup || !state.owner.setupAllowed;
+  }
+}
+
+function renderOwnerConsoleModal() {
+  if (!refs.ownerConsoleModal || !refs.ownerModulesWrap || !refs.ownerAdminSectionsWrap) {
+    return;
+  }
+
+  refs.ownerConsoleTitle.textContent = "Panel dev oculto";
+  refs.ownerConsoleDescription.textContent = state.owner.authenticated
+    ? `Sesion owner activa como ${state.owner.username || "owner"}.`
+    : "Acceso reservado para el desarrollador o dueño tecnico del sistema.";
+
+  const modules = getOwnerAvailableModules();
+  const adminSections = getOwnerAdminSections();
+  const loading = state.owner.loading;
+  const saving = state.owner.saving;
+  const applyingTemplate = Boolean(state.owner.templateReset?.applying);
+  const ownerTemplateBusy = loading || saving || applyingTemplate;
+
+  refs.ownerModulesWrap.innerHTML = modules.length
+    ? modules.map((module) => `
+        <label class="admin-chip-toggle">
+          <input
+            type="checkbox"
+            data-owner-module-code="${escapeHtml(module.code)}"
+            ${hasEnabledModule(module.code) ? "checked" : ""}
+            ${loading || saving ? "disabled" : ""}
+          />
+          <span>
+            <strong>${escapeHtml(module.label)}</strong>
+            <small>${escapeHtml(module.description || "")}</small>
+          </span>
+        </label>
+      `).join("")
+    : `<div class="empty-state">Sin modulos owner registrados.</div>`;
+
+  refs.ownerAdminSectionsWrap.innerHTML = adminSections.length
+    ? adminSections.map((section) => `
+        <label class="admin-chip-toggle">
+          <input
+            type="checkbox"
+            data-owner-capability-code="${escapeHtml(section.code)}"
+            ${hasAdminCapability(section.code) ? "checked" : ""}
+            ${loading || saving ? "disabled" : ""}
+          />
+          <span>
+            <strong>${escapeHtml(section.label)}</strong>
+            <small>${escapeHtml(section.description || "")}</small>
+          </span>
+        </label>
+      `).join("")
+    : `<div class="empty-state">Sin secciones owner registradas.</div>`;
+
+  if (refs.ownerTemplateCurrentSlug) {
+    refs.ownerTemplateCurrentSlug.textContent = state.profile?.slug || "(sin slug)";
+  }
+  if (refs.ownerTemplateStatus) {
+    refs.ownerTemplateStatus.textContent = applyingTemplate
+      ? "Rearmando negocio y catalogo..."
+      : "Esta accion reinicia productos, cajeros, ventas y sesiones. Requiere el slug actual y un Excel valido.";
+  }
+  if (refs.ownerTemplateSelect) {
+    setSelectOptions(
+      refs.ownerTemplateSelect,
+      (state.owner.templates || []).map((template) => ({
+        value: template.key,
+        label: `${template.key} - ${template.description || template.businessName || template.key}`,
+      })),
+      state.owner.templateReset?.selectedTemplateKey || state.owner.templates?.[0]?.key || "",
+    );
+    refs.ownerTemplateSelect.disabled = ownerTemplateBusy || !state.owner.authenticated;
+  }
+  if (refs.ownerTemplateBusinessName) {
+    refs.ownerTemplateBusinessName.value = state.owner.templateReset?.businessName || "";
+    refs.ownerTemplateBusinessName.disabled = ownerTemplateBusy || !state.owner.authenticated;
+  }
+  if (refs.ownerTemplateSlug) {
+    refs.ownerTemplateSlug.value = state.owner.templateReset?.slug || "";
+    refs.ownerTemplateSlug.disabled = ownerTemplateBusy || !state.owner.authenticated;
+  }
+  if (refs.ownerTemplateWorkbookPath) {
+    refs.ownerTemplateWorkbookPath.value = state.owner.templateReset?.workbookPath || "";
+    refs.ownerTemplateWorkbookPath.disabled = ownerTemplateBusy || !state.owner.authenticated;
+  }
+  if (refs.ownerTemplateConfirmText) {
+    refs.ownerTemplateConfirmText.value = state.owner.templateReset?.confirmText || "";
+    refs.ownerTemplateConfirmText.disabled = ownerTemplateBusy || !state.owner.authenticated;
+  }
+  if (refs.ownerTemplateConfirmReset) {
+    refs.ownerTemplateConfirmReset.checked = Boolean(state.owner.templateReset?.confirmReset);
+    refs.ownerTemplateConfirmReset.disabled = ownerTemplateBusy || !state.owner.authenticated;
+  }
+  if (refs.applyOwnerTemplateButton) {
+    refs.applyOwnerTemplateButton.disabled = ownerTemplateBusy || !state.owner.authenticated;
+    refs.applyOwnerTemplateButton.textContent = applyingTemplate ? "Reiniciando..." : "Aplicar plantilla completa";
+  }
+
+  renderOfflineSalesPanel(refs.ownerOfflineSalesList, refs.ownerOfflineSalesStatus);
+  refs.saveOwnerConsoleButton.disabled = loading || saving || applyingTemplate || !state.owner.authenticated;
+  refs.saveOwnerConsoleButton.textContent = saving ? "Guardando..." : "Guardar cambios";
+  refs.ownerLogoutButton.disabled = saving || applyingTemplate;
 }
 
 function renderAdminEditorModal() {
@@ -457,6 +999,27 @@ function renderAdminWeightedAuditPanel() {
   }
   if (!refs.adminModal?.classList.contains("open")) {
     return;
+  }
+
+  const weightedPanelEnabled = hasEnabledModule("weighted_audit") && hasAdminCapability("weighted_audit");
+  const weightedPanel = refs.adminWeightedAuditStatus.closest(".admin-weighted-panel");
+  if (!weightedPanelEnabled) {
+    if (weightedPanel) {
+      weightedPanel.hidden = true;
+    }
+    refs.adminWeightedAuditStatus.textContent = "Auditoria desactivada";
+    refs.adminWeightedAuditSessions.innerHTML = "";
+    refs.adminWeightedAuditItems.innerHTML = "";
+    if (refs.saveWeightedAuditItemsButton) {
+      refs.saveWeightedAuditItemsButton.disabled = true;
+    }
+    if (refs.completeWeightedAuditButton) {
+      refs.completeWeightedAuditButton.disabled = true;
+    }
+    return;
+  }
+  if (weightedPanel) {
+    weightedPanel.hidden = false;
   }
 
   const weightedState = state.admin.weightedAudit || {};
