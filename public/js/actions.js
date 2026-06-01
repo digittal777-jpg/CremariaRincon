@@ -510,7 +510,67 @@ async function refreshCurrentSnapshot(branch = getActiveCashierBranch()) {
   return snapshot;
 }
 
+function syncAdminSharedState(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return;
+  }
+
+  const previousCategories = JSON.stringify((state.categories || []).map((category) => [category.id, category.code]));
+  const previousUnits = JSON.stringify((state.units || []).map((unit) => [unit.id, unit.code, unit.step]));
+  const previousAttributes = JSON.stringify((state.productAttributeDefinitions || []).map((definition) => [definition.id, definition.key]));
+  const nextStore = snapshot.store && typeof snapshot.store === "object"
+    ? {
+        ...state.store,
+        ...snapshot.store,
+      }
+    : null;
+
+  if (nextStore && snapshot.store?.currentBranch === "all" && state.store?.currentBranch) {
+    nextStore.currentBranch = state.store.currentBranch;
+    nextStore.currentBranchLabel = state.store.currentBranchLabel || nextStore.currentBranchLabel;
+  }
+
+  if (nextStore) {
+    state.store = nextStore;
+  }
+  state.profile = snapshot.profile || state.profile;
+  state.enabledModules = Array.isArray(snapshot.enabledModules) ? snapshot.enabledModules : state.enabledModules;
+  state.adminCapabilities = Array.isArray(snapshot.adminCapabilities)
+    ? snapshot.adminCapabilities
+    : state.adminCapabilities;
+  state.categories = Array.isArray(snapshot.categories) ? snapshot.categories : state.categories;
+  state.units = Array.isArray(snapshot.units) ? snapshot.units : state.units;
+  state.productAttributeDefinitions = Array.isArray(snapshot.productAttributeDefinitions)
+    ? snapshot.productAttributeDefinitions
+    : state.productAttributeDefinitions;
+
+  if (
+    state.selectedCategory !== "all"
+    && !state.categories.some((category) => category.code === state.selectedCategory)
+  ) {
+    state.selectedCategory = "all";
+  }
+
+  applyBusinessBranding();
+  updateModuleVisibility();
+  if (typeof syncCashierBranchOptions === "function") {
+    syncCashierBranchOptions();
+  }
+  if (typeof renderCategoryFilters === "function") {
+    renderCategoryFilters();
+  }
+
+  const catalogsChanged =
+    previousCategories !== JSON.stringify((state.categories || []).map((category) => [category.id, category.code]))
+    || previousUnits !== JSON.stringify((state.units || []).map((unit) => [unit.id, unit.code, unit.step]))
+    || previousAttributes !== JSON.stringify((state.productAttributeDefinitions || []).map((definition) => [definition.id, definition.key]));
+  if (catalogsChanged && typeof syncAdminProductCatalogs === "function") {
+    syncAdminProductCatalogs();
+  }
+}
+
 function applyAdminSnapshot(snapshot) {
+  syncAdminSharedState(snapshot);
   state.admin.snapshot = snapshot || null;
   state.admin.inventoryProducts = Array.isArray(snapshot?.inventoryProducts)
     ? snapshot.inventoryProducts
@@ -1259,9 +1319,38 @@ async function refreshAdminWorkspace(options = {}) {
     return;
   }
 
-  adminWorkspaceRefreshPromise = Promise.allSettled(
-    getAdminWorkspaceTasks(normalized),
-  ).finally(() => {
+  adminWorkspaceRefreshPromise = (async () => {
+    const needsCapabilityBootstrap = Boolean(
+      state.admin.authenticated
+      && Array.isArray(state.adminCapabilities)
+      && state.adminCapabilities.length === 0
+      && (
+        normalized.snapshot
+        || normalized.editorData
+        || normalized.auditLogs
+        || normalized.branches
+        || normalized.cashiers
+        || normalized.requests
+        || normalized.config
+        || normalized.weightedAudit
+      ),
+    );
+    const effectiveOptions = { ...normalized };
+
+    if (needsCapabilityBootstrap) {
+      await loadAdminSnapshot(normalized.branch);
+      effectiveOptions.snapshot = false;
+      effectiveOptions.force = true;
+    }
+
+    await Promise.allSettled(
+      getAdminWorkspaceTasks(effectiveOptions),
+    );
+
+    if (refs.adminModal?.classList.contains("open")) {
+      startAdminMetricsPolling();
+    }
+  })().finally(() => {
     adminWorkspaceRefreshPromise = null;
   });
 
