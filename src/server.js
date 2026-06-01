@@ -511,10 +511,15 @@ app.get("/api/bootstrap", (request, response) => {
   const branch = resolveRequestedBranch(request, accessContext, {
     allowAll: Boolean(accessContext.adminSession || accessContext.ownerSession),
   });
+  const includeInactiveInventory =
+    Boolean(accessContext.adminSession || accessContext.ownerSession)
+    && ["1", "true"].includes(String(request.query.includeInactiveInventory || "").toLowerCase());
 
   try {
     const snapshot = accessContext.authenticated
-      ? services.getDashboardSnapshot(branch)
+      ? services.getDashboardSnapshot(branch, {
+          includeInventoryInactive: includeInactiveInventory,
+        })
       : services.getPublicDashboardSnapshot(branch);
     snapshot.auth = buildBootstrapAuthState(accessContext);
     snapshot.profile = snapshot.profile || snapshot.store || {};

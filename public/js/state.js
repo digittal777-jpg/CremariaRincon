@@ -99,6 +99,8 @@ const state = {
   admin: {
     branch: "all",
     inventoryExpanded: false,
+    inventoryProducts: [],
+    inventoryComparison: null,
     loading: false,
     metricsLoading: false,
     metrics: null,
@@ -202,6 +204,7 @@ const state = {
   },
   ui: {
     routeMode: false,
+    routeRegisterCollapsed: true,
   },
 };
 

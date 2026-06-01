@@ -248,6 +248,10 @@ function updatePaymentView() {
 
   refs.cashPaymentBlock.style.display =
     state.paymentMethod === "Efectivo" ? "block" : "none";
+  if (refs.paymentExactShortcutButton) {
+    refs.paymentExactShortcutButton.textContent = `Exacto ${formatCurrency(total)}`;
+    refs.paymentExactShortcutButton.disabled = total <= 0;
+  }
 
   refs.paymentMethods.querySelectorAll("[data-method]").forEach((button) => {
     button.classList.toggle("active", button.dataset.method === state.paymentMethod);
@@ -306,11 +310,12 @@ function addMoneyShortcut(amount) {
     return;
   }
 
-  const currentAmount = roundMoney(state.moneyInput || 0);
-  const nextAmount = currentAmount <= 0
-    ? shortcutAmount
-    : roundMoney(currentAmount + shortcutAmount);
-  state.moneyInput = String(nextAmount);
+  state.moneyInput = String(shortcutAmount);
+  updatePaymentView();
+}
+
+function setMoneyToExactTotal() {
+  state.moneyInput = String(roundMoney(getCartTotal()));
   updatePaymentView();
 }
 

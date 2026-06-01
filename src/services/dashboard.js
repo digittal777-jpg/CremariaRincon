@@ -243,14 +243,22 @@ function getRecentActivity(limit = 18, branch = listConfiguredBranches({ include
     .slice(0, limit);
 }
 
-function getDashboardSnapshot(branch = listConfiguredBranches({ includeInactive: true })[0]?.code) {
+function getDashboardSnapshot(
+  branch = listConfiguredBranches({ includeInactive: true })[0]?.code,
+  options = {},
+) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const includeInventoryInactive = options.includeInventoryInactive === true;
   const activeBranches = listConfiguredBranches({ includeInactive: false });
   const profile = getBusinessProfile();
   const categories = listProductCategories({ includeInactive: false });
   const units = listMeasurementUnits({ includeInactive: false });
   const productAttributeDefinitions = listProductAttributeDefinitions({ includeInactive: false });
   const enabledModules = getEnabledModules();
+  const activeProducts = listProducts(normalizedBranch);
+  const inventoryProducts = includeInventoryInactive
+    ? listProducts(normalizedBranch, { includeInactive: true })
+    : activeProducts;
   const knownBranch = normalizedBranch === ALL_BRANCHES
     ? null
     : getBranchRecord(normalizedBranch, { includeInactive: true });
@@ -300,7 +308,8 @@ function getDashboardSnapshot(branch = listConfiguredBranches({ includeInactive:
       },
     },
     summary: getSummary(normalizedBranch),
-    products: listProducts(normalizedBranch),
+    products: activeProducts,
+    inventoryProducts,
     lowStock: getLowStockProducts(normalizedBranch),
     recentSales: getRecentSales(8, normalizedBranch),
     recentActivity: getRecentActivity(18, normalizedBranch),
@@ -316,7 +325,9 @@ function getDashboardSnapshot(branch = listConfiguredBranches({ includeInactive:
         value: branchRecord.code,
         label: getBranchLabel(branchRecord.code),
         active: branchRecord.active,
-        products: listProducts(branchRecord.code),
+        products: listProducts(branchRecord.code, {
+          includeInactive: includeInventoryInactive,
+        }),
       })),
     };
   }

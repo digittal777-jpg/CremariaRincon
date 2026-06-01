@@ -673,14 +673,25 @@ async function restoreCart() {
 function persistPreferences() {
   persistText(STORAGE_KEYS.shift, refs.shiftSelect.value);
   persistText(STORAGE_KEYS.routeMode, state.ui?.routeMode ? "1" : "0");
+  persistText(
+    STORAGE_KEYS.routeRegisterCollapsed,
+    state.ui?.routeRegisterCollapsed ? "1" : "0",
+  );
 }
 
 async function restorePreferences() {
   const savedShift = await readPersistedText(STORAGE_KEYS.shift, "");
   const savedRouteMode = await readPersistedText(STORAGE_KEYS.routeMode, "");
+  const savedRouteRegisterCollapsed = await readPersistedText(
+    STORAGE_KEYS.routeRegisterCollapsed,
+    "",
+  );
 
   if (savedShift) {
     refs.shiftSelect.value = savedShift;
+  }
+  if (savedRouteRegisterCollapsed === "1" || savedRouteRegisterCollapsed === "0") {
+    state.ui.routeRegisterCollapsed = savedRouteRegisterCollapsed === "1";
   }
   if (savedRouteMode === "1" || savedRouteMode === "0") {
     state.ui.routeMode = savedRouteMode === "1";

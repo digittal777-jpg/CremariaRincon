@@ -1,6 +1,8 @@
 const TOUCH_DOUBLE_TAP_WINDOW_MS = 320;
 const ROUTE_SWIPE_TRIGGER_PX = 84;
 const ROUTE_SWIPE_LOCK_PX = 18;
+const ROUTE_PAYMENT_SWIPE_TRIGGER_PX = 56;
+const ROUTE_PAYMENT_SWIPE_LOCK_PX = 14;
 const TOUCH_DOUBLE_TAP_SELECTOR = [
   "button",
   ".product-card",
@@ -110,7 +112,77 @@ function toggleRouteMode() {
   );
 }
 
-function updateRouteSwipeVisualState(bar, surface, deltaX = 0) {
+function setRouteRegisterCollapsed(collapsed) {
+  state.ui.routeRegisterCollapsed = Boolean(collapsed);
+  persistPreferences();
+  renderRouteMode();
+}
+
+function toggleRouteRegisterCollapsed() {
+  setRouteRegisterCollapsed(!state.ui.routeRegisterCollapsed);
+}
+
+function scrollToRouteCart() {
+  refs.cartPanel?.scrollIntoView({
+    behavior: "smooth",
+    block: "start",
+  });
+}
+
+function openCatalogProductById(productId) {
+  const product = state.products.find((item) => item.id === Number(productId));
+  if (!product) {
+    return;
+  }
+
+  refs.searchInput?.blur();
+  openItemModal(product);
+}
+
+let lastProductSearchSubmitAt = 0;
+
+function submitProductSearchFromKeyboard() {
+  if (!refs.searchInput) {
+    return;
+  }
+
+  const search = refs.searchInput.value.trim();
+  if (!search) {
+    return;
+  }
+
+  const now = Date.now();
+  if (now - lastProductSearchSubmitAt < 250) {
+    return;
+  }
+  lastProductSearchSubmitAt = now;
+
+  requestProductsRender(true);
+  refs.searchInput.blur();
+
+  const revealResults = () => {
+    const target = refs.searchQuickResults && !refs.searchQuickResults.hidden
+      ? refs.searchQuickResults
+      : refs.productsGrid;
+    if (!target || !refs.productsGrid) {
+      return;
+    }
+
+    refs.productsGrid.scrollTop = 0;
+    target.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  };
+
+  window.requestAnimationFrame(revealResults);
+
+  if (shouldUseTouchOptimizations()) {
+    window.setTimeout(revealResults, 180);
+  }
+}
+
+function updateRouteSwipeVisualState(bar, surface, deltaX = 0, lockPx = ROUTE_SWIPE_LOCK_PX) {
   if (!bar) {
     if (surface) {
       surface.classList.remove("is-swiping-left", "is-swiping-right");
@@ -118,11 +190,11 @@ function updateRouteSwipeVisualState(bar, surface, deltaX = 0) {
     return;
   }
 
-  bar.classList.toggle("is-swiping-left", deltaX <= -ROUTE_SWIPE_LOCK_PX);
-  bar.classList.toggle("is-swiping-right", deltaX >= ROUTE_SWIPE_LOCK_PX);
+  bar.classList.toggle("is-swiping-left", deltaX <= -lockPx);
+  bar.classList.toggle("is-swiping-right", deltaX >= lockPx);
   if (surface) {
-    surface.classList.toggle("is-swiping-left", deltaX <= -ROUTE_SWIPE_LOCK_PX);
-    surface.classList.toggle("is-swiping-right", deltaX >= ROUTE_SWIPE_LOCK_PX);
+    surface.classList.toggle("is-swiping-left", deltaX <= -lockPx);
+    surface.classList.toggle("is-swiping-right", deltaX >= lockPx);
   }
 }
 
@@ -132,11 +204,13 @@ function installRouteSwipeDecisionSurface(surface, options = {}) {
   }
 
   const bar = options.bar || null;
+  const triggerPx = Number(options.triggerPx || ROUTE_SWIPE_TRIGGER_PX);
+  const lockPx = Number(options.lockPx || ROUTE_SWIPE_LOCK_PX);
   let gesture = null;
 
   const resetGesture = () => {
     gesture = null;
-    updateRouteSwipeVisualState(bar, surface, 0);
+    updateRouteSwipeVisualState(bar, surface, 0, lockPx);
   };
 
   const shouldHandleSwipe = () =>
@@ -172,13 +246,13 @@ function installRouteSwipeDecisionSurface(surface, options = {}) {
 
     const deltaX = touch.clientX - gesture.startX;
     const deltaY = touch.clientY - gesture.startY;
-    if (Math.abs(deltaX) < ROUTE_SWIPE_LOCK_PX || Math.abs(deltaX) <= Math.abs(deltaY)) {
-      updateRouteSwipeVisualState(bar, surface, 0);
+    if (Math.abs(deltaX) < lockPx || Math.abs(deltaX) <= Math.abs(deltaY)) {
+      updateRouteSwipeVisualState(bar, surface, 0, lockPx);
       return;
     }
 
     event.preventDefault();
-    updateRouteSwipeVisualState(bar, surface, deltaX);
+    updateRouteSwipeVisualState(bar, surface, deltaX, lockPx);
   };
 
   const onTouchEnd = (event) => {
@@ -195,7 +269,7 @@ function installRouteSwipeDecisionSurface(surface, options = {}) {
     const deltaX = touch.clientX - gesture.startX;
     const deltaY = touch.clientY - gesture.startY;
     const horizontalIntent =
-      Math.abs(deltaX) >= ROUTE_SWIPE_TRIGGER_PX
+      Math.abs(deltaX) >= triggerPx
       && Math.abs(deltaX) > Math.abs(deltaY) * 1.35;
 
     if (shouldHandleSwipe() && horizontalIntent) {
@@ -242,8 +316,10 @@ async function bootstrap() {
   refs.shiftSelect = $("shift-select");
   refs.cashierInput = $("cashier-input");
   refs.searchInput = $("search-input");
+  refs.searchQuickResults = $("search-quick-results");
   refs.toggleRouteModeButton = $("toggle-route-mode-button");
   refs.routeModePill = $("route-mode-pill");
+  refs.toggleRegisterToolbarButton = $("toggle-register-toolbar-button");
   refs.openAdminButton = $("open-admin-button");
   refs.headerAdminButton = $("header-admin-button");
   refs.branchDisplay = $("branch-display");
@@ -267,6 +343,10 @@ async function bootstrap() {
   refs.installWorkbookInput = $("install-workbook-input");
   refs.openPaymentButton = $("open-payment-button");
   refs.clearCartButton = $("clear-cart-button");
+  refs.cartPanel = $("cart-panel");
+  refs.routeCartFab = $("route-cart-fab");
+  refs.routeCartFabTotal = $("route-cart-fab-total");
+  refs.routeCartFabCount = $("route-cart-fab-count");
   refs.itemModal = $("item-modal");
   refs.itemModalCard = $("item-modal-card");
   refs.itemModalName = $("item-modal-name");
@@ -283,6 +363,7 @@ async function bootstrap() {
   refs.paymentTotal = $("payment-total");
   refs.paymentMethods = $("payment-methods");
   refs.moneyDisplay = $("money-display");
+  refs.paymentExactShortcutButton = $("payment-exact-shortcut-button");
   refs.paymentReceived = $("payment-received");
   refs.paymentChange = $("payment-change");
   refs.confirmSaleButton = $("confirm-sale-button");
@@ -630,6 +711,8 @@ async function bootstrap() {
   });
   installRouteSwipeDecisionSurface(refs.paymentModalCard, {
     bar: refs.paymentRouteDecisionBar,
+    triggerPx: ROUTE_PAYMENT_SWIPE_TRIGGER_PX,
+    lockPx: ROUTE_PAYMENT_SWIPE_LOCK_PX,
     onLeft: closePaymentModal,
     onRight: () => {
       if (!refs.paymentRouteConfirmButton?.disabled) {
@@ -642,7 +725,27 @@ async function bootstrap() {
 
   // Buscador
   refs.searchInput.addEventListener("input", () => requestProductsRender(true));
+  refs.searchInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+
+    event.preventDefault();
+    submitProductSearchFromKeyboard();
+  });
+  refs.searchInput.addEventListener("search", submitProductSearchFromKeyboard);
+  refs.searchQuickResults?.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="open-search-product"]');
+    if (!button) {
+      return;
+    }
+
+    event.preventDefault();
+    openCatalogProductById(button.dataset.productId);
+  });
   refs.toggleRouteModeButton?.addEventListener("click", toggleRouteMode);
+  refs.toggleRegisterToolbarButton?.addEventListener("click", toggleRouteRegisterCollapsed);
+  refs.routeCartFab?.addEventListener("click", scrollToRouteCart);
 
   // Admin
   refs.openAdminButton.addEventListener("click", openAdminModal);
@@ -1018,13 +1121,7 @@ async function bootstrap() {
       return;
     }
 
-    const product = state.products.find(
-      (item) => item.id === Number(button.dataset.productId),
-    );
-
-    if (product) {
-      openItemModal(product);
-    }
+    openCatalogProductById(button.dataset.productId);
   });
 
   refs.productsGrid.addEventListener("scroll", () => {
@@ -1391,8 +1488,17 @@ async function bootstrap() {
 
   // Inventario (modo simple y comparación) - Delegado en contenedor padre
   $("payment-shortcuts").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-amount]");
+    const button = event.target.closest("button");
     if (!button) {
+      return;
+    }
+
+    if (button.dataset.action === "exact-money") {
+      setMoneyToExactTotal();
+      return;
+    }
+
+    if (!button.dataset.amount) {
       return;
     }
 

@@ -512,6 +512,11 @@ async function refreshCurrentSnapshot(branch = getActiveCashierBranch()) {
 
 function applyAdminSnapshot(snapshot) {
   state.admin.snapshot = snapshot || null;
+  state.admin.inventoryProducts = Array.isArray(snapshot?.inventoryProducts)
+    ? snapshot.inventoryProducts
+    : Array.isArray(snapshot?.products)
+      ? snapshot.products
+      : [];
   state.admin.inventoryComparison = snapshot?.inventoryComparison || null;
   if (snapshot?.store?.currentBranch) {
     state.admin.branch = snapshot.store.currentBranch;
@@ -521,7 +526,7 @@ function applyAdminSnapshot(snapshot) {
 
 async function loadAdminSnapshot(branch = getAdminBranch()) {
   const snapshot = await requestAdminJson(
-    `/api/bootstrap?branch=${encodeURIComponent(branch)}`,
+    `/api/bootstrap?branch=${encodeURIComponent(branch)}&includeInactiveInventory=1`,
   );
   applyAdminSnapshot(snapshot);
   markAdminWorkspaceLoaded("snapshot");

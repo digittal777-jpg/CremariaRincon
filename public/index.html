@@ -115,6 +115,7 @@
               <span>Buscar producto</span>
               <input id="search-input" type="search" placeholder="Queso, miel, pay..." />
             </label>
+            <div class="search-quick-results" id="search-quick-results" hidden></div>
           </div>
 
           <div class="session-toolbar">
@@ -135,18 +136,23 @@
           </div>
 
           <div class="register-toolbar">
-            <button class="secondary-button" id="open-start-register-button" type="button">
-              Inicio de dia
-            </button>
-            <button class="secondary-button" id="open-quick-cut-button" type="button">
-              Corte rapido
-            </button>
-            <button class="secondary-button" id="open-final-cut-button" type="button">
-              Corte final
-            </button>
+            <div class="register-toolbar-actions" id="register-toolbar-actions">
+              <button class="secondary-button" id="open-start-register-button" type="button">
+                Inicio de dia
+              </button>
+              <button class="secondary-button" id="open-quick-cut-button" type="button">
+                Corte rapido
+              </button>
+              <button class="secondary-button" id="open-final-cut-button" type="button">
+                Corte final
+              </button>
+            </div>
             <span class="small-pill register-pill" id="register-summary-pill">
               Caja sin iniciar para este turno
             </span>
+            <button class="ghost-button register-toolbar-toggle" id="toggle-register-toolbar-button" type="button">
+              Ocultar caja
+            </button>
           </div>
 
           <div class="category-bar" id="category-filters"></div>
@@ -155,7 +161,7 @@
         </section>
 
         <aside class="sidebar-stack">
-          <section class="panel cart-panel">
+          <section class="panel cart-panel" id="cart-panel">
             <div class="panel-head">
               <div>
                 <p class="eyebrow">Carrito actual</p>
@@ -243,6 +249,12 @@
       </section>
     </div>
 
+    <button class="route-cart-fab" id="route-cart-fab" type="button" hidden>
+      <span class="route-cart-fab-label">Ir al carrito</span>
+      <strong class="route-cart-fab-total" id="route-cart-fab-total">$0.00</strong>
+      <span class="route-cart-fab-count" id="route-cart-fab-count">0 lineas</span>
+    </button>
+
     <div class="modal-shell" id="item-modal">
       <div class="modal-card route-swipe-surface" id="item-modal-card">
         <div class="modal-head">
@@ -304,9 +316,22 @@
           <button class="icon-button" id="close-payment-modal" type="button">×</button>
         </div>
 
-        <div class="payment-total-box">
-          <span>Total a pagar</span>
-          <strong id="payment-total">$0.00</strong>
+        <div class="payment-summary-stack">
+          <div class="payment-total-box">
+            <span>Total a pagar</span>
+            <strong id="payment-total">$0.00</strong>
+          </div>
+
+          <div class="payment-meta">
+            <div>
+              <span>Recibido</span>
+              <strong id="payment-received">$0.00</strong>
+            </div>
+            <div>
+              <span>Cambio</span>
+              <strong id="payment-change">$0.00</strong>
+            </div>
+          </div>
         </div>
 
         <div class="payment-methods" id="payment-methods">
@@ -324,6 +349,7 @@
         <div id="cash-payment-block">
           <div class="money-display" id="money-display">$0.00</div>
           <div class="payment-shortcuts" id="payment-shortcuts">
+            <button type="button" id="payment-exact-shortcut-button" data-action="exact-money">Exacto</button>
             <button type="button" data-amount="10">$10</button>
             <button type="button" data-amount="20">$20</button>
             <button type="button" data-amount="50">$50</button>
@@ -350,17 +376,6 @@
           </div>
         </div>
 
-        <div class="payment-meta">
-          <div>
-            <span>Recibido</span>
-            <strong id="payment-received">$0.00</strong>
-          </div>
-          <div>
-            <span>Cambio</span>
-            <strong id="payment-change">$0.00</strong>
-          </div>
-        </div>
-
         <div class="modal-actions route-standard-actions">
           <button class="ghost-button" id="cancel-payment-button" type="button">
             Cancelar
@@ -371,11 +386,11 @@
         </div>
         <div class="route-decision-bar" id="payment-route-decision-bar">
           <button class="route-decision-zone cancel" id="payment-route-cancel-button" type="button">
-            <span class="route-decision-direction">Desliza izquierda</span>
+            <span class="route-decision-direction">Toca o desliza izquierda</span>
             <strong>Cancelar</strong>
           </button>
           <button class="route-decision-zone accept" id="payment-route-confirm-button" type="button">
-            <span class="route-decision-direction">Desliza derecha</span>
+            <span class="route-decision-direction">Toca o desliza derecha</span>
             <strong>Cobrar</strong>
           </button>
         </div>

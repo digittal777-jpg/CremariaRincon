@@ -23,21 +23,59 @@ let filteredProductsCache = {
 };
 let productsRenderQueued = false;
 
+function shouldShowRouteCartFab() {
+  return Boolean(
+    isRouteModeEnabled()
+      && typeof window !== "undefined"
+      && window.matchMedia?.("(max-width: 1320px)")?.matches,
+  );
+}
+
+function renderRouteCartFab() {
+  if (!refs.routeCartFab || !refs.routeCartFabTotal || !refs.routeCartFabCount) {
+    return;
+  }
+
+  const shouldShow = shouldShowRouteCartFab();
+  refs.routeCartFab.hidden = !shouldShow;
+  if (!shouldShow) {
+    return;
+  }
+
+  refs.routeCartFabTotal.textContent = formatCurrency(getCartTotal());
+  refs.routeCartFabCount.textContent = `${getCartCount()} lineas`;
+  refs.routeCartFab.classList.toggle("has-items", getCartCount() > 0);
+}
+
 function renderRouteMode() {
   const enabled = isRouteModeEnabled();
   const mobileUi = shouldUseRouteMobileUi();
   if (typeof document !== "undefined") {
     document.body.classList.toggle("route-mode", enabled);
     document.body.classList.toggle("route-mobile-mode", mobileUi);
+    document.body.classList.toggle(
+      "route-register-collapsed",
+      enabled && Boolean(state.ui?.routeRegisterCollapsed),
+    );
   }
   if (refs.toggleRouteModeButton) {
     refs.toggleRouteModeButton.classList.toggle("is-active", enabled);
     refs.toggleRouteModeButton.setAttribute("aria-pressed", enabled ? "true" : "false");
     refs.toggleRouteModeButton.textContent = enabled ? "Modo ruta activo" : "Modo ruta";
   }
+  if (refs.toggleRegisterToolbarButton) {
+    refs.toggleRegisterToolbarButton.hidden = !enabled;
+    refs.toggleRegisterToolbarButton.textContent =
+      enabled && state.ui?.routeRegisterCollapsed ? "Mostrar controles" : "Ocultar controles";
+    refs.toggleRegisterToolbarButton.setAttribute(
+      "aria-expanded",
+      enabled && state.ui?.routeRegisterCollapsed ? "false" : "true",
+    );
+  }
   if (refs.routeModePill) {
     refs.routeModePill.textContent = enabled ? "Ruta agilizada" : "Vista completa";
   }
+  renderRouteCartFab();
 }
 
 function renderCashierSession() {
@@ -186,6 +224,55 @@ function getFilteredProducts() {
   return result;
 }
 
+function renderSearchQuickResults(products = getFilteredProducts()) {
+  if (!refs.searchQuickResults || !refs.searchInput) {
+    return;
+  }
+
+  const rawSearch = refs.searchInput.value.trim();
+  if (!rawSearch) {
+    refs.searchQuickResults.hidden = true;
+    refs.searchQuickResults.innerHTML = "";
+    return;
+  }
+
+  const quickResults = products.slice(0, 6);
+  if (quickResults.length === 0) {
+    refs.searchQuickResults.hidden = true;
+    refs.searchQuickResults.innerHTML = "";
+    return;
+  }
+
+  const totalResults = products.length;
+  const remainingResults = Math.max(totalResults - quickResults.length, 0);
+  refs.searchQuickResults.hidden = false;
+  refs.searchQuickResults.innerHTML = `
+    <div class="search-quick-results-head">
+      <strong>${totalResults} resultado${totalResults === 1 ? "" : "s"}</strong>
+      <span>Toca uno y abre directo</span>
+    </div>
+    <div class="search-quick-results-list">
+      ${quickResults.map((product) => `
+        <button
+          class="search-quick-result ${product.status}"
+          data-action="open-search-product"
+          data-product-id="${product.id}"
+          type="button"
+        >
+          <div class="search-quick-result-main">
+            <strong>${escapeHtml(product.name)}</strong>
+            <span>${escapeHtml(product.categoryLabel)} · ${escapeHtml(formatProductStock(product))}</span>
+          </div>
+          <div class="search-quick-result-price">${formatCurrency(product.price)}</div>
+        </button>
+      `).join("")}
+    </div>
+    ${remainingResults > 0
+      ? `<div class="search-quick-results-foot">+${remainingResults} mas en la lista de abajo</div>`
+      : ""}
+  `;
+}
+
 function resetVisibleProducts() {
   state.visibleProductLimit = PRODUCT_RENDER_BATCH;
   if (refs.productsGrid) {
@@ -232,6 +319,7 @@ function renderProducts() {
     typeof performance !== "undefined" ? performance.now() : Date.now();
   const products = getFilteredProducts();
   const visibleProducts = products.slice(0, state.visibleProductLimit);
+  renderSearchQuickResults(products);
 
   if (products.length === 0) {
     refs.productsGrid.innerHTML = `
@@ -325,6 +413,7 @@ function renderCart() {
 
   refs.cartCount.textContent = `${getCartCount()} lineas`;
   refs.cartTotal.textContent = formatCurrency(getCartTotal());
+  renderRouteCartFab();
 }
 
 function renderRecentSales() {
@@ -501,11 +590,14 @@ function renderInventory() {
 function renderInventorySingle() {
   const singleWrapper = document.getElementById("inventory-single-table");
   const comparisonWrapper = document.getElementById("inventory-comparison-wrapper");
+  const inventoryProducts = Array.isArray(state.admin.inventoryProducts)
+    ? state.admin.inventoryProducts
+    : [];
   
   if (singleWrapper) singleWrapper.style.display = "";
   if (comparisonWrapper) comparisonWrapper.hidden = true;
 
-  refs.inventoryBody.innerHTML = state.products
+  refs.inventoryBody.innerHTML = inventoryProducts
     .map(
       (product) => `
         <tr data-product-id="${product.id}">

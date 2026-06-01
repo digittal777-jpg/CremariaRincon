@@ -254,11 +254,14 @@ async function importCatalogFromWorkbook(workbookPath) {
   };
 }
 
-function listProducts(branch = "carrizal") {
+function listProducts(branch = "carrizal", options = {}) {
   const normalizedBranch = normalizeBranch(branch);
+  const whereClause = options.includeInactive === true
+    ? "WHERE p.branch = ?"
+    : "WHERE p.active = 1 AND p.branch = ?";
   const rows = db.prepare(`
     ${getProductSelectSql()}
-    WHERE p.active = 1 AND p.branch = ?
+    ${whereClause}
     ORDER BY
       COALESCE(pc.sort_order, 9999),
       p.display_order,

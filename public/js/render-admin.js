@@ -88,10 +88,25 @@ function renderAdminModal() {
     : "0 MB";
   refs.adminProductsRender.textContent = `${formatQuantity(state.performance.productsRenderMs)} ms`;
   refs.adminSnapshotRender.textContent = `${formatQuantity(state.performance.snapshotRenderMs)} ms`;
-  const inventoryVisibleRows = refs.inventoryBody?.children?.length || 0;
+  const comparisonBranchOneRows = document.getElementById("inventory-body-branch-1")?.children?.length || 0;
+  const comparisonBranchTwoRows = document.getElementById("inventory-body-branch-2")?.children?.length || 0;
+  const inventoryVisibleRows = state.admin.branch === "all"
+    ? comparisonBranchOneRows + comparisonBranchTwoRows
+    : refs.inventoryBody?.children?.length || 0;
+  const comparisonInventoryTotal = Array.isArray(state.admin.inventoryComparison?.branches)
+    ? state.admin.inventoryComparison.branches.reduce(
+        (sum, branchEntry) => sum + (Array.isArray(branchEntry.products) ? branchEntry.products.length : 0),
+        0,
+      )
+    : 0;
+  const inventoryTotal = state.admin.branch === "all"
+    ? comparisonInventoryTotal
+    : Array.isArray(state.admin.inventoryProducts)
+      ? state.admin.inventoryProducts.length
+      : 0;
   refs.adminVisibleProducts.textContent = state.admin.inventoryExpanded
-    ? `${inventoryVisibleRows}/${state.products.length}`
-    : `Oculto/${state.products.length}`;
+    ? `${inventoryVisibleRows}/${inventoryTotal}`
+    : `Oculto/${inventoryTotal}`;
   refs.adminDomNodes.textContent = formatQuantity(clientMetrics.domNodes);
   refs.adminServerRuntime.textContent = serverMetrics
     ? `${formatQuantity(serverMetrics.process.uptimeSeconds)} s`
@@ -115,7 +130,7 @@ function renderAdminModal() {
       ? "Ocultar inventario"
       : "Mostrar inventario";
     refs.adminInventoryStatus.textContent = state.admin.inventoryExpanded
-      ? "Vista expandida. Puede tardar con catalogos grandes."
+      ? "Vista expandida. Aqui ves activos e inactivos para reactivar rapido."
       : "Vista compacta. Abre inventario solo cuando lo necesites.";
   }
 
