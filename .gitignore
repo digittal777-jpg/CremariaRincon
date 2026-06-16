@@ -1,4 +1,5 @@
 node_modules/
+.tmp-railway/
 data/*.db
 data/*.db-*
 data/*.sqlite

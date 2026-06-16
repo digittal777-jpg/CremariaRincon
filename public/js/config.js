@@ -29,6 +29,15 @@ const CATEGORY_LABELS = {
   piezas: "Piezas",
   general: "General",
 };
+const PAYMENT_METHOD_OPTIONS = [
+  { value: "Efectivo", label: "Efectivo", kind: "cash" },
+  { value: "Tarjeta", label: "Tarjeta", kind: "non_cash" },
+  { value: "Transferencia", label: "Transferencia", kind: "non_cash" },
+  { value: "Fiado", label: "Fiado", kind: "credit", requiresCustomer: true },
+];
+const RECEIVED_PAYMENT_METHOD_OPTIONS = PAYMENT_METHOD_OPTIONS.filter(
+  (option) => option.kind !== "credit",
+);
 
 const STORAGE_KEYS = {
   cart: "cremeria.cart",
@@ -39,8 +48,10 @@ const STORAGE_KEYS = {
   cashierOfflineProfiles: "cremeria.cashier.offlineProfiles",
   snapshot: "cremeria.snapshot",
   preparedSnapshots: "cremeria.preparedSnapshots",
+  receivablesCache: "cremeria.receivablesCache",
   queue: "cremeria.queue",
   offlineSales: "cremeria.offlineSales",
+  offlineReceivablePayments: "cremeria.offlineReceivablePayments",
   registerEvents: "cremeria.registerEvents",  // Eventos de caja offline
   deviceId: "cremeria.deviceId",
 };

@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { once } = require("node:events");
+const Database = require("better-sqlite3");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const SERVER_PATH = path.join(ROOT_DIR, "src", "server.js");
@@ -95,13 +96,14 @@ function createCookieClient(baseUrl) {
 
 async function startServer(testContext, { bootstrapToken = "" } = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "retail-base-hardening-"));
+  const dbPath = path.join(tempDir, "test.sqlite");
   const port = 33000 + Math.floor(Math.random() * 1000);
   const child = spawn(process.execPath, [SERVER_PATH], {
     cwd: ROOT_DIR,
     env: {
       ...process.env,
       PORT: String(port),
-      POS_DB_PATH: path.join(tempDir, "test.sqlite"),
+      POS_DB_PATH: dbPath,
       POS_BOOTSTRAP_TOKEN: bootstrapToken,
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -126,7 +128,7 @@ async function startServer(testContext, { bootstrapToken = "" } = {}) {
     try {
       const response = await fetch(`${baseUrl}/api/health`);
       if (response.ok) {
-        return { baseUrl };
+        return { baseUrl, dbPath };
       }
     } catch (_error) {
       // Seguir esperando.
@@ -296,6 +298,14 @@ test("bootstrap token gates setup and owner-only template reset rebuilds the bus
   assert.equal(appliedTemplate.body.snapshot.profile.businessName, "Negocio Duro");
   assert.ok(Array.isArray(appliedTemplate.body.snapshot.products));
   assert.ok(appliedTemplate.body.snapshot.products.length > 0);
+  assert.ok(
+    appliedTemplate.body.snapshot.products.every((product) =>
+      Number(product.stock || 0) === 0
+      && product.stockInitialized === false
+    ),
+  );
+  assert.deepEqual(appliedTemplate.body.snapshot.recentSales, []);
+  assert.deepEqual(appliedTemplate.body.snapshot.recentActivity, []);
 
   const adminStatusAfter = await guest.json("/api/admin/auth/status");
   assert.equal(adminStatusAfter.status, 200);
@@ -323,6 +333,253 @@ test("bootstrap token gates setup and owner-only template reset rebuilds the bus
   assert.doesNotMatch(homeHtml, /Cremeria El Rincon/);
 });
 
+test("owner can persist an empty admin capability set and bootstrap preserves mixed owner/admin sessions", async (t) => {
+  const server = await startServer(t, { bootstrapToken: "bootstrap-secret-123" });
+  const guest = createCookieClient(server.baseUrl);
+  const adminClient = createCookieClient(server.baseUrl);
+  const ownerClient = createCookieClient(server.baseUrl);
+  const mixedClient = createCookieClient(server.baseUrl);
+
+  const adminSetup = await guest.json("/api/admin/auth/setup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bootstrap-Token": "bootstrap-secret-123",
+    },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(adminSetup.status, 201);
+
+  const ownerSetup = await guest.json("/api/owner/auth/setup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bootstrap-Token": "bootstrap-secret-123",
+    },
+    body: JSON.stringify({ username: "ownerroot", password: "owner1234" }),
+  });
+  assert.equal(ownerSetup.status, 201);
+
+  const adminLogin = await adminClient.json("/api/admin/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(adminLogin.status, 200);
+
+  const ownerLogin = await ownerClient.json("/api/owner/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "ownerroot", password: "owner1234" }),
+  });
+  assert.equal(ownerLogin.status, 200);
+  const ownerCsrfToken = ownerLogin.body.csrfToken;
+
+  const mixedAdminLogin = await mixedClient.json("/api/admin/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(mixedAdminLogin.status, 200);
+  const mixedOwnerLogin = await mixedClient.json("/api/owner/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "ownerroot", password: "owner1234" }),
+  });
+  assert.equal(mixedOwnerLogin.status, 200);
+
+  const ownerConfigUpdate = await ownerClient.json("/api/owner/config", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": ownerCsrfToken,
+    },
+    body: JSON.stringify({
+      adminCapabilities: [],
+    }),
+  });
+  assert.equal(ownerConfigUpdate.status, 200);
+  assert.deepEqual(ownerConfigUpdate.body.adminCapabilities, []);
+
+  const ownerConfig = await ownerClient.json("/api/owner/config", {
+    headers: { "X-CSRF-Token": ownerCsrfToken },
+  });
+  assert.equal(ownerConfig.status, 200);
+  assert.deepEqual(ownerConfig.body.adminCapabilities, []);
+
+  const ownerBootstrap = await ownerClient.json("/api/bootstrap?branch=carrizal");
+  assert.equal(ownerBootstrap.status, 200);
+  assert.equal(ownerBootstrap.body.auth.role, "owner");
+  assert.equal(ownerBootstrap.body.auth.ownerAuthenticated, true);
+  assert.equal(ownerBootstrap.body.auth.adminAuthenticated, false);
+  assert.deepEqual(ownerBootstrap.body.adminCapabilities, []);
+
+  const adminBootstrap = await adminClient.json("/api/bootstrap?branch=carrizal");
+  assert.equal(adminBootstrap.status, 200);
+  assert.equal(adminBootstrap.body.auth.role, "admin");
+  assert.equal(adminBootstrap.body.auth.ownerAuthenticated, false);
+  assert.equal(adminBootstrap.body.auth.adminAuthenticated, true);
+  assert.equal(adminBootstrap.body.auth.permissions.canViewAdmin, false);
+  assert.deepEqual(adminBootstrap.body.adminCapabilities, []);
+  assert.deepEqual(adminBootstrap.body.recentSales, []);
+  assert.deepEqual(adminBootstrap.body.recentActivity, []);
+  assert.deepEqual(adminBootstrap.body.lowStock, []);
+  assert.ok(
+    adminBootstrap.body.products.every((product) =>
+      Number(product.stock || 0) === 0
+      && product.stockInitialized === false
+    ),
+  );
+  assert.ok(
+    adminBootstrap.body.inventoryProducts.every((product) =>
+      Number(product.stock || 0) === 0
+      && product.stockInitialized === false
+    ),
+  );
+
+  const blockedAdminSettings = await adminClient.json("/api/admin/settings");
+  assert.equal(blockedAdminSettings.status, 403);
+
+  const blockedAdminDashboard = await adminClient.json("/api/dashboard?branch=all");
+  assert.equal(blockedAdminDashboard.status, 200);
+  assert.deepEqual(blockedAdminDashboard.body.recentSales, []);
+  assert.ok(
+    blockedAdminDashboard.body.products.every((product) =>
+      Number(product.stock || 0) === 0
+      && product.stockInitialized === false
+    ),
+  );
+
+  const blockedAdminProduct = await adminClient.json("/api/products/1?branch=carrizal");
+  assert.equal(blockedAdminProduct.status, 403);
+
+  const mixedBootstrap = await mixedClient.json("/api/bootstrap?branch=carrizal");
+  assert.equal(mixedBootstrap.status, 200);
+  assert.equal(mixedBootstrap.body.auth.role, "owner");
+  assert.equal(mixedBootstrap.body.auth.ownerAuthenticated, true);
+  assert.equal(mixedBootstrap.body.auth.adminAuthenticated, true);
+  assert.equal(mixedBootstrap.body.auth.permissions.canViewAdmin, true);
+  assert.deepEqual(mixedBootstrap.body.adminCapabilities, []);
+});
+
+test("corrupted owner capability settings fall back to defaults instead of blocking admin", async (t) => {
+  const server = await startServer(t, { bootstrapToken: "bootstrap-secret-123" });
+  const guest = createCookieClient(server.baseUrl);
+  const adminClient = createCookieClient(server.baseUrl);
+
+  const adminSetup = await guest.json("/api/admin/auth/setup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bootstrap-Token": "bootstrap-secret-123",
+    },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(adminSetup.status, 201);
+
+  const adminLogin = await adminClient.json("/api/admin/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(adminLogin.status, 200);
+
+  const db = new Database(server.dbPath);
+  try {
+    db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run("owner.admin_capabilities", JSON.stringify(["legacy_unknown_capability"]), new Date().toISOString());
+  } finally {
+    db.close();
+  }
+
+  const adminBootstrap = await adminClient.json("/api/bootstrap?branch=carrizal");
+  assert.equal(adminBootstrap.status, 200);
+  assert.ok(Array.isArray(adminBootstrap.body.adminCapabilities));
+  assert.ok(adminBootstrap.body.adminCapabilities.length > 0);
+
+  const adminSettings = await adminClient.json("/api/admin/settings");
+  assert.equal(adminSettings.status, 200);
+});
+
+test("corrupted owner/admin password records degrade into recoverable setup instead of crashing auth", async (t) => {
+  const server = await startServer(t, { bootstrapToken: "bootstrap-secret-123" });
+  const guest = createCookieClient(server.baseUrl);
+
+  const db = new Database(server.dbPath);
+  try {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run("admin.username", "diana", now);
+    db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run("admin.password", JSON.stringify({ salt: "bad", hash: "deadbeef" }), now);
+    db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run("owner.username", "ownerroot", now);
+    db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run("owner.password", JSON.stringify({ salt: "oops", hash: "beef" }), now);
+  } finally {
+    db.close();
+  }
+
+  const adminStatus = await guest.json("/api/admin/auth/status");
+  assert.equal(adminStatus.status, 200);
+  assert.equal(adminStatus.body.configured, false);
+  assert.equal(adminStatus.body.setupAllowed, true);
+
+  const adminLogin = await guest.json("/api/admin/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(adminLogin.status, 401);
+
+  const adminSetup = await guest.json("/api/admin/auth/setup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bootstrap-Token": "bootstrap-secret-123",
+    },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(adminSetup.status, 201);
+
+  const ownerStatus = await guest.json("/api/owner/auth/status");
+  assert.equal(ownerStatus.status, 200);
+  assert.equal(ownerStatus.body.configured, false);
+  assert.equal(ownerStatus.body.setupAllowed, true);
+
+  const ownerLogin = await guest.json("/api/owner/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "ownerroot", password: "owner1234" }),
+  });
+  assert.equal(ownerLogin.status, 401);
+
+  const ownerSetup = await guest.json("/api/owner/auth/setup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bootstrap-Token": "bootstrap-secret-123",
+    },
+    body: JSON.stringify({ username: "ownerroot", password: "owner1234" }),
+  });
+  assert.equal(ownerSetup.status, 201);
+});
+
 test("guest bootstrap hides operational data while authenticated flows keep working", async (t) => {
   const server = await startServer(t, { bootstrapToken: "bootstrap-secret-123" });
   const guest = createCookieClient(server.baseUrl);
@@ -336,8 +593,15 @@ test("guest bootstrap hides operational data while authenticated flows keep work
   assert.deepEqual(guestBootstrap.body.recentActivity, []);
   assert.deepEqual(guestBootstrap.body.lowStock, []);
   assert.ok(Array.isArray(guestBootstrap.body.products));
+  assert.ok(Array.isArray(guestBootstrap.body.inventoryProducts));
   assert.ok(
     guestBootstrap.body.products.every((product) =>
+      Number(product.stock || 0) === 0
+      && product.stockInitialized === false
+    ),
+  );
+  assert.ok(
+    guestBootstrap.body.inventoryProducts.every((product) =>
       Number(product.stock || 0) === 0
       && product.stockInitialized === false
     ),
@@ -440,6 +704,118 @@ test("guest bootstrap hides operational data while authenticated flows keep work
   assert.equal(saleResponse.body.sale.branch, "carrizal");
   const saleId = saleResponse.body.sale.id;
 
+  const missingCustomerCreditSale = await cashierClient.json("/api/sales", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cashier-Token": cashierToken,
+    },
+    body: JSON.stringify({
+      shift: "Tarde",
+      paymentMethod: "Fiado",
+      receivedAmount: 0,
+      items: [
+        {
+          productId: smokeProduct.id,
+          productName: smokeProduct.name,
+          quantity: 1,
+          unitPrice: smokeProduct.price,
+          lineTotal: smokeProduct.price,
+        },
+      ],
+    }),
+  });
+  assert.equal(missingCustomerCreditSale.status, 400);
+
+  const creditSaleResponse = await cashierClient.json("/api/sales", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cashier-Token": cashierToken,
+    },
+    body: JSON.stringify({
+      shift: "Tarde",
+      paymentMethod: "Fiado",
+      customerName: "Cliente Demo",
+      notes: "Paga el viernes",
+      receivedAmount: 10,
+      receivedPaymentMethod: "Efectivo",
+      items: [
+        {
+          productId: smokeProduct.id,
+          productName: smokeProduct.name,
+          quantity: 1,
+          unitPrice: smokeProduct.price,
+          lineTotal: smokeProduct.price,
+        },
+      ],
+    }),
+  });
+  assert.equal(creditSaleResponse.status, 201);
+  assert.equal(creditSaleResponse.body.sale.customerName, "Cliente Demo");
+  assert.equal(creditSaleResponse.body.sale.receivedAmount, 10);
+  assert.equal(creditSaleResponse.body.sale.receivedPaymentMethod, "Efectivo");
+  assert.equal(creditSaleResponse.body.sale.pendingAmount, 8.5);
+  const creditSaleId = creditSaleResponse.body.sale.id;
+
+  const registerSummary = await cashierClient.json(
+    `/api/register/summary?shift=Tarde&branch=carrizal&cashier=${encodeURIComponent("Juan")}`,
+    {
+      headers: { "X-Cashier-Token": cashierToken },
+    },
+  );
+  assert.equal(registerSummary.status, 200);
+  assert.equal(registerSummary.body.summary.cashSales, 28.5);
+  assert.equal(registerSummary.body.summary.creditSales, 8.5);
+  assert.equal(registerSummary.body.summary.expectedCash, 28.5);
+
+  const receivables = await cashierClient.json("/api/receivables?search=Cliente", {
+    headers: { "X-Cashier-Token": cashierToken },
+  });
+  assert.equal(receivables.status, 200);
+  assert.equal(receivables.body.customers.length, 1);
+  assert.equal(receivables.body.customers[0].customerName, "Cliente Demo");
+  assert.equal(receivables.body.customers[0].pendingAmount, 8.5);
+
+  const receivableDetail = await cashierClient.json(
+    `/api/receivables/customer/${encodeURIComponent(receivables.body.customers[0].customerKey)}`,
+    {
+      headers: { "X-Cashier-Token": cashierToken },
+    },
+  );
+  assert.equal(receivableDetail.status, 200);
+  assert.equal(receivableDetail.body.customer.sales.length, 1);
+  assert.equal(receivableDetail.body.customer.sales[0].pendingAmount, 8.5);
+
+  const receivablePayment = await cashierClient.json("/api/receivables/payments", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cashier-Token": cashierToken,
+    },
+    body: JSON.stringify({
+      saleId: creditSaleId,
+      shift: "Tarde",
+      amount: 5,
+      paymentMethod: "Efectivo",
+      notes: "Abono de prueba",
+    }),
+  });
+  assert.equal(receivablePayment.status, 201);
+  assert.equal(receivablePayment.body.payment.amount, 5);
+  assert.equal(receivablePayment.body.customer.pendingAmount, 3.5);
+
+  const registerSummaryAfterPayment = await cashierClient.json(
+    `/api/register/summary?shift=Tarde&branch=carrizal&cashier=${encodeURIComponent("Juan")}`,
+    {
+      headers: { "X-Cashier-Token": cashierToken },
+    },
+  );
+  assert.equal(registerSummaryAfterPayment.status, 200);
+  assert.equal(registerSummaryAfterPayment.body.summary.cashSales, 33.5);
+  assert.equal(registerSummaryAfterPayment.body.summary.creditSales, 3.5);
+  assert.equal(registerSummaryAfterPayment.body.summary.expectedCash, 33.5);
+
   const guestActivity = await guest.json(`/api/activity/sale/${saleId}`);
   assert.equal(guestActivity.status, 401);
 
@@ -449,6 +825,25 @@ test("guest bootstrap hides operational data while authenticated flows keep work
   assert.equal(cashierActivity.status, 200);
   assert.equal(cashierActivity.body.kind, "sale");
   assert.equal(cashierActivity.body.detail.branch, "carrizal");
+
+  const cashierCreditSaleActivity = await cashierClient.json(`/api/activity/sale/${creditSaleId}`, {
+    headers: { "X-Cashier-Token": cashierToken },
+  });
+  assert.equal(cashierCreditSaleActivity.status, 200);
+  assert.equal(cashierCreditSaleActivity.body.detail.paidAmount, 15);
+  assert.equal(cashierCreditSaleActivity.body.detail.laterPaymentsTotal, 5);
+  assert.equal(cashierCreditSaleActivity.body.detail.pendingAmount, 3.5);
+  assert.equal(cashierCreditSaleActivity.body.detail.payments.length, 1);
+
+  const receivablePaymentActivity = await cashierClient.json(
+    `/api/activity/credit-payment/${receivablePayment.body.payment.id}`,
+    {
+      headers: { "X-Cashier-Token": cashierToken },
+    },
+  );
+  assert.equal(receivablePaymentActivity.status, 200);
+  assert.equal(receivablePaymentActivity.body.kind, "credit-payment");
+  assert.equal(receivablePaymentActivity.body.detail.amount, 5);
 
   const quickImport = await adminClient.json("/api/inventory/quick-import", {
     method: "POST",

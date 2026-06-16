@@ -112,8 +112,8 @@
             </label>
 
             <label class="field field-search">
-              <span>Buscar producto</span>
-              <input id="search-input" type="search" placeholder="Queso, miel, pay..." />
+              <span>Buscar producto, SKU o codigo</span>
+              <input id="search-input" type="search" placeholder="Queso, CRE-Q-001, codigo de barras..." />
             </label>
             <div class="search-quick-results" id="search-quick-results" hidden></div>
           </div>
@@ -182,6 +182,9 @@
                 <button class="ghost-button" id="clear-cart-button" type="button">
                   Vaciar
                 </button>
+                <button class="secondary-button" id="open-receivables-button" type="button">
+                  Cartera / Abonos
+                </button>
                 <button class="secondary-button" id="open-merchandise-request-button" type="button" data-module="merchandise_requests">
                   Solicitar mercaderia
                 </button>
@@ -249,6 +252,29 @@
       </section>
     </div>
 
+    <section class="approvals-mobile-shell" id="approvals-mobile-shell" hidden>
+      <div class="approvals-mobile-card">
+        <div class="approvals-mobile-head">
+          <div>
+            <p class="eyebrow">Aprobaciones moviles</p>
+            <h2>Solicitudes de mercaderia</h2>
+            <p class="modal-note" id="approvals-mobile-status">
+              Revisa pendientes, aprueba o rechaza sin abrir el panel admin completo.
+            </p>
+          </div>
+          <div class="approvals-mobile-head-actions">
+            <span class="small-pill" id="approvals-mobile-count">0 pendientes</span>
+            <span class="small-pill" id="approvals-mobile-network">En linea</span>
+            <button class="ghost-button" id="close-approvals-mobile-button" type="button">
+              Cerrar vista
+            </button>
+          </div>
+        </div>
+
+        <div class="approvals-mobile-content" id="approvals-mobile-content"></div>
+      </div>
+    </section>
+
     <button class="route-cart-fab" id="route-cart-fab" type="button" hidden>
       <span class="route-cart-fab-label">Ir al carrito</span>
       <strong class="route-cart-fab-total" id="route-cart-fab-total">$0.00</strong>
@@ -279,13 +305,16 @@
 
           <label class="field">
             <span>Total de la linea</span>
-            <input id="item-total" type="number" min="0" step="0.01" inputmode="decimal" data-touch-guard="true" />
+            <input id="item-total" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-touch-guard="true" />
           </label>
 
           <label class="field">
-            <span>Precio por unidad/kg (mayoreo)</span>
-            <input id="item-unit-price" type="number" min="0.01" step="0.01" inputmode="decimal" data-touch-guard="true" />
+            <span>Precio por unidad/kg (manual o mayoreo)</span>
+            <input id="item-unit-price" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-touch-guard="true" />
           </label>
+          <p class="modal-note" id="item-pricing-hint">
+            Si capturas el total primero, luego puedes ajustar el precio/kg y se recalculara la cantidad sin mover el total.
+          </p>
         </div>
 
         <div class="modal-actions route-standard-actions">
@@ -301,6 +330,53 @@
             <span class="route-decision-direction">Desliza derecha</span>
             <strong>Agregar</strong>
           </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-shell" id="route-cart-editor-modal">
+      <div class="modal-card route-cart-editor-card" id="route-cart-editor-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Edicion rapida</p>
+            <h3 id="route-cart-editor-name">Producto</h3>
+            <p class="modal-note" id="route-cart-editor-meta"></p>
+          </div>
+          <button class="icon-button" id="close-route-cart-editor-modal" type="button">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <label class="field">
+            <span>Cantidad</span>
+            <input id="route-cart-editor-quantity" type="number" min="1" step="1" inputmode="decimal" data-touch-guard="true" />
+          </label>
+
+          <label class="field">
+            <span>Precio por unidad (manual o mayoreo)</span>
+            <input id="route-cart-editor-unit-price" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-touch-guard="true" />
+          </label>
+
+          <label class="field">
+            <span>Total de la linea</span>
+            <input id="route-cart-editor-total" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-touch-guard="true" />
+          </label>
+          <p class="modal-note" id="route-cart-editor-hint">
+            Cantidad fija: si cambias el precio recalculamos el total de la linea.
+          </p>
+        </div>
+
+        <div class="route-cart-editor-secondary-actions">
+          <button class="ghost-button" id="route-cart-editor-reset-price-button" type="button">
+            Restaurar precio base
+          </button>
+          <button class="ghost-button danger-button" id="route-cart-editor-remove-button" type="button">
+            Eliminar linea
+          </button>
+        </div>
+
+        <div class="modal-actions">
+          <button class="ghost-button" id="cancel-route-cart-editor-button" type="button">Cancelar</button>
+          <button class="primary-button" id="save-route-cart-editor-button" type="button">Guardar cambios</button>
         </div>
       </div>
     </div>
@@ -324,11 +400,11 @@
 
           <div class="payment-meta">
             <div>
-              <span>Recibido</span>
+              <span id="payment-received-label">Recibido</span>
               <strong id="payment-received">$0.00</strong>
             </div>
             <div>
-              <span>Cambio</span>
+              <span id="payment-change-label">Cambio</span>
               <strong id="payment-change">$0.00</strong>
             </div>
           </div>
@@ -344,6 +420,32 @@
           <button class="payment-method" data-method="Transferencia" type="button">
             Transferencia
           </button>
+          <button class="payment-method" data-method="Fiado" type="button">
+            Fiado
+          </button>
+        </div>
+
+        <p class="modal-note" id="payment-context-note">
+          Captura lo recibido para calcular el cambio del ticket.
+        </p>
+
+        <div class="modal-body" id="payment-extra-fields">
+          <label class="field" id="payment-customer-field" hidden>
+            <span id="payment-customer-label">Cliente o referencia</span>
+            <input id="payment-customer-input" type="text" maxlength="80" autocomplete="off" />
+          </label>
+          <label class="field" id="payment-received-method-field" hidden>
+            <span id="payment-received-method-label">Abono cobrado por</span>
+            <select id="payment-received-method-input">
+              <option value="Efectivo">Efectivo</option>
+              <option value="Tarjeta">Tarjeta</option>
+              <option value="Transferencia">Transferencia</option>
+            </select>
+          </label>
+          <label class="field" id="payment-note-field" hidden>
+            <span>Nota del cobro</span>
+            <input id="payment-note-input" type="text" maxlength="240" autocomplete="off" />
+          </label>
         </div>
 
         <div id="cash-payment-block">
@@ -614,6 +716,83 @@
       </div>
     </div>
 
+    <div class="modal-shell priority-modal" id="receivables-modal">
+      <div class="modal-card receivables-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Cartera</p>
+            <h3>Fiados y abonos</h3>
+            <p class="modal-note">
+              Consulta saldos pendientes por cliente y registra abonos sin editar la venta original.
+            </p>
+          </div>
+          <button class="icon-button" id="close-receivables-modal" type="button">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <label class="field">
+            <span>Buscar cliente o ticket</span>
+            <input id="receivables-search" type="search" placeholder="Ej. Familia Lopez o RIN-..." autocomplete="off" />
+          </label>
+        </div>
+
+        <div class="receivables-layout">
+          <section class="receivables-customers">
+            <div class="admin-record-list receivables-customer-list" id="receivables-customer-list"></div>
+          </section>
+
+          <aside class="receivables-detail">
+            <div id="receivables-customer-detail"></div>
+          </aside>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-shell overlay-modal" id="receivable-payment-modal">
+      <div class="modal-card receivable-payment-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Registrar abono</p>
+            <h3 id="receivable-payment-title">Abono</h3>
+            <p class="modal-note" id="receivable-payment-meta"></p>
+          </div>
+          <button class="icon-button" id="close-receivable-payment-modal" type="button">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <div id="receivable-payment-summary"></div>
+
+          <label class="field">
+            <span>Monto del abono</span>
+            <input id="receivable-payment-amount" type="number" min="0.01" step="0.01" inputmode="decimal" />
+          </label>
+
+          <label class="field">
+            <span>Medio del abono</span>
+            <select id="receivable-payment-method">
+              <option value="Efectivo">Efectivo</option>
+              <option value="Tarjeta">Tarjeta</option>
+              <option value="Transferencia">Transferencia</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Nota</span>
+            <input id="receivable-payment-note" type="text" maxlength="240" autocomplete="off" placeholder="Referencia, observacion o detalle opcional" />
+          </label>
+        </div>
+
+        <div class="modal-actions">
+          <button class="ghost-button" id="cancel-receivable-payment-button" type="button">
+            Cancelar
+          </button>
+          <button class="primary-button" id="save-receivable-payment-button" type="button">
+            Guardar abono
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div class="modal-shell overlay-modal" id="merchandise-request-item-modal">
       <div class="modal-card merchandise-request-item-card">
         <div class="modal-head">
@@ -724,6 +903,10 @@
             <span>Total vendido</span>
             <strong id="register-total-sales">$0.00</strong>
           </article>
+          <article class="register-summary-card">
+            <span>Fiado pendiente</span>
+            <strong id="register-credit-sales">$0.00</strong>
+          </article>
         </div>
 
         <div class="modal-body">
@@ -756,6 +939,34 @@
           </button>
           <button class="primary-button" id="save-register-button" type="button">
             Guardar
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-shell overlay-modal" id="cashier-blind-audit-modal">
+      <div class="modal-card cashier-blind-audit-card">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Pesado ciego</p>
+            <h3 id="cashier-blind-audit-title">Captura la bascula</h3>
+            <p class="modal-note" id="cashier-blind-audit-meta">
+              Registra solo lo que marque la bascula. El sistema no mostrara el stock esperado en este paso.
+            </p>
+          </div>
+        </div>
+
+        <div class="modal-body">
+          <div class="cashier-blind-audit-summary" id="cashier-blind-audit-summary"></div>
+          <div class="cashier-blind-audit-list" id="cashier-blind-audit-items"></div>
+          <p class="modal-note" id="cashier-blind-audit-helper">
+            Este paso solo pide los productos por kilo que si se vendieron en tu turno.
+          </p>
+        </div>
+
+        <div class="modal-actions">
+          <button class="primary-button" id="save-cashier-blind-audit-button" type="button">
+            Guardar pesado
           </button>
         </div>
       </div>
@@ -1142,6 +1353,16 @@
                   <article class="admin-metric-card">
                     <span>Nodos DOM</span>
                     <strong id="admin-dom-nodes">0</strong>
+                  </article>
+                  <article class="admin-metric-card">
+                    <span>Alta rapida ruta</span>
+                    <strong id="admin-route-quick-add">0 ms</strong>
+                    <p id="admin-route-quick-add-detail">0 altas</p>
+                  </article>
+                  <article class="admin-metric-card">
+                    <span>Editor rapido ruta</span>
+                    <strong id="admin-route-editor-open">0 ms</strong>
+                    <p id="admin-route-editor-open-detail">0 aperturas</p>
                   </article>
                 </div>
 
@@ -1724,6 +1945,7 @@
     <script src="/js/quick-import-state.js"></script>
     <script src="/js/quick-import.js"></script>
     <script src="/js/merchandise-requests.js"></script>
+    <script src="/js/receivables.js"></script>
     <script src="/js/actions.js"></script>
     <script src="/js/sales.js"></script>
     <script src="/js/auth.js"></script>

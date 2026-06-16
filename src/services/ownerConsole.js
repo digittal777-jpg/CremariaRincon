@@ -93,7 +93,7 @@ function normalizeAdminCapabilities(input) {
       .filter((item) => item && allowed.has(item)),
   )];
 
-  return next.length > 0 ? next : DEFAULT_ADMIN_CAPABILITIES.slice();
+  return next;
 }
 
 function getAdminCapabilities() {
@@ -103,7 +103,17 @@ function getAdminCapabilities() {
   }
 
   try {
-    return normalizeAdminCapabilities(JSON.parse(raw));
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return DEFAULT_ADMIN_CAPABILITIES.slice();
+    }
+
+    const normalized = normalizeAdminCapabilities(parsed);
+    if (normalized.length === 0 && parsed.length > 0) {
+      return DEFAULT_ADMIN_CAPABILITIES.slice();
+    }
+
+    return normalized;
   } catch (_error) {
     return DEFAULT_ADMIN_CAPABILITIES.slice();
   }

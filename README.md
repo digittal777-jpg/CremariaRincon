@@ -78,6 +78,114 @@ Variables utiles:
 - `BACKUP_RETENTION_MONTHLY`
 - `BACKUP_NOTIFY_TO`
 - `RESEND_API_KEY`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_IDS`
+- `TELEGRAM_API_BASE_URL`
+
+Si quieres clonar exactamente una instancia real hacia Railway, no partas del Excel ni del branding manual. Prepara primero una copia segura de la SQLite actual:
+
+```powershell
+npm.cmd run prepare:railway-db
+```
+
+Ese comando deja en `.tmp-railway/`:
+
+- una copia validada de la SQLite actual;
+- un reporte con `business_profile`, branding y `POS_DB_PATH` recomendado para Railway.
+
+Para ese escenario:
+
+- monta un volumen persistente;
+- configura `POS_DB_PATH=/data/cremaria-rincon.sqlite`;
+- despliega la app;
+- si la instancia arranca en blanco, sube esa SQLite por `POST /api/admin/install-db`;
+- reinicia y valida `GET /api/bootstrap`.
+
+Nota critica:
+
+- `POS_WORKBOOK_PATH` solo sirve para sembrar productos cuando la DB esta vacia;
+- no restaura `business_profile`, logo ni la identidad completa del negocio.
+
+## Actualizar la misma instancia Railway
+
+Si solo vas a subir las mejoras nuevas al mismo servicio de Railway:
+
+1. deja el mismo volumen y el mismo `POS_DB_PATH`;
+2. confirma que ese servicio este escuchando la rama correcta, por ejemplo `prueba-ruta` para staging privado y `main` para produccion;
+3. corre `cmd /c npm test`;
+4. haz respaldo de la SQLite y del workbook;
+5. empuja la rama que ese servicio vigila;
+6. valida `GET /api/health`, `GET /api/bootstrap`, login `owner`, login `admin` y una venta de prueba.
+
+Regla practica:
+
+- si el cambio es solo de interfaz, flujo, auditoria, offline o logica de negocio, normalmente no necesitas nuevas variables en Railway;
+- si cambias dominio, bot, backups, workbook o la forma de sembrar/restaurar una instancia, si necesitas revisar variables.
+
+## Variantes nuevas en Railway
+
+Para variantes nuevas, usa siempre esta regla:
+
+- `1 servicio = 1 volumen = 1 base de datos = 1 dominio = 1 negocio`
+
+Dos caminos seguros:
+
+1. Espejo exacto del negocio actual:
+   - corre `npm.cmd run prepare:railway-db`;
+   - monta un volumen nuevo;
+   - configura `POS_DB_PATH=/data/cremaria-rincon.sqlite`;
+   - despliega;
+   - si inicia en blanco, sube la copia por `POST /api/admin/install-db`.
+2. Variante nueva desde plantilla:
+   - usa `npm.cmd run clone:business -- --slug ... --name ... --template ... --catalog ...` para crear un clon local completo;
+   - o usa `node scripts/seed-business-template.js --template ... --name ... --slug ... --catalog ...` sobre una DB vacia;
+   - luego despliega esa variante en un servicio Railway con volumen y variables propias.
+
+## Que mejoras nuevas piden pasos extra en Railway
+
+- Solicitudes con alerta por celular: configura `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_IDS`, `TELEGRAM_API_BASE_URL` y revisa `POS_PUBLIC_ORIGIN`.
+- Backups nocturnos: configura `BACKUP_ENABLED`, bucket S3 compatible y, si quieres aviso por correo, `RESEND_API_KEY`.
+- Cambio de dominio o URL publica: actualiza `POS_PUBLIC_ORIGIN` y `POS_ALLOWED_ORIGINS`.
+- Siembra por catalogo en una instancia vacia: revisa `POS_WORKBOOK_PATH`.
+- Clon exacto o restauracion total: usa volumen persistente, `POS_DB_PATH` y `POST /api/admin/install-db`.
+- Nuevos modulos del negocio: si son funciones internas del POS y no dependen de terceros, suelen viajar solo con el deploy; si agregan integraciones externas, casi siempre traen variables nuevas.
+
+## Telegram para solicitudes de mercaderia
+
+La alerta por Telegram ya esta integrada para nuevas solicitudes de mercaderia. Solo necesita configuracion:
+
+```powershell
+$env:TELEGRAM_BOT_TOKEN='123456:ABC...'
+$env:TELEGRAM_CHAT_IDS='123456789,-1009876543210'
+$env:TELEGRAM_API_BASE_URL='https://api.telegram.org'
+```
+
+Pasos recomendados:
+
+1. Crea el bot con `@BotFather` y guarda el token.
+2. Abre chat con el bot y manda `/start`, o agregalo al grupo donde quieres alertas.
+3. Obtén los `chat_id` con:
+
+```powershell
+npm.cmd run telegram:updates
+```
+
+4. Configura `TELEGRAM_CHAT_IDS` con uno o varios IDs separados por coma.
+5. Prueba el envio con:
+
+```powershell
+npm.cmd run telegram:test
+```
+
+Notas operativas:
+
+- `POS_PUBLIC_ORIGIN` debe apuntar a la URL real de Railway para que el mensaje abra `?view=approvals&request=<id>`.
+- Si `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_IDS` o `POS_PUBLIC_ORIGIN` faltan, la solicitud se crea igual pero la alerta se omite.
+- Para mandar una prueba a un chat puntual sin tocar la variable global:
+
+```powershell
+node scripts/telegram-helper.js send-test --chat 123456789
+```
 
 ## Admin seguro
 

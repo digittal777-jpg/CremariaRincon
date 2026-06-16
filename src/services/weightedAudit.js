@@ -96,12 +96,136 @@ function buildAutoWeightedAuditNote({ shift, cashier, eventId } = {}) {
   return normalizeText(fragments.join(" · "), 240) || null;
 }
 
+function insertWeightedAuditItems(sessionId, items = []) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return;
+  }
+
+  const now = nowIso();
+  const insertItem = db.prepare(`
+    INSERT OR IGNORE INTO weighted_audit_items (
+      session_id,
+      product_id,
+      product_name,
+      unit,
+      pos_stock,
+      counted_stock,
+      difference,
+      direction,
+      reason,
+      unit_price,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, 'pending', NULL, ?, ?, ?)
+  `);
+
+  items.forEach((item) => {
+    const productId = Number(item.productId ?? item.id);
+    if (!Number.isInteger(productId) || productId <= 0) {
+      return;
+    }
+
+    insertItem.run(
+      sessionId,
+      productId,
+      item.productName || item.name || `Producto ${productId}`,
+      item.unit || "kg",
+      roundStock(item.posStock ?? item.stock ?? 0),
+      roundMoney(item.unitPrice ?? item.price ?? 0),
+      now,
+      now,
+    );
+  });
+}
+
+function listWeightedProductsSoldForCashier(options = {}) {
+  const branch = normalizeBranch(options.branch);
+  const shift = normalizeText(options.shift || STORE_SHIFTS[0], 24) || STORE_SHIFTS[0];
+  const cashier = normalizeText(options.cashier || "", 60);
+  const dateKey = normalizeAuditDateKey(options.dateKey);
+  const cutoffCreatedAt = normalizeText(options.cutoffCreatedAt || "", 40) || null;
+
+  if (!cashier) {
+    return [];
+  }
+
+  const rows = db.prepare(`
+    SELECT
+      s.created_at,
+      si.product_id,
+      si.product_name,
+      si.quantity,
+      p.unit,
+      p.stock,
+      p.price
+    FROM sales s
+    JOIN sale_items si ON si.sale_id = s.id
+    JOIN products p ON p.id = si.product_id
+    WHERE s.branch = ? AND s.shift = ? AND s.cashier = ? AND p.unit = 'kg'
+    ORDER BY s.created_at DESC, si.id DESC
+  `).all(branch, shift, cashier);
+
+  const productsById = new Map();
+  rows.forEach((row) => {
+    if (getStoreDateKey(row.created_at) !== dateKey) {
+      return;
+    }
+    if (cutoffCreatedAt && String(row.created_at) > cutoffCreatedAt) {
+      return;
+    }
+
+    const productId = Number(row.product_id);
+    if (!Number.isInteger(productId) || productId <= 0) {
+      return;
+    }
+
+    if (!productsById.has(productId)) {
+      productsById.set(productId, {
+        productId,
+        productName: row.product_name || `Producto ${productId}`,
+        unit: row.unit || "kg",
+        posStock: roundStock(row.stock || 0),
+        unitPrice: roundMoney(row.price || 0),
+        soldQuantity: 0,
+      });
+    }
+
+    const entry = productsById.get(productId);
+    entry.soldQuantity = roundStock(entry.soldQuantity + roundStock(row.quantity || 0));
+  });
+
+  return [...productsById.values()].sort(
+    (left, right) => String(left.productName || "").localeCompare(String(right.productName || ""), "es", {
+      sensitivity: "base",
+    }),
+  );
+}
+
+function getWeightedAuditSessionBySourceRegisterEventId(eventId) {
+  const safeEventId = Number(eventId);
+  if (!Number.isInteger(safeEventId) || safeEventId <= 0) {
+    return null;
+  }
+
+  const row = db.prepare(`
+    SELECT id
+    FROM weighted_audit_sessions
+    WHERE source_register_event_id = ?
+    LIMIT 1
+  `).get(safeEventId);
+
+  return row ? getWeightedAuditSessionById(Number(row.id)) : null;
+}
+
 function ensureWeightedAuditSessionInternal(payload = {}) {
   const branch = normalizeBranch(payload.branch);
   const shift = normalizeText(payload.shift || STORE_SHIFTS[0], 24) || STORE_SHIFTS[0];
   const auditedDateKey = normalizeAuditDateKey(payload.dateKey);
   const createdBy = normalizeText(payload.createdBy || "admin", 60) || "admin";
   const notes = normalizeText(payload.notes || "", 240) || null;
+  const sourceRegisterEventId = Number(payload.sourceRegisterEventId);
+  const sourceCashier = normalizeText(payload.sourceCashier || payload.cashier || "", 60) || null;
+  const seedItems = Array.isArray(payload.seedItems) ? payload.seedItems : null;
 
   assertBranchIsActive(branch, "Selecciona una sucursal activa para la auditoria.");
   if (!STORE_SHIFTS.includes(shift)) {
@@ -110,14 +234,19 @@ function ensureWeightedAuditSessionInternal(payload = {}) {
 
   let created = false;
   const sessionId = db.transaction(() => {
-    const existing = db.prepare(`
-      SELECT id
-      FROM weighted_audit_sessions
-      WHERE branch = ? AND shift = ? AND audited_date_key = ?
-    `).get(branch, shift, auditedDateKey);
+    const existing = Number.isInteger(sourceRegisterEventId) && sourceRegisterEventId > 0
+      ? db.prepare(`
+        SELECT id
+        FROM weighted_audit_sessions
+        WHERE source_register_event_id = ?
+      `).get(sourceRegisterEventId)
+      : db.prepare(`
+        SELECT id
+        FROM weighted_audit_sessions
+        WHERE source_register_event_id IS NULL AND branch = ? AND shift = ? AND audited_date_key = ?
+      `).get(branch, shift, auditedDateKey);
 
     if (existing) {
-      ensureWeightedAuditTemplate(existing.id, branch);
       return existing.id;
     }
 
@@ -130,13 +259,29 @@ function ensureWeightedAuditSessionInternal(payload = {}) {
         status,
         created_by,
         notes,
+        source_register_event_id,
+        source_cashier,
+        template_locked,
         created_at
-      ) VALUES (?, ?, ?, 'pending', ?, ?, ?)
-    `).run(branch, shift, auditedDateKey, createdBy, notes, now);
+      ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, 1, ?)
+    `).run(
+      branch,
+      shift,
+      auditedDateKey,
+      createdBy,
+      notes,
+      Number.isInteger(sourceRegisterEventId) && sourceRegisterEventId > 0 ? sourceRegisterEventId : null,
+      sourceCashier,
+      now,
+    );
 
     created = true;
     const nextId = Number(insert.lastInsertRowid);
-    ensureWeightedAuditTemplate(nextId, branch);
+    if (seedItems) {
+      insertWeightedAuditItems(nextId, seedItems);
+    } else {
+      ensureWeightedAuditTemplate(nextId, branch);
+    }
     return nextId;
   })();
 
@@ -157,18 +302,23 @@ function getWeightedAuditSessionById(sessionId) {
       created_by,
       completed_by,
       notes,
+      source_register_event_id,
+      source_cashier,
+      template_locked,
       created_at,
-      completed_at
+      completed_at,
+      (
+        SELECT created_at
+        FROM register_events re
+        WHERE re.id = weighted_audit_sessions.source_register_event_id
+        LIMIT 1
+      ) AS source_register_event_created_at
     FROM weighted_audit_sessions
     WHERE id = ?
   `).get(sessionId);
 
   if (!sessionRow) {
     return null;
-  }
-
-  if (sessionRow.status !== "completed") {
-    ensureWeightedAuditTemplate(sessionRow.id, sessionRow.branch);
   }
 
   const items = db.prepare(`
@@ -207,6 +357,10 @@ function getWeightedAuditSessionById(sessionId) {
     createdBy: sessionRow.created_by || "",
     completedBy: sessionRow.completed_by || "",
     notes: sessionRow.notes || "",
+    sourceRegisterEventId: sessionRow.source_register_event_id || null,
+    sourceCashier: sessionRow.source_cashier || "",
+    sourceRegisterEventCreatedAt: sessionRow.source_register_event_created_at || null,
+    templateLocked: Boolean(sessionRow.template_locked),
     createdAt: sessionRow.created_at,
     completedAt: sessionRow.completed_at || null,
     summary: buildSessionSummary(items),
@@ -215,24 +369,6 @@ function getWeightedAuditSessionById(sessionId) {
 }
 
 function ensureWeightedAuditTemplate(sessionId, branch) {
-  const now = nowIso();
-  const insertItem = db.prepare(`
-    INSERT OR IGNORE INTO weighted_audit_items (
-      session_id,
-      product_id,
-      product_name,
-      unit,
-      pos_stock,
-      counted_stock,
-      difference,
-      direction,
-      reason,
-      unit_price,
-      created_at,
-      updated_at
-    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, 'pending', NULL, ?, ?, ?)
-  `);
-
   const products = db.prepare(`
     SELECT
       id,
@@ -253,25 +389,20 @@ function ensureWeightedAuditTemplate(sessionId, branch) {
       name COLLATE NOCASE
   `).all(branch);
 
-  products.forEach((product) => {
-    insertItem.run(
-      sessionId,
-      product.id,
-      product.name,
-      product.unit || "kg",
-      roundStock(product.stock),
-      roundMoney(product.price),
-      now,
-      now,
-    );
-  });
+  insertWeightedAuditItems(sessionId, products.map((product) => ({
+    productId: product.id,
+    productName: product.name,
+    unit: product.unit || "kg",
+    posStock: roundStock(product.stock),
+    unitPrice: roundMoney(product.price),
+  })));
 }
 
 function createWeightedAuditSession(payload = {}) {
   return ensureWeightedAuditSessionInternal(payload).session;
 }
 
-function ensureWeightedAuditSessionForFinalCut(payload = {}) {
+function ensureWeightedAuditSessionForFinalCutLegacy(payload = {}) {
   const cashier = normalizeText(payload.cashier || "Mostrador", 60) || "Mostrador";
 
   return ensureWeightedAuditSessionInternal({
@@ -285,6 +416,323 @@ function ensureWeightedAuditSessionForFinalCut(payload = {}) {
       eventId: payload.eventId,
     }),
   });
+}
+
+function ensureWeightedAuditSessionForFinalCut(payload = {}) {
+  const cashier = normalizeText(payload.cashier || "Mostrador", 60) || "Mostrador";
+  const eventId = Number(payload.eventId);
+  const existingSession = Number.isInteger(eventId) && eventId > 0
+    ? getWeightedAuditSessionBySourceRegisterEventId(eventId)
+    : null;
+  if (existingSession) {
+    return {
+      created: false,
+      session: existingSession,
+    };
+  }
+
+  const sourceEventCreatedAt = Number.isInteger(eventId) && eventId > 0
+    ? db.prepare(`
+      SELECT created_at
+      FROM register_events
+      WHERE id = ? AND event_type = 'final_cut'
+      LIMIT 1
+    `).get(eventId)?.created_at || null
+    : null;
+  const seedItems = listWeightedProductsSoldForCashier({
+    branch: payload.branch,
+    shift: payload.shift,
+    cashier,
+    dateKey: payload.dateKey,
+    cutoffCreatedAt: sourceEventCreatedAt,
+  });
+
+  if (seedItems.length === 0) {
+    return {
+      created: false,
+      session: null,
+    };
+  }
+
+  return ensureWeightedAuditSessionInternal({
+    branch: payload.branch,
+    shift: payload.shift,
+    dateKey: payload.dateKey,
+    sourceRegisterEventId: Number.isInteger(eventId) && eventId > 0 ? eventId : null,
+    sourceCashier: cashier,
+    seedItems,
+    createdBy: payload.createdBy || `corte final - ${cashier}`,
+    notes: payload.notes || buildAutoWeightedAuditNote({
+      shift: payload.shift,
+      cashier,
+      eventId,
+    }),
+  });
+}
+
+function syncWeightedAuditSessionFromRegisterEvent(eventId) {
+  const safeEventId = Number(eventId);
+  if (!Number.isInteger(safeEventId) || safeEventId <= 0) {
+    return null;
+  }
+
+  const session = getWeightedAuditSessionBySourceRegisterEventId(safeEventId);
+  if (!session) {
+    return null;
+  }
+
+  const event = db.prepare(`
+    SELECT id, branch, shift, cashier, created_at
+    FROM register_events
+    WHERE id = ? AND event_type = 'final_cut'
+    LIMIT 1
+  `).get(safeEventId);
+  if (!event) {
+    return session;
+  }
+
+  db.prepare(`
+    UPDATE weighted_audit_sessions
+    SET branch = ?, shift = ?, audited_date_key = ?, source_cashier = ?
+    WHERE id = ?
+  `).run(
+    normalizeBranch(event.branch),
+    normalizeText(event.shift || STORE_SHIFTS[0], 24) || STORE_SHIFTS[0],
+    getStoreDateKey(new Date(event.created_at)),
+    normalizeText(event.cashier || "", 60) || null,
+    session.id,
+  );
+
+  return getWeightedAuditSessionById(session.id);
+}
+
+function buildCashierBlindAuditPrompt(sessionId, options = {}) {
+  const session = getWeightedAuditSessionById(sessionId);
+  if (!session) {
+    return null;
+  }
+
+  const cashier = normalizeText(options.cashier || "", 60);
+  if (!cashier) {
+    throw createHttpError("No se pudo identificar al cajero para el pesado ciego.");
+  }
+  if (session.sourceCashier && session.sourceCashier !== cashier) {
+    return null;
+  }
+
+  const soldRows = session.sourceRegisterEventId
+    ? db.prepare(`
+      SELECT
+        s.created_at,
+        si.product_id,
+        si.quantity,
+        i.id AS item_id,
+        i.product_name,
+        i.unit,
+        i.counted_stock,
+        i.difference
+      FROM sales s
+      JOIN sale_items si ON si.sale_id = s.id
+      JOIN weighted_audit_items i
+        ON i.session_id = ? AND i.product_id = si.product_id
+      WHERE s.branch = ? AND s.cashier = ?
+      ORDER BY s.created_at DESC, si.id DESC
+    `).all(session.id, session.branch, cashier)
+    : db.prepare(`
+      SELECT
+        s.created_at,
+        si.product_id,
+        si.quantity,
+        i.id AS item_id,
+        i.product_name,
+        i.unit,
+        i.counted_stock,
+        i.difference
+      FROM sales s
+      JOIN sale_items si ON si.sale_id = s.id
+      JOIN weighted_audit_items i
+        ON i.session_id = ? AND i.product_id = si.product_id
+      WHERE s.branch = ? AND s.shift = ? AND s.cashier = ?
+      ORDER BY s.created_at DESC, si.id DESC
+    `).all(session.id, session.branch, session.shift, cashier);
+
+  const itemsById = new Map(
+    (session.sourceRegisterEventId ? session.items : []).map((item) => [
+      item.id,
+      {
+        itemId: item.id,
+        productId: Number(item.productId),
+        productName: item.productName,
+        unit: item.unit || "kg",
+        soldQuantity: 0,
+        countedStock: item.countedStock == null ? null : roundStock(item.countedStock),
+        ...(item.difference == null ? {} : { difference: roundStock(item.difference) }),
+      },
+    ]),
+  );
+  soldRows.forEach((row) => {
+    if (getStoreDateKey(row.created_at) !== session.auditedDateKey) {
+      return;
+    }
+    if (
+      session.sourceRegisterEventCreatedAt
+      && String(row.created_at) > String(session.sourceRegisterEventCreatedAt)
+    ) {
+      return;
+    }
+
+    const itemId = Number(row.item_id);
+    if (!itemsById.has(itemId)) {
+      itemsById.set(itemId, {
+        itemId,
+        productId: Number(row.product_id),
+        productName: row.product_name,
+        unit: row.unit || "kg",
+        soldQuantity: 0,
+        countedStock: row.counted_stock == null ? null : roundStock(row.counted_stock),
+        ...(row.difference == null ? {} : { difference: roundStock(row.difference) }),
+      });
+    }
+
+    const entry = itemsById.get(itemId);
+    entry.soldQuantity = roundStock(entry.soldQuantity + roundStock(row.quantity || 0));
+  });
+
+  const items = [...itemsById.values()]
+    .sort((left, right) => left.productName.localeCompare(right.productName, "es", { sensitivity: "base" }));
+
+  return {
+    sessionId: session.id,
+    branch: session.branch,
+    shift: session.shift,
+    auditedDateKey: session.auditedDateKey,
+    cashier,
+    requiredCount: items.length,
+    capturedCount: items.filter((item) => item.countedStock != null).length,
+    completed: items.length > 0 && items.every((item) => item.countedStock != null),
+    items,
+  };
+}
+
+function previewCashierBlindWeightedAuditItems(sessionId, payload = {}, options = {}) {
+  const prompt = buildCashierBlindAuditPrompt(sessionId, {
+    cashier: options.cashier || payload.cashier || "",
+  });
+  if (!prompt) {
+    throw createHttpError("No encontre la captura ciega para este corte.", 404);
+  }
+
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  const submittedItems = new Map();
+  items.forEach((entry) => {
+    const itemId = Number(entry.itemId);
+    if (!Number.isInteger(itemId) || itemId <= 0) {
+      return;
+    }
+    submittedItems.set(itemId, entry.countedStock);
+  });
+
+  const rows = db.prepare(`
+    SELECT id, pos_stock, counted_stock, difference
+    FROM weighted_audit_items
+    WHERE session_id = ?
+  `).all(sessionId);
+  const rowsById = new Map(rows.map((row) => [Number(row.id), row]));
+
+  const previews = prompt.items.map((item) => {
+    const row = rowsById.get(Number(item.itemId));
+    if (!row) {
+      return {
+        itemId: item.itemId,
+        difference: null,
+        status: "missing",
+      };
+    }
+
+    const rawValue = submittedItems.has(item.itemId)
+      ? submittedItems.get(item.itemId)
+      : row.counted_stock;
+    if (rawValue === null || rawValue === undefined || String(rawValue).trim() === "") {
+      return {
+        itemId: item.itemId,
+        difference: null,
+        status: "pending",
+      };
+    }
+
+    const countedStock = roundStock(rawValue);
+    if (!Number.isFinite(countedStock) || countedStock < 0) {
+      return {
+        itemId: item.itemId,
+        difference: null,
+        status: "invalid",
+      };
+    }
+
+    const difference = roundStock(countedStock - roundStock(row.pos_stock));
+    return {
+      itemId: item.itemId,
+      difference,
+      status: difference === 0 ? "match" : difference < 0 ? "shortage" : "surplus",
+    };
+  });
+
+  return {
+    sessionId: prompt.sessionId,
+    previews,
+  };
+}
+
+function findCashierBlindAuditPrompt(options = {}) {
+  const branch = normalizeBranch(options.branch);
+  const shift = normalizeText(options.shift || STORE_SHIFTS[0], 24) || STORE_SHIFTS[0];
+  const cashier = normalizeText(options.cashier || "", 60);
+  const dateKey = normalizeAuditDateKey(options.dateKey || getStoreDateKey(new Date()));
+
+  if (!cashier) {
+    return null;
+  }
+
+  const finalCutRows = db.prepare(`
+    SELECT id, created_at
+    FROM register_events
+    WHERE shift = ? AND branch = ? AND cashier = ? AND event_type = 'final_cut'
+    ORDER BY created_at DESC, id DESC
+  `).all(shift, branch, cashier);
+  const cashierFinalCut = finalCutRows.find((row) => getStoreDateKey(row.created_at) === dateKey) || null;
+
+  if (cashierFinalCut) {
+    const sourceSession = getWeightedAuditSessionBySourceRegisterEventId(Number(cashierFinalCut.id));
+    if (sourceSession?.status === "pending") {
+      const prompt = buildCashierBlindAuditPrompt(sourceSession.id, { cashier });
+      if (prompt && prompt.items.length > 0 && !prompt.completed) {
+        return prompt;
+      }
+    }
+  }
+
+  const sessionRow = db.prepare(`
+    SELECT id
+    FROM weighted_audit_sessions
+    WHERE
+      branch = ?
+      AND shift = ?
+      AND audited_date_key = ?
+      AND status = 'pending'
+      AND source_register_event_id IS NULL
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(branch, shift, dateKey);
+  if (!sessionRow) {
+    return null;
+  }
+
+  const prompt = buildCashierBlindAuditPrompt(Number(sessionRow.id), { cashier });
+  if (!prompt || prompt.items.length === 0 || prompt.completed) {
+    return null;
+  }
+
+  return prompt;
 }
 
 function listWeightedAuditSessions(options = {}) {
@@ -320,6 +768,9 @@ function listWeightedAuditSessions(options = {}) {
       s.created_by,
       s.completed_by,
       s.notes,
+      s.source_register_event_id,
+      s.source_cashier,
+      s.template_locked,
       s.created_at,
       s.completed_at,
       COUNT(i.id) AS total_items,
@@ -345,6 +796,9 @@ function listWeightedAuditSessions(options = {}) {
     createdBy: row.created_by || "",
     completedBy: row.completed_by || "",
     notes: row.notes || "",
+    sourceRegisterEventId: row.source_register_event_id || null,
+    sourceCashier: row.source_cashier || "",
+    templateLocked: Boolean(row.template_locked),
     createdAt: row.created_at,
     completedAt: row.completed_at || null,
     summary: {
@@ -359,20 +813,12 @@ function listWeightedAuditSessions(options = {}) {
   }));
 }
 
-function updateWeightedAuditItems(sessionId, payload = {}) {
-  const session = getWeightedAuditSessionById(sessionId);
-  if (!session) {
-    throw createHttpError("No encontre la sesion de auditoria.", 404);
-  }
-  if (session.status === "completed") {
-    throw createHttpError("La auditoria ya esta cerrada y no acepta cambios.");
-  }
-
+function persistWeightedAuditSessionChanges(sessionId, session, payload = {}, options = {}) {
   const items = Array.isArray(payload.items) ? payload.items : [];
   const nextNotes = payload.notes === undefined
     ? session.notes || null
     : normalizeText(payload.notes || "", 240) || null;
-  if (items.length === 0 && payload.notes === undefined) {
+  if (options.requireChanges !== false && items.length === 0 && payload.notes === undefined) {
     throw createHttpError("No enviaste renglones de auditoria para guardar.");
   }
 
@@ -435,13 +881,118 @@ function updateWeightedAuditItems(sessionId, payload = {}) {
   return getWeightedAuditSessionById(sessionId);
 }
 
-function completeWeightedAuditSession(sessionId, payload = {}) {
+function updateWeightedAuditItems(sessionId, payload = {}) {
   const session = getWeightedAuditSessionById(sessionId);
   if (!session) {
     throw createHttpError("No encontre la sesion de auditoria.", 404);
   }
   if (session.status === "completed") {
+    throw createHttpError("La auditoria ya esta cerrada y no acepta cambios.");
+  }
+
+  return persistWeightedAuditSessionChanges(sessionId, session, payload);
+}
+
+function updateCashierBlindWeightedAuditItems(sessionId, payload = {}, options = {}) {
+  const prompt = buildCashierBlindAuditPrompt(sessionId, {
+    cashier: options.cashier || payload.cashier || "",
+  });
+  if (!prompt) {
+    throw createHttpError("No encontre la captura ciega para este corte.", 404);
+  }
+
+  const session = getWeightedAuditSessionById(sessionId);
+  if (!session) {
+    throw createHttpError("No encontre la sesion de auditoria.", 404);
+  }
+  if (session.status === "completed") {
+    throw createHttpError("La auditoria ya esta cerrada y no acepta mas capturas.");
+  }
+  if (prompt.items.length === 0) {
+    return {
+      prompt,
+      session,
+    };
+  }
+
+  const entries = Array.isArray(payload.items) ? payload.items : [];
+  if (entries.length === 0) {
+    throw createHttpError("Captura los kilos de bascula antes de cerrar el corte.");
+  }
+
+  const allowedItems = new Map(prompt.items.map((item) => [item.itemId, item]));
+  const submittedItems = new Map();
+
+  entries.forEach((entry) => {
+    const itemId = Number(entry.itemId);
+    if (!Number.isInteger(itemId) || itemId <= 0 || !allowedItems.has(itemId)) {
+      throw createHttpError("Uno de los productos enviados no pertenece al pesado ciego.");
+    }
+
+    const countedStock = roundStock(entry.countedStock);
+    if (!Number.isFinite(countedStock) || countedStock < 0) {
+      throw createHttpError(`El pesado capturado para ${allowedItems.get(itemId).productName} no es valido.`);
+    }
+
+    submittedItems.set(itemId, countedStock);
+  });
+
+  const missingItems = prompt.items.filter(
+    (item) => item.countedStock == null && !submittedItems.has(item.itemId),
+  );
+  if (missingItems.length > 0) {
+    throw createHttpError(`Completa el pesado de ${missingItems[0].productName} antes de continuar.`);
+  }
+
+  db.transaction(() => {
+    submittedItems.forEach((countedStock, itemId) => {
+      const existing = db.prepare(`
+        SELECT id, product_name, pos_stock
+        FROM weighted_audit_items
+        WHERE id = ? AND session_id = ?
+      `).get(itemId, sessionId);
+
+      if (!existing) {
+        throw createHttpError("Uno de los renglones de pesado ya no existe.");
+      }
+
+      const difference = roundStock(countedStock - roundStock(existing.pos_stock));
+      const direction = difference < 0 ? "shortage" : difference > 0 ? "surplus" : "match";
+
+      db.prepare(`
+        UPDATE weighted_audit_items
+        SET counted_stock = ?, difference = ?, direction = ?, updated_at = ?
+        WHERE id = ? AND session_id = ?
+      `).run(
+        countedStock,
+        difference,
+        direction,
+        nowIso(),
+        itemId,
+        sessionId,
+      );
+    });
+  })();
+
+  return {
+    prompt: buildCashierBlindAuditPrompt(sessionId, { cashier: prompt.cashier }),
+    session: getWeightedAuditSessionById(sessionId),
+  };
+}
+
+function completeWeightedAuditSession(sessionId, payload = {}) {
+  let session = getWeightedAuditSessionById(sessionId);
+  if (!session) {
+    throw createHttpError("No encontre la sesion de auditoria.", 404);
+  }
+  if (session.status === "completed") {
     return session;
+  }
+
+  if (Array.isArray(payload.items) || payload.notes !== undefined) {
+    session = persistWeightedAuditSessionChanges(sessionId, session, payload, {
+      requireChanges: false,
+    });
   }
 
   const pendingItems = session.items.filter((item) => item.countedStock == null);
@@ -455,7 +1006,9 @@ function completeWeightedAuditSession(sessionId, payload = {}) {
   }
 
   const completedBy = normalizeText(payload.completedBy || "admin", 60) || "admin";
-  const notes = normalizeText(payload.notes || session.notes || "", 240) || null;
+  const notes = payload.notes === undefined
+    ? normalizeText(session.notes || "", 240) || null
+    : normalizeText(payload.notes || "", 240) || null;
   const completedAt = nowIso();
 
   db.prepare(`
@@ -478,6 +1031,8 @@ function listWeightedAuditRowsForExport() {
       s.created_by,
       s.completed_by,
       s.notes AS session_notes,
+      s.source_register_event_id,
+      s.source_cashier,
       s.created_at AS session_created_at,
       s.completed_at,
       i.id AS item_id,
@@ -499,11 +1054,17 @@ function listWeightedAuditRowsForExport() {
 }
 
 module.exports = {
+  buildCashierBlindAuditPrompt,
   completeWeightedAuditSession,
   createWeightedAuditSession,
   ensureWeightedAuditSessionForFinalCut,
+  findCashierBlindAuditPrompt,
   getWeightedAuditSessionById,
+  getWeightedAuditSessionBySourceRegisterEventId,
   listWeightedAuditRowsForExport,
   listWeightedAuditSessions,
+  previewCashierBlindWeightedAuditItems,
+  syncWeightedAuditSessionFromRegisterEvent,
+  updateCashierBlindWeightedAuditItems,
   updateWeightedAuditItems,
 };

@@ -77,7 +77,10 @@ function loadOfflineSalesContext() {
 
   new vm.Script(`
     globalThis.__offlineSalesTestApi = {
+      refs,
       state,
+      calculateRegisterSummaryWithOffline,
+      getEmptyRegisterSummary,
       registerPendingOfflineSale,
       markOfflineSaleForReview,
       markOfflineSaleRejected,
@@ -263,4 +266,38 @@ test("guest context does not invent stock conflicts for pending offline sales", 
 
   assert.equal(displayState.status, "pending");
   assert.match(displayState.note, /iniciar sesion/i);
+});
+
+test("offline final cut locks the current cashier locally until sync", () => {
+  const api = loadOfflineSalesContext();
+  api.state.cashier.name = "Ana";
+  api.state.cashier.branch = "carrizal";
+  api.state.cashier.authenticated = true;
+  api.refs.shiftSelect = { value: "Tarde" };
+
+  const summary = api.calculateRegisterSummaryWithOffline(
+    api.getEmptyRegisterSummary(),
+    [
+      {
+        eventType: "final_cut",
+        shift: "Tarde",
+        branch: "carrizal",
+        cashier: "Ana",
+        withdrawalsAmount: 0,
+        createdAt: "2026-06-14T22:10:00.000Z",
+      },
+      {
+        eventType: "quick_cut",
+        shift: "Tarde",
+        branch: "carrizal",
+        cashier: "Otro",
+        withdrawalsAmount: 10,
+        createdAt: "2026-06-14T21:00:00.000Z",
+      },
+    ],
+  );
+
+  assert.equal(summary.cashierLocked, true);
+  assert.equal(summary.cashierFinalCutAt, "2026-06-14T22:10:00.000Z");
+  assert.equal(summary.finalCuts, 1);
 });

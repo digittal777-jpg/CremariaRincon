@@ -21,7 +21,13 @@ function getStoredAdminPassword() {
   }
 
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    const salt = String(parsed?.salt || "").trim();
+    const hash = String(parsed?.hash || "").trim();
+    if (!/^[a-f0-9]{32}$/i.test(salt) || !/^[a-f0-9]{128}$/i.test(hash)) {
+      return null;
+    }
+    return { salt: salt.toLowerCase(), hash: hash.toLowerCase() };
   } catch (_error) {
     return null;
   }
@@ -38,11 +44,17 @@ function verifyAdminPassword(password) {
     return false;
   }
 
-  const candidate = hashAdminPassword(password, stored.salt);
-  return crypto.timingSafeEqual(
-    Buffer.from(candidate.hash, "hex"),
-    Buffer.from(stored.hash, "hex"),
-  );
+  try {
+    const candidate = hashAdminPassword(password, stored.salt);
+    const candidateBuffer = Buffer.from(candidate.hash, "hex");
+    const storedBuffer = Buffer.from(stored.hash, "hex");
+    if (candidateBuffer.length !== storedBuffer.length || candidateBuffer.length === 0) {
+      return false;
+    }
+    return crypto.timingSafeEqual(candidateBuffer, storedBuffer);
+  } catch (_error) {
+    return false;
+  }
 }
 
 function verifyAdminCredentials(username, password) {

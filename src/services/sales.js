@@ -10,13 +10,24 @@ const {
   getSetting,
   getStoreHourLabel,
   isAllBranches,
+  isCashPaymentMethod,
+  isCreditPaymentMethod,
   isSameStoreDay,
   mapProduct,
   normalizeBranch,
+  normalizePaymentMethod,
+  normalizeReceivedPaymentMethod,
   normalizeText,
   roundMoney,
   roundStock,
+  getSalePendingAmount,
+  getSaleReceivedPaymentMethod,
 } = require("../utils/helpers");
+const {
+  decorateSalesWithCreditPayments,
+  getCreditPaymentRowsBySaleIds,
+  resolveReceivableCustomerKeyForSale,
+} = require("./receivables");
 
 const db = getDb();
 
@@ -34,8 +45,10 @@ function listStoreDaySales(baseDate = new Date(), branch = STORE_BRANCHES[0]) {
         cashier,
         branch,
         payment_method,
+        received_payment_method,
         total,
         subtotal,
+        received_amount,
         item_count,
         created_at
       FROM sales
@@ -48,8 +61,10 @@ function listStoreDaySales(baseDate = new Date(), branch = STORE_BRANCHES[0]) {
         cashier,
         branch,
         payment_method,
+        received_payment_method,
         total,
         subtotal,
+        received_amount,
         item_count,
         created_at
       FROM sales
@@ -102,6 +117,9 @@ function getSaleById(saleId) {
       cashier,
       branch,
       payment_method,
+      customer_name,
+      customer_key,
+      received_payment_method,
       subtotal,
       total,
       received_amount,
@@ -129,22 +147,34 @@ function getSaleById(saleId) {
     WHERE sale_id = ?
     ORDER BY id
   `).all(saleId);
+  const [decoratedSale] = decorateSalesWithCreditPayments([sale]);
 
   return {
-    id: sale.id,
-    ticketNumber: sale.ticket_number,
-    clientSaleId: sale.client_sale_id || "",
-    shift: sale.shift,
-    cashier: sale.cashier,
-    branch: sale.branch,
-    paymentMethod: sale.payment_method,
-    subtotal: roundMoney(sale.subtotal),
-    total: roundMoney(sale.total),
-    receivedAmount: roundMoney(sale.received_amount),
-    changeAmount: roundMoney(sale.change_amount),
-    notes: sale.notes,
-    itemCount: roundStock(sale.item_count),
-    createdAt: sale.created_at,
+    id: decoratedSale.id,
+    ticketNumber: decoratedSale.ticket_number,
+    clientSaleId: decoratedSale.client_sale_id || "",
+    shift: decoratedSale.shift,
+    cashier: decoratedSale.cashier,
+    branch: decoratedSale.branch,
+    paymentMethod: decoratedSale.payment_method,
+    customerName: decoratedSale.customer_name || "",
+    customerKey: decoratedSale.customer_key || "",
+    receivedPaymentMethod: getSaleReceivedPaymentMethod(
+      decoratedSale.payment_method,
+      decoratedSale.received_payment_method || "",
+      decoratedSale.received_amount,
+    ),
+    subtotal: roundMoney(decoratedSale.subtotal),
+    total: roundMoney(decoratedSale.total),
+    receivedAmount: roundMoney(decoratedSale.received_amount),
+    paidAmount: roundMoney(decoratedSale.paid_amount || decoratedSale.received_amount),
+    laterPaymentsTotal: roundMoney(decoratedSale.credit_payments_total || 0),
+    changeAmount: roundMoney(decoratedSale.change_amount),
+    pendingAmount: roundMoney(decoratedSale.pending_amount || 0),
+    notes: decoratedSale.notes,
+    itemCount: roundStock(decoratedSale.item_count),
+    createdAt: decoratedSale.created_at,
+    payments: Array.isArray(decoratedSale.credit_payments) ? decoratedSale.credit_payments : [],
     items: items.map((item) => ({
       productId: item.product_id,
       productName: item.product_name,
@@ -187,7 +217,15 @@ function createSale(payload) {
   const shift = normalizeText(payload.shift || "Tarde", 24) || "Tarde";
   const cashier = normalizeText(payload.cashier || "Mostrador", 60) || "Mostrador";
   const branch = normalizeBranch(payload.branch);
-  const paymentMethod = normalizeText(payload.paymentMethod || "Efectivo", 24) || "Efectivo";
+  const paymentMethod = normalizePaymentMethod(payload.paymentMethod || "Efectivo");
+  const customerName = normalizeText(payload.customerName || "", 80) || null;
+  const customerKey = isCreditPaymentMethod(paymentMethod)
+    ? resolveReceivableCustomerKeyForSale({
+        branch,
+        customerName,
+        requestedCustomerKey: payload.customerKey,
+      }) || null
+    : null;
   const notes = normalizeText(payload.notes || "", 240) || null;
   const incomingItems = Array.isArray(payload.items) ? payload.items : [];
 
@@ -207,6 +245,9 @@ function createSale(payload) {
 
   if (incomingItems.length === 0) {
     throw createHttpError("Agrega al menos un producto al carrito.");
+  }
+  if (isCreditPaymentMethod(paymentMethod) && !customerName) {
+    throw createHttpError("Captura el nombre del cliente antes de guardar el fiado.");
   }
 
   let saleResult;
@@ -286,17 +327,35 @@ function createSale(payload) {
         preparedItems.reduce((sum, item) => sum + item.quantity, 0),
       );
 
-      const receivedAmount =
-        paymentMethod === "Efectivo"
-          ? roundMoney(payload.receivedAmount)
+      const receivedAmount = isCashPaymentMethod(paymentMethod)
+        ? roundMoney(payload.receivedAmount)
+        : isCreditPaymentMethod(paymentMethod)
+          ? roundMoney(payload.receivedAmount || 0)
           : total;
-      const changeAmount =
-        paymentMethod === "Efectivo"
-          ? roundMoney(receivedAmount - total)
-          : 0;
+      const receivedPaymentMethod = isCreditPaymentMethod(paymentMethod)
+        ? getSaleReceivedPaymentMethod(
+            paymentMethod,
+            payload.receivedPaymentMethod || "",
+            receivedAmount,
+          ) || null
+        : getSaleReceivedPaymentMethod(paymentMethod, paymentMethod, total);
+      const changeAmount = isCashPaymentMethod(paymentMethod)
+        ? roundMoney(receivedAmount - total)
+        : 0;
+      const pendingAmount = getSalePendingAmount(total, receivedAmount, paymentMethod);
 
-      if (paymentMethod === "Efectivo" && receivedAmount < total) {
+      if (isCashPaymentMethod(paymentMethod) && receivedAmount < total) {
         throw createHttpError("El pago recibido no alcanza para completar la venta.");
+      }
+      if (isCreditPaymentMethod(paymentMethod)) {
+        if (receivedAmount < 0) {
+          throw createHttpError("El abono del fiado no puede ser negativo.");
+        }
+        if (pendingAmount <= 0) {
+          throw createHttpError(
+            "Si el cliente liquida todo hoy, usa efectivo, tarjeta o transferencia en lugar de fiado.",
+          );
+        }
       }
 
       const now = nowIso();
@@ -316,6 +375,9 @@ function createSale(payload) {
           cashier,
           branch,
           payment_method,
+          customer_name,
+          customer_key,
+          received_payment_method,
           subtotal,
           total,
           received_amount,
@@ -323,7 +385,7 @@ function createSale(payload) {
           notes,
           item_count,
           created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         ticketNumber,
         clientSaleId,
@@ -331,6 +393,9 @@ function createSale(payload) {
         cashier,
         branch,
         paymentMethod,
+        customerName,
+        customerKey,
+        receivedPaymentMethod,
         subtotal,
         total,
         receivedAmount,
@@ -419,7 +484,7 @@ function createSale(payload) {
 
 function updateSaleAdmin(saleId, payload) {
   const current = db.prepare(`
-    SELECT id, shift, cashier, payment_method, total, received_amount, notes
+    SELECT id, shift, cashier, branch, payment_method, customer_name, customer_key, received_payment_method, total, received_amount, notes
     FROM sales
     WHERE id = ?
   `).get(saleId);
@@ -428,36 +493,88 @@ function updateSaleAdmin(saleId, payload) {
     throw createHttpError("No encontre la venta que quieres editar.", 404);
   }
 
+  const laterPaymentsTotal = roundMoney(
+    (getCreditPaymentRowsBySaleIds([saleId]).get(Number(saleId)) || [])
+      .reduce((sum, payment) => sum + roundMoney(payment.amount || 0), 0),
+  );
+
   const nextShift = normalizeText(payload.shift || current.shift, 24) || current.shift;
   const nextCashier = normalizeText(payload.cashier || current.cashier, 60) || current.cashier;
-  const nextPaymentMethod =
-    normalizeText(payload.paymentMethod || current.payment_method, 24) || current.payment_method;
+  const nextPaymentMethod = normalizePaymentMethod(payload.paymentMethod || current.payment_method);
+  const nextCustomerName = normalizeText(payload.customerName ?? current.customer_name ?? "", 80) || null;
+  const nextCustomerKey = isCreditPaymentMethod(nextPaymentMethod)
+    ? resolveReceivableCustomerKeyForSale({
+        branch: payload.branch || current.branch || STORE_BRANCHES[0],
+        customerName: nextCustomerName,
+        requestedCustomerKey: payload.customerKey,
+        currentCustomerKey: current.customer_key,
+      }) || null
+    : null;
   const nextNotes = normalizeText(payload.notes ?? current.notes ?? "", 240) || null;
   const receivedAmount =
-    nextPaymentMethod === "Efectivo"
+    isCashPaymentMethod(nextPaymentMethod)
       ? roundMoney(
           payload.receivedAmount === undefined ? current.received_amount : payload.receivedAmount,
         )
-      : roundMoney(current.total);
+      : isCreditPaymentMethod(nextPaymentMethod)
+        ? roundMoney(
+            payload.receivedAmount === undefined ? current.received_amount : payload.receivedAmount,
+          )
+        : roundMoney(current.total);
+  const receivedPaymentMethod = isCreditPaymentMethod(nextPaymentMethod)
+    ? getSaleReceivedPaymentMethod(
+        nextPaymentMethod,
+        payload.receivedPaymentMethod ?? current.received_payment_method ?? "",
+        receivedAmount,
+      ) || null
+    : getSaleReceivedPaymentMethod(nextPaymentMethod, nextPaymentMethod, current.total);
   const changeAmount =
-    nextPaymentMethod === "Efectivo" ? roundMoney(receivedAmount - roundMoney(current.total)) : 0;
+    isCashPaymentMethod(nextPaymentMethod) ? roundMoney(receivedAmount - roundMoney(current.total)) : 0;
+  const pendingAmount = getSalePendingAmount(current.total, receivedAmount, nextPaymentMethod);
+  const effectivePendingAmount = getSalePendingAmount(
+    current.total,
+    roundMoney(receivedAmount + laterPaymentsTotal),
+    nextPaymentMethod,
+  );
 
   if (!STORE_SHIFTS.includes(nextShift)) {
     throw createHttpError("Selecciona un turno valido para la venta.");
   }
 
-  if (nextPaymentMethod === "Efectivo" && receivedAmount < roundMoney(current.total)) {
+  if (isCreditPaymentMethod(nextPaymentMethod) && !nextCustomerName) {
+    throw createHttpError("Captura el nombre del cliente antes de guardar el fiado.");
+  }
+  if (!isCreditPaymentMethod(nextPaymentMethod) && laterPaymentsTotal > 0) {
+    throw createHttpError(
+      "Esta venta ya tiene abonos posteriores registrados; mantenla como fiado para no perder la trazabilidad.",
+    );
+  }
+
+  if (isCashPaymentMethod(nextPaymentMethod) && receivedAmount < roundMoney(current.total)) {
     throw createHttpError("El efectivo recibido no alcanza para la venta.");
+  }
+  if (isCreditPaymentMethod(nextPaymentMethod)) {
+    if (receivedAmount < 0) {
+      throw createHttpError("El abono del fiado no puede ser negativo.");
+    }
+    if (pendingAmount <= 0 || effectivePendingAmount <= 0) {
+      throw createHttpError(
+        "Con los abonos acumulados esta venta ya no puede quedar liquidada dentro de fiado.",
+      );
+    }
   }
 
   db.prepare(`
     UPDATE sales
-    SET shift = ?, cashier = ?, payment_method = ?, received_amount = ?, change_amount = ?, notes = ?
+    SET shift = ?, cashier = ?, payment_method = ?, customer_name = ?, customer_key = ?, received_payment_method = ?, received_amount = ?, change_amount = ?, notes = ?
     WHERE id = ?
   `).run(
     nextShift,
     nextCashier,
     nextPaymentMethod,
+    nextCustomerName,
+    nextCustomerKey,
+    receivedPaymentMethod,
     receivedAmount,
     changeAmount,
     nextNotes,
@@ -478,6 +595,9 @@ function getRecentSales(limit = 8, branch = STORE_BRANCHES[0]) {
         s.cashier,
         s.branch,
         s.payment_method,
+        s.customer_name,
+        s.customer_key,
+        s.received_payment_method,
         s.total,
         s.subtotal,
         s.notes,
@@ -503,6 +623,9 @@ function getRecentSales(limit = 8, branch = STORE_BRANCHES[0]) {
         s.cashier,
         s.branch,
         s.payment_method,
+        s.customer_name,
+        s.customer_key,
+        s.received_payment_method,
         s.total,
         s.subtotal,
         s.notes,
@@ -522,19 +645,29 @@ function getRecentSales(limit = 8, branch = STORE_BRANCHES[0]) {
       LIMIT ?
     `).all(normalizedBranch, limit);
 
-  return rows.map((row) => ({
+  return decorateSalesWithCreditPayments(rows).map((row) => ({
     id: row.id,
     ticketNumber: row.ticket_number,
     shift: row.shift,
     cashier: row.cashier,
     branch: row.branch,
     paymentMethod: row.payment_method,
+    customerName: row.customer_name || "",
+    customerKey: row.customer_key || "",
+    receivedPaymentMethod: getSaleReceivedPaymentMethod(
+      row.payment_method,
+      row.received_payment_method || "",
+      row.received_amount,
+    ),
     subtotal: roundMoney(row.subtotal),
     total: roundMoney(row.total),
     itemCount: roundStock(row.item_count),
     notes: row.notes || "",
     receivedAmount: roundMoney(row.received_amount),
+    paidAmount: roundMoney(row.paid_amount || row.received_amount),
+    laterPaymentsTotal: roundMoney(row.credit_payments_total || 0),
     changeAmount: roundMoney(row.change_amount),
+    pendingAmount: roundMoney(row.pending_amount || 0),
     createdAt: row.created_at,
     items: row.items_breakdown
       ? row.items_breakdown.split(" || ").map((item) => {
@@ -577,6 +710,9 @@ function listSalesForExport() {
       s.cashier,
       s.branch,
       s.payment_method,
+      s.customer_name,
+      s.customer_key,
+      s.received_payment_method,
       s.subtotal,
       s.total,
       s.received_amount,

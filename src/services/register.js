@@ -5,7 +5,10 @@ const {
   STORE_SHIFTS,
   assertBranchIsActive,
   createHttpError,
+  getSalePendingAmount,
+  getSaleReceivedPaymentMethod,
   getStoreDateKey,
+  isCreditPaymentMethod,
   isSameStoreDay,
   normalizeBranch,
   normalizeText,
@@ -16,6 +19,23 @@ const db = getDb();
 
 function normalizeClientEventId(value) {
   return normalizeText(value || "", 120) || null;
+}
+
+function getCollectedTodayByMethod(sale, method) {
+  const total = roundMoney(sale.total || 0);
+  const receivedAmount = roundMoney(sale.received_amount || 0);
+
+  if (!isCreditPaymentMethod(sale.payment_method)) {
+    return sale.payment_method === method ? total : 0;
+  }
+
+  return getSaleReceivedPaymentMethod(
+    sale.payment_method,
+    sale.received_payment_method || "",
+    receivedAmount,
+  ) === method
+    ? receivedAmount
+    : 0;
 }
 
 function getRegisterEventsForStoreDay(shift, baseDate = new Date(), branch = STORE_BRANCHES[0]) {
@@ -125,32 +145,71 @@ function getRegisterSummary(shift, branch = STORE_BRANCHES[0], options = {}) {
   }
 
   const { listStoreDaySales } = require("./sales");
-  const sales = listStoreDaySales(new Date(), normalizedBranch).filter((sale) => sale.shift === normalizedShift);
+  const { decorateSalesWithCreditPayments, listCreditPaymentsForStoreDay } = require("./receivables");
+  const sales = decorateSalesWithCreditPayments(
+    listStoreDaySales(new Date(), normalizedBranch).filter((sale) => sale.shift === normalizedShift),
+    { includePayments: false },
+  );
+  const creditPayments = listCreditPaymentsForStoreDay(new Date(), normalizedBranch, {
+    shift: normalizedShift,
+  });
   const events = getRegisterEventsForStoreDay(normalizedShift, new Date(), normalizedBranch);
   const startEvent = events.find((event) => event.event_type === "start") || null;
   const openingAmount = roundMoney(startEvent?.opening_amount || 0);
   const totalSales = roundMoney(
     sales.reduce((sum, sale) => sum + roundMoney(sale.total), 0),
   );
+  const laterCreditCashSales = roundMoney(
+    creditPayments.reduce(
+      (sum, payment) => sum + (payment.paymentMethod === "Efectivo" ? roundMoney(payment.amount) : 0),
+      0,
+    ),
+  );
   const cashSales = roundMoney(
-    sales
-      .filter((sale) => sale.payment_method === "Efectivo")
-      .reduce((sum, sale) => sum + roundMoney(sale.total), 0),
+    sales.reduce((sum, sale) => sum + getCollectedTodayByMethod(sale, "Efectivo"), 0)
+      + laterCreditCashSales,
   );
   const withdrawalsAmount = roundMoney(
     events.reduce((sum, event) => sum + roundMoney(event.withdrawals_amount || 0), 0),
   );
+  const laterCreditCardSales = roundMoney(
+    creditPayments.reduce(
+      (sum, payment) => sum + (payment.paymentMethod === "Tarjeta" ? roundMoney(payment.amount) : 0),
+      0,
+    ),
+  );
   const cardSales = roundMoney(
-    sales
-      .filter((sale) => sale.payment_method === "Tarjeta")
-      .reduce((sum, sale) => sum + roundMoney(sale.total), 0),
+    sales.reduce((sum, sale) => sum + getCollectedTodayByMethod(sale, "Tarjeta"), 0)
+      + laterCreditCardSales,
+  );
+  const laterCreditTransferSales = roundMoney(
+    creditPayments.reduce(
+      (sum, payment) => sum + (payment.paymentMethod === "Transferencia" ? roundMoney(payment.amount) : 0),
+      0,
+    ),
   );
   const transferSales = roundMoney(
-    sales
-      .filter((sale) => sale.payment_method === "Transferencia")
-      .reduce((sum, sale) => sum + roundMoney(sale.total), 0),
+    sales.reduce((sum, sale) => sum + getCollectedTodayByMethod(sale, "Transferencia"), 0)
+      + laterCreditTransferSales,
   );
-  const nonCashSales = roundMoney(totalSales - cashSales);
+  const creditSales = roundMoney(
+    sales.reduce(
+      (sum, sale) => sum + roundMoney(sale.pending_amount || 0),
+      0,
+    ),
+  );
+  const initialCreditCollections = roundMoney(
+    sales.reduce((sum, sale) => {
+      if (!isCreditPaymentMethod(sale.payment_method)) {
+        return sum;
+      }
+      return roundMoney(sum + roundMoney(sale.received_amount || 0));
+    }, 0),
+  );
+  const laterCreditCollections = roundMoney(
+    creditPayments.reduce((sum, payment) => sum + roundMoney(payment.amount || 0), 0),
+  );
+  const nonCashSales = roundMoney(cardSales + transferSales + creditSales);
   const cashierFinalCut = cashier
     ? getCashierFinalCutForStoreDay(normalizedShift, normalizedBranch, cashier, new Date())
     : null;
@@ -162,6 +221,8 @@ function getRegisterSummary(shift, branch = STORE_BRANCHES[0], options = {}) {
     withdrawalsAmount,
     cardSales,
     transferSales,
+    creditSales,
+    creditCollections: roundMoney(initialCreditCollections + laterCreditCollections),
     nonCashSales,
     totalSales,
     expectedCash: roundMoney(openingAmount + cashSales - withdrawalsAmount),
@@ -577,6 +638,11 @@ function updateRegisterEventAdmin(eventId, payload) {
     nextNotes,
     eventId,
   );
+
+  if (current.eventType === "final_cut") {
+    const { syncWeightedAuditSessionFromRegisterEvent } = require("./weightedAudit");
+    syncWeightedAuditSessionFromRegisterEvent(eventId);
+  }
 
   return getRegisterEventById(eventId);
 }

@@ -21,6 +21,12 @@ const LEGACY_CATEGORY_LABELS = {
   general: "General",
 };
 const DEFAULT_ENABLED_MODULES = ["weighted_audit", "merchandise_requests"];
+const PAYMENT_METHOD_OPTIONS = [
+  { value: "Efectivo", label: "Efectivo", kind: "cash" },
+  { value: "Tarjeta", label: "Tarjeta", kind: "non_cash" },
+  { value: "Transferencia", label: "Transferencia", kind: "non_cash" },
+  { value: "Fiado", label: "Fiado", kind: "credit", requiresCustomer: true },
+];
 const formattersByTimeZone = new Map();
 const datePartsFormattersByTimeZone = new Map();
 
@@ -168,6 +174,57 @@ function roundStock(value) {
 
 function normalizeText(value, maxLength = 80) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function normalizePaymentMethod(value, fallback = "Efectivo") {
+  const normalizedValue = normalizeText(value || "", 24);
+  if (!normalizedValue) {
+    return fallback;
+  }
+
+  return PAYMENT_METHOD_OPTIONS.find((option) => option.value === normalizedValue)?.value || fallback;
+}
+
+function isCashPaymentMethod(value) {
+  return normalizePaymentMethod(value) === "Efectivo";
+}
+
+function isCreditPaymentMethod(value) {
+  return normalizePaymentMethod(value) === "Fiado";
+}
+
+function normalizeReceivedPaymentMethod(value, fallback = "") {
+  const normalizedValue = normalizePaymentMethod(value || "", "");
+  if (normalizedValue && !isCreditPaymentMethod(normalizedValue)) {
+    return normalizedValue;
+  }
+
+  const normalizedFallback = normalizePaymentMethod(fallback || "", "");
+  if (normalizedFallback && !isCreditPaymentMethod(normalizedFallback)) {
+    return normalizedFallback;
+  }
+
+  return "";
+}
+
+function getSalePendingAmount(total, receivedAmount, paymentMethod) {
+  if (!isCreditPaymentMethod(paymentMethod)) {
+    return 0;
+  }
+
+  return roundMoney(Math.max(roundMoney(total) - Math.max(roundMoney(receivedAmount), 0), 0));
+}
+
+function getSaleReceivedPaymentMethod(paymentMethod, receivedPaymentMethod, receivedAmount = 0) {
+  if (isCreditPaymentMethod(paymentMethod)) {
+    return roundMoney(receivedAmount) > 0
+      ? normalizeReceivedPaymentMethod(receivedPaymentMethod, "Efectivo")
+      : "";
+  }
+
+  return isCashPaymentMethod(paymentMethod)
+    ? "Efectivo"
+    : normalizeReceivedPaymentMethod(paymentMethod, "Efectivo");
 }
 
 function normalizeConfigCode(value, maxLength = 40) {
@@ -730,6 +787,7 @@ module.exports = {
   STORE_BRANCHES,
   STORE_BRANCH_LABELS: STATIC_STORE_BRANCH_LABELS,
   STORE_NAME,
+  PAYMENT_METHOD_OPTIONS,
   STORE_SHIFTS,
   STORE_TIME_ZONE,
   assertBranchIsActive,
@@ -758,6 +816,8 @@ module.exports = {
   isBranchActive,
   isKnownBranch,
   isAllBranches,
+  isCashPaymentMethod,
+  isCreditPaymentMethod,
   isModuleEnabled,
   isSameStoreDay,
   listBranchCodes,
@@ -768,10 +828,14 @@ module.exports = {
   mapProduct,
   normalizeBranch,
   normalizeConfigCode,
+  normalizePaymentMethod,
+  normalizeReceivedPaymentMethod,
   normalizeText,
   nowIso,
   roundMoney,
   roundStock,
   safeJsonParse,
+  getSalePendingAmount,
+  getSaleReceivedPaymentMethod,
   toNumber,
 };

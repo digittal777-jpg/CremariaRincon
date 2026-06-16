@@ -26,6 +26,7 @@ const { listProducts, getProductById } = require("./products");
 const { listStoreDaySales, listStoreDaySaleItems, getRecentSales } = require("./sales");
 const { getRecentInventoryMovements } = require("./inventory");
 const { getRecentRegisterEvents, getRegisterSummary } = require("./register");
+const { listRecentCreditPayments } = require("./receivables");
 
 function getSummary(branch = listConfiguredBranches({ includeInactive: true })[0]?.code) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
@@ -238,7 +239,18 @@ function getRecentActivity(limit = 18, branch = listConfiguredBranches({ include
     };
   });
 
-  return [...sales, ...registerEvents, ...inventoryMovements]
+  const creditPayments = listRecentCreditPayments(limit, normalizedBranch).map((payment) => ({
+    kind: "credit-payment",
+    id: payment.id,
+    createdAt: payment.createdAt,
+    title: payment.customerName || payment.ticketNumber || `Abono ${payment.id}`,
+    subtitle: `${getBranchLabel(payment.branch)} - ${payment.ticketNumber} - ${payment.paymentMethod}`,
+    amount: payment.amount,
+    amountPrefix: "",
+    tag: "Abono",
+  }));
+
+  return [...sales, ...registerEvents, ...inventoryMovements, ...creditPayments]
     .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
     .slice(0, limit);
 }
@@ -349,6 +361,12 @@ function sanitizePublicProduct(product = {}) {
   };
 }
 
+function sanitizePublicProductList(products = []) {
+  return Array.isArray(products)
+    ? products.map((product) => sanitizePublicProduct(product))
+    : [];
+}
+
 function getPublicDashboardSummary(products = []) {
   const activeProducts = Array.isArray(products)
     ? products.filter((product) => product?.active !== false)
@@ -368,14 +386,23 @@ function getPublicDashboardSummary(products = []) {
 
 function getPublicDashboardSnapshot(branch = listConfiguredBranches({ includeInactive: true })[0]?.code) {
   const fullSnapshot = getDashboardSnapshot(branch);
-  const products = Array.isArray(fullSnapshot.products)
-    ? fullSnapshot.products.map(sanitizePublicProduct)
-    : [];
+  const products = sanitizePublicProductList(fullSnapshot.products);
+  const inventoryProducts = sanitizePublicProductList(fullSnapshot.inventoryProducts);
+  const inventoryComparison = Array.isArray(fullSnapshot.inventoryComparison?.branches)
+    ? {
+        branches: fullSnapshot.inventoryComparison.branches.map((branchEntry) => ({
+          ...branchEntry,
+          products: sanitizePublicProductList(branchEntry?.products),
+        })),
+      }
+    : null;
 
   return {
     ...fullSnapshot,
     summary: getPublicDashboardSummary(products),
     products,
+    inventoryProducts,
+    inventoryComparison,
     lowStock: [],
     recentSales: [],
     recentActivity: [],

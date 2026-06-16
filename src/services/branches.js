@@ -90,12 +90,14 @@ function renameBranchReferences(currentCode, nextCode) {
   const statements = [
     "UPDATE products SET branch = ? WHERE branch = ?",
     "UPDATE sales SET branch = ? WHERE branch = ?",
+    "UPDATE credit_payments SET branch = ? WHERE branch = ?",
     "UPDATE inventory_movements SET branch = ? WHERE branch = ?",
     "UPDATE register_events SET branch = ? WHERE branch = ?",
     "UPDATE cashiers SET branch = ? WHERE branch = ?",
     "UPDATE weighted_audit_sessions SET branch = ? WHERE branch = ?",
     "UPDATE merchandise_requests SET branch = ? WHERE branch = ?",
     "UPDATE admin_audit_logs SET branch = ? WHERE branch = ?",
+    "UPDATE client_sync_reports SET branch = ? WHERE branch = ?",
   ];
 
   statements.forEach((statement) => {

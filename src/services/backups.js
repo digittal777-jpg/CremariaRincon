@@ -710,8 +710,13 @@ async function sendBackupNotification(profile, run) {
 async function uploadTierArtifacts(storage, tierConfig, sqlitePath, workbookPath) {
   const uploads = [];
 
-  uploads.push(await storage.uploadFile(sqlitePath, tierConfig.sqliteKey, SQL_MIME_TYPE));
-  uploads.push(await storage.uploadFile(workbookPath, tierConfig.workbookKey, XLSX_MIME_TYPE));
+  try {
+    uploads.push(await storage.uploadFile(sqlitePath, tierConfig.sqliteKey, SQL_MIME_TYPE));
+    uploads.push(await storage.uploadFile(workbookPath, tierConfig.workbookKey, XLSX_MIME_TYPE));
+  } catch (error) {
+    error.uploadedKeys = uploads.map((upload) => upload.key).filter(Boolean);
+    throw error;
+  }
 
   return uploads;
 }
@@ -739,6 +744,7 @@ async function runNightlyBackup(options = {}) {
     sqliteLocalPath: sqlitePath,
     workbookLocalPath: workbookPath,
   });
+  const uploadedArtifactKeys = [];
 
   try {
     await createDatabaseBackup(sqlitePath);
@@ -752,17 +758,26 @@ async function runNightlyBackup(options = {}) {
     const sqliteBytes = Number(fs.statSync(sqlitePath).size || 0);
     const workbookBytes = Number(fs.statSync(workbookPath).size || 0);
 
-    await uploadTierArtifacts(storage, artifactPlan.tiers.daily, sqlitePath, workbookPath);
+    const dailyUploads = await uploadTierArtifacts(storage, artifactPlan.tiers.daily, sqlitePath, workbookPath);
+    uploadedArtifactKeys.push(...dailyUploads.map((upload) => upload.key).filter(Boolean));
     if (artifactPlan.tiers.weekly.enabled) {
-      await uploadTierArtifacts(storage, artifactPlan.tiers.weekly, sqlitePath, workbookPath);
+      const weeklyUploads = await uploadTierArtifacts(storage, artifactPlan.tiers.weekly, sqlitePath, workbookPath);
+      uploadedArtifactKeys.push(...weeklyUploads.map((upload) => upload.key).filter(Boolean));
     }
     if (artifactPlan.tiers.monthly.enabled) {
-      await uploadTierArtifacts(storage, artifactPlan.tiers.monthly, sqlitePath, workbookPath);
+      const monthlyUploads = await uploadTierArtifacts(storage, artifactPlan.tiers.monthly, sqlitePath, workbookPath);
+      uploadedArtifactKeys.push(...monthlyUploads.map((upload) => upload.key).filter(Boolean));
     }
 
-    const retention = options.skipRetention === true
-      ? null
-      : await pruneStorageRetention(storage, artifactPlan.slug);
+    const warnings = [];
+    let retention = null;
+    if (options.skipRetention !== true) {
+      try {
+        retention = await pruneStorageRetention(storage, artifactPlan.slug);
+      } catch (error) {
+        warnings.push(`retention: ${error.message}`);
+      }
+    }
     const syncHealth = getClientSyncHealthSummary();
     const syncState = syncHealth.hasPending ? "partial" : "clean";
     const status = syncHealth.hasPending ? "partial" : "ok";
@@ -778,6 +793,59 @@ async function runNightlyBackup(options = {}) {
           workbookKey: tierConfig.workbookKey,
         })),
     };
+    const completedRunPreview = {
+      status,
+      syncState,
+      backupDateKey,
+      sqliteRemoteKey: artifactPlan.tiers.daily.sqliteKey,
+      workbookRemoteKey: artifactPlan.tiers.daily.workbookKey,
+      errorMessage: "",
+    };
+
+    try {
+      const notificationResult = await sendBackupNotification(profile, completedRunPreview);
+      if (notificationResult && notificationResult.skipped === false) {
+        summary.notification = notificationResult;
+      }
+    } catch (error) {
+      summary.notification = {
+        delivered: false,
+        skipped: false,
+        errorMessage: error.message,
+      };
+      warnings.push(`notification: ${error.message}`);
+    }
+
+    try {
+      cleanupOldLocalRuns();
+    } catch (error) {
+      warnings.push(`cleanup: ${error.message}`);
+    }
+
+    try {
+      logAdminAction({
+        actorType: "system",
+        actorName: "backup:nightly",
+        action: "backup_run",
+        entityType: "backup_run",
+        entityId: runId,
+        payload: {
+          status,
+          syncState,
+          backupDateKey,
+          sqliteBytes,
+          workbookBytes,
+          sqliteRemoteKey: artifactPlan.tiers.daily.sqliteKey,
+          workbookRemoteKey: artifactPlan.tiers.daily.workbookKey,
+        },
+      });
+    } catch (error) {
+      warnings.push(`audit: ${error.message}`);
+    }
+
+    if (warnings.length > 0) {
+      summary.warnings = warnings;
+    }
 
     updateBackupRunRecord(runId, {
       status,
@@ -793,57 +861,31 @@ async function runNightlyBackup(options = {}) {
       summary,
     });
 
-    const completedRun = getLatestBackupRun();
-    let notificationResult = null;
-    try {
-      notificationResult = await sendBackupNotification(profile, completedRun);
-    } catch (error) {
-      notificationResult = {
-        delivered: false,
-        skipped: false,
-        errorMessage: error.message,
-      };
-    }
-
-    if (notificationResult && notificationResult.skipped === false && notificationResult.delivered === false) {
-      updateBackupRunRecord(runId, {
-        status: completedRun.status,
-        syncState: completedRun.syncState,
-        sqliteBytes,
-        workbookBytes,
-        sqliteRemoteKey: artifactPlan.tiers.daily.sqliteKey,
-        workbookRemoteKey: artifactPlan.tiers.daily.workbookKey,
-        sqliteLocalPath: sqlitePath,
-        workbookLocalPath: workbookPath,
-        storageMode: storage.mode,
-        storageBucket: storage.bucketName,
-        summary: {
-          ...summary,
-          notification: notificationResult,
-        },
-      });
-    }
-
-    logAdminAction({
-      actorType: "system",
-      actorName: "backup:nightly",
-      action: "backup_run",
-      entityType: "backup_run",
-      entityId: runId,
-      payload: {
-        status,
-        syncState,
-        backupDateKey,
-        sqliteBytes,
-        workbookBytes,
-        sqliteRemoteKey: artifactPlan.tiers.daily.sqliteKey,
-        workbookRemoteKey: artifactPlan.tiers.daily.workbookKey,
-      },
-    });
-
-    cleanupOldLocalRuns();
     return getLatestBackupRun();
   } catch (error) {
+    const keysToCleanup = [...new Set([
+      ...uploadedArtifactKeys,
+      ...(Array.isArray(error.uploadedKeys) ? error.uploadedKeys : []),
+    ])];
+    let artifactCleanup = null;
+    if (keysToCleanup.length > 0 && typeof storage.deleteKeys === "function") {
+      try {
+        await storage.deleteKeys(keysToCleanup);
+        artifactCleanup = {
+          attemptedKeys: keysToCleanup,
+          deletedKeyCount: keysToCleanup.length,
+          ok: true,
+        };
+      } catch (cleanupError) {
+        artifactCleanup = {
+          attemptedKeys: keysToCleanup,
+          deletedKeyCount: 0,
+          ok: false,
+          errorMessage: cleanupError.message,
+        };
+      }
+    }
+
     updateBackupRunRecord(runId, {
       status: "failed",
       syncState: "unknown",
@@ -854,6 +896,7 @@ async function runNightlyBackup(options = {}) {
       errorMessage: error.message,
       summary: {
         storage: buildStorageSummary(),
+        artifactCleanup,
       },
     });
 

@@ -62,22 +62,274 @@ function formatProductStock(product) {
   return `${formatQuantity(product.stock)} ${product.unit}`;
 }
 
+const productSearchBlobCache = new WeakMap();
+
+function normalizeSearchText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function buildProductSearchBlob(product) {
+  if (!product || typeof product !== "object") {
+    return "";
+  }
+
+  const source = [
+    product.name,
+    product.categoryLabel,
+    product.category,
+    product.unit,
+    product.brand,
+    product.sku,
+    product.barcode,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const cached = productSearchBlobCache.get(product);
+  if (cached?.source === source) {
+    return cached.blob;
+  }
+
+  const blob = normalizeSearchText(source);
+  productSearchBlobCache.set(product, { source, blob });
+  return blob;
+}
+
+function shouldAutoFocusRouteSearch() {
+  return isRouteModeEnabled() && !shouldUseRouteMobileUi();
+}
+
+function focusRouteSearchInput(options = {}) {
+  if (
+    typeof window === "undefined"
+    || !refs.searchInput
+    || !shouldAutoFocusRouteSearch()
+  ) {
+    return;
+  }
+
+  const select = options.select !== false;
+  window.requestAnimationFrame(() => {
+    if (!refs.searchInput || !shouldAutoFocusRouteSearch()) {
+      return;
+    }
+
+    refs.searchInput.focus({ preventScroll: true });
+    if (select) {
+      refs.searchInput.select?.();
+    }
+  });
+}
+
+function focusAndSelectInput(input, options = {}) {
+  if (!input) {
+    return;
+  }
+
+  const runSelection = () => {
+    if (!input) {
+      return;
+    }
+
+    try {
+      input.focus({ preventScroll: options.preventScroll !== false });
+    } catch (_error) {
+      input.focus();
+    }
+
+    if (options.select === false) {
+      return;
+    }
+
+    try {
+      input.select?.();
+    } catch (_error) {
+      // Some mobile numeric-like inputs ignore select().
+    }
+
+    if (typeof input.setSelectionRange === "function") {
+      try {
+        const end = String(input.value ?? "").length;
+        input.setSelectionRange(0, end);
+      } catch (_error) {
+        // Inputs without text selection support can ignore this safely.
+      }
+    }
+  };
+
+  if (typeof window === "undefined" || options.defer === false) {
+    runSelection();
+    return;
+  }
+
+  window.requestAnimationFrame(runSelection);
+}
+
+function getPaymentMethodConfig(value) {
+  const safeValue = String(value || "").trim();
+  return PAYMENT_METHOD_OPTIONS.find((option) => option.value === safeValue)
+    || PAYMENT_METHOD_OPTIONS[0];
+}
+
+function getReceivedPaymentMethodConfig(value, fallback = "Efectivo") {
+  const safeValue = String(value || "").trim();
+  const directMatch = RECEIVED_PAYMENT_METHOD_OPTIONS.find((option) => option.value === safeValue);
+  if (directMatch) {
+    return directMatch;
+  }
+
+  const safeFallback = String(fallback || "").trim();
+  if (!safeFallback) {
+    return null;
+  }
+
+  return RECEIVED_PAYMENT_METHOD_OPTIONS.find((option) => option.value === safeFallback)
+    || RECEIVED_PAYMENT_METHOD_OPTIONS[0];
+}
+
+function normalizeReceivedPaymentMethod(value, fallback = "Efectivo") {
+  return getReceivedPaymentMethodConfig(value, fallback)?.value || "";
+}
+
+function isCashPaymentMethod(value) {
+  return getPaymentMethodConfig(value).kind === "cash";
+}
+
+function isCreditPaymentMethod(value) {
+  return getPaymentMethodConfig(value).kind === "credit";
+}
+
+function getSalePendingAmount(total, receivedAmount, paymentMethod) {
+  if (!isCreditPaymentMethod(paymentMethod)) {
+    return 0;
+  }
+
+  return roundMoney(Math.max(roundMoney(total) - Math.max(roundMoney(receivedAmount), 0), 0));
+}
+
+function getSaleReceivedPaymentMethod(paymentMethod, receivedPaymentMethod, receivedAmount = 0) {
+  if (isCreditPaymentMethod(paymentMethod)) {
+    return roundMoney(receivedAmount) > 0
+      ? normalizeReceivedPaymentMethod(receivedPaymentMethod, "Efectivo")
+      : "";
+  }
+
+  return isCashPaymentMethod(paymentMethod) ? "Efectivo" : getPaymentMethodConfig(paymentMethod).value;
+}
+
+function getSalePaymentSummary(sale = {}) {
+  const paymentMethod = sale.paymentMethod || "Efectivo";
+  const customerName = String(sale.customerName || "").trim();
+  const total = roundMoney(sale.total || 0);
+  const receivedAmount = roundMoney(sale.receivedAmount || 0);
+  const laterPaymentsTotal = roundMoney(sale.laterPaymentsTotal || 0);
+  const paidAmount = roundMoney(
+    sale.paidAmount === undefined
+      ? receivedAmount + laterPaymentsTotal
+      : sale.paidAmount,
+  );
+  const pendingAmount = roundMoney(
+    sale.pendingAmount === undefined
+      ? getSalePendingAmount(total, paidAmount, paymentMethod)
+      : sale.pendingAmount,
+  );
+  const receivedMethod = getSaleReceivedPaymentMethod(
+    paymentMethod,
+    sale.receivedPaymentMethod || "",
+    receivedAmount,
+  );
+  const parts = [paymentMethod];
+
+  if (customerName) {
+    parts.push(customerName);
+  }
+
+  if (isCreditPaymentMethod(paymentMethod)) {
+    if (receivedAmount > 0) {
+      parts.push(`Abono inicial ${formatCurrency(receivedAmount)}${receivedMethod ? ` ${receivedMethod}` : ""}`);
+    }
+    if (laterPaymentsTotal > 0) {
+      parts.push(`Posteriores ${formatCurrency(laterPaymentsTotal)}`);
+    }
+    if (paidAmount > 0 && laterPaymentsTotal > 0) {
+      parts.push(`Pagado ${formatCurrency(paidAmount)}`);
+    }
+    parts.push(`Pendiente ${formatCurrency(pendingAmount)}`);
+  }
+
+  return parts.join(" · ");
+}
+
+function requiresPaymentCustomer(value) {
+  return Boolean(getPaymentMethodConfig(value).requiresCustomer);
+}
+
+function getPaymentCustomerFieldLabel(value) {
+  return isCreditPaymentMethod(value) ? "Cliente fiado" : "Cliente o referencia";
+}
+
+function getPaymentCustomerPlaceholder(value) {
+  if (isCreditPaymentMethod(value)) {
+    return "Nombre del cliente o familia";
+  }
+
+  return "Nombre, banco o referencia";
+}
+
+function getPaymentNotePlaceholder(value) {
+  if (value === "Transferencia") {
+    return "Folio, banco o detalle opcional";
+  }
+  if (isCreditPaymentMethod(value)) {
+    return "Fecha de pago, colonia, abono o nota del fiado";
+  }
+
+  return "Nota opcional";
+}
+
+function getPaymentContextCopy(value) {
+  if (value === "Transferencia") {
+    return "La venta suma al total vendido, pero no al efectivo esperado de caja.";
+  }
+  if (value === "Tarjeta") {
+    return "La venta queda registrada como no efectivo y no aumenta el efectivo esperado.";
+  }
+  if (isCreditPaymentMethod(value)) {
+    return "El fiado suma a ventas. Si hoy te pagan una parte, captura el abono y el medio para que caja y pendiente cuadren.";
+  }
+
+  return "Captura lo recibido para calcular el cambio del ticket.";
+}
+
 function buildPublicSnapshotCacheView(snapshot) {
   const sourceSnapshot =
     snapshot && typeof snapshot === "object" ? snapshot : {};
-  const products = Array.isArray(sourceSnapshot.products)
-    ? sourceSnapshot.products.map((product) => ({
-        ...product,
-        cost: 0,
-        supplierName: "",
-        packSize: null,
-        stock: 0,
-        minStock: 0,
-        stockInitialized: false,
-        attributes: {},
-        status: "capture",
-      }))
-    : [];
+  const sanitizePublicProduct = (product = {}) => ({
+    ...product,
+    cost: 0,
+    supplierName: "",
+    packSize: null,
+    stock: 0,
+    minStock: 0,
+    stockInitialized: false,
+    attributes: {},
+    status: "capture",
+  });
+  const sanitizePublicProductList = (products = []) =>
+    Array.isArray(products) ? products.map((product) => sanitizePublicProduct(product)) : [];
+  const products = sanitizePublicProductList(sourceSnapshot.products);
+  const inventoryProducts = sanitizePublicProductList(sourceSnapshot.inventoryProducts);
+  const inventoryComparison = Array.isArray(sourceSnapshot.inventoryComparison?.branches)
+    ? {
+        branches: sourceSnapshot.inventoryComparison.branches.map((branchEntry) => ({
+          ...branchEntry,
+          products: sanitizePublicProductList(branchEntry?.products),
+        })),
+      }
+    : null;
   const catalogSize = Math.max(
     0,
     Number(sourceSnapshot.summary?.catalogSize || products.length || 0),
@@ -93,6 +345,8 @@ function buildPublicSnapshotCacheView(snapshot) {
       cashier: null,
     },
     products,
+    inventoryProducts,
+    inventoryComparison,
     lowStock: [],
     recentSales: [],
     recentActivity: [],
@@ -167,6 +421,12 @@ function getOfflineSalePayload(record) {
   }
 
   return null;
+}
+
+function buildClientReceivableCustomerLookupKey(branch, customerName) {
+  const normalizedBranch = normalizeSearchText(branch || "branch") || "branch";
+  const normalizedCustomer = normalizeSearchText(customerName || "cliente") || "cliente";
+  return `local:${normalizedBranch}:${normalizedCustomer}`;
 }
 
 function getOfflineSaleDisplayState(record) {
@@ -309,6 +569,220 @@ function getOfflineSalesStatusSummary(records = state.offlineSales) {
     rejected: 0,
     outstanding: 0,
   });
+}
+
+function getOfflineReceivablePaymentPayload(record) {
+  if (record?.requestPayload && typeof record.requestPayload === "object") {
+    return record.requestPayload;
+  }
+
+  if (typeof record?.request?.body === "string" && record.request.body.trim()) {
+    try {
+      return JSON.parse(record.request.body);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function getOfflineReceivablePaymentStatusLabel(status) {
+  if (status === "synced") {
+    return "Sincronizado";
+  }
+
+  if (status === "rejected") {
+    return "Rechazado";
+  }
+
+  if (status === "requires_review") {
+    return "Requiere revision";
+  }
+
+  return "Pendiente";
+}
+
+function getOfflineReceivablePaymentRecordByClientPaymentId(clientPaymentId) {
+  const safeClientPaymentId = String(clientPaymentId || "").trim();
+  if (!safeClientPaymentId) {
+    return null;
+  }
+
+  return (Array.isArray(state.offlineReceivablePayments) ? state.offlineReceivablePayments : []).find(
+    (record) => String(record?.clientPaymentId || "") === safeClientPaymentId,
+  ) || null;
+}
+
+function isOfflineReceivablePaymentOutstandingStatus(status) {
+  return status !== "synced" && status !== "rejected";
+}
+
+function getOutstandingOfflineReceivablePayments() {
+  return (Array.isArray(state.offlineReceivablePayments) ? state.offlineReceivablePayments : []).filter(
+    (record) => isOfflineReceivablePaymentOutstandingStatus(String(record?.status || "pending")),
+  );
+}
+
+function getOfflineReceivablePaymentDisplayState(record) {
+  const safeRecord = record && typeof record === "object" ? record : {};
+  const baseStatus = String(safeRecord.status || "pending");
+  const payload = getOfflineReceivablePaymentPayload(safeRecord) || {};
+  const recordBranch = String(
+    safeRecord.branch
+      || payload.branch
+      || "",
+  ).trim();
+  const recordCashier = String(
+    safeRecord.cashier
+      || payload.cashier
+      || "",
+  ).trim();
+  const linkedClientSaleId = String(
+    safeRecord.linkedClientSaleId
+      || payload.linkedClientSaleId
+      || "",
+  ).trim();
+  const linkedSale = linkedClientSaleId
+    ? getOfflineSaleRecordByClientSaleId(linkedClientSaleId)
+    : null;
+  const linkedSaleDisplayState = linkedSale ? getOfflineSaleDisplayState(linkedSale) : null;
+  let displayStatus = baseStatus;
+  let note = "";
+
+  if (baseStatus === "synced") {
+    note = safeRecord.syncedAt
+      ? "Abono sincronizado correctamente."
+      : "Sincronizado.";
+    return {
+      status: "synced",
+      label: getOfflineReceivablePaymentStatusLabel("synced"),
+      note,
+      canRetry: false,
+      canReject: false,
+      canReactivate: false,
+    };
+  }
+
+  if (baseStatus === "rejected") {
+    note = String(
+      safeRecord.rejectedReason
+      || safeRecord.lastError
+      || "Abono archivado para revision manual.",
+    );
+    return {
+      status: "rejected",
+      label: getOfflineReceivablePaymentStatusLabel("rejected"),
+      note,
+      canRetry: false,
+      canReject: false,
+      canReactivate: true,
+    };
+  }
+
+  if (linkedClientSaleId) {
+    if (!linkedSale) {
+      return {
+        status: "requires_review",
+        label: getOfflineReceivablePaymentStatusLabel("requires_review"),
+        note: "El ticket offline ligado a este abono ya no esta disponible en el dispositivo.",
+        canRetry: true,
+        canReject: false,
+        canReactivate: false,
+      };
+    }
+
+    if (!linkedSale.syncedSaleId) {
+      displayStatus = linkedSaleDisplayState?.status === "requires_review"
+        ? "requires_review"
+        : displayStatus;
+      note = linkedSaleDisplayState?.status === "requires_review"
+        ? `El ticket ${linkedSale.localTicketNumber || "offline"} necesita revision antes de sincronizar este abono.`
+        : `Esperando que primero se sincronice ${linkedSale.localTicketNumber || linkedSale.syncedTicketNumber || "el ticket offline"}.`;
+      return {
+        status: displayStatus,
+        label: getOfflineReceivablePaymentStatusLabel(displayStatus),
+        note,
+        canRetry: true,
+        canReject: false,
+        canReactivate: false,
+      };
+    }
+  }
+
+  const branchMismatch = Boolean(recordBranch && recordBranch !== getActiveCashierBranch());
+  if (!state.online) {
+    note = "Sin internet. El abono seguira guardado hasta reconectar.";
+  } else if (!state.cashier.authenticated || !state.cashier.token) {
+    note = `Tienes que iniciar sesion de ${recordCashier || "ese cajero"} para sincronizarlo.`;
+  } else if (branchMismatch) {
+    displayStatus = "requires_review";
+    note = `Pendiente de ${getBranchLabel(recordBranch)}. Abre esa caja o usa el mismo cajero para resincronizar.`;
+  } else if (safeRecord.lastError) {
+    note = String(safeRecord.lastError);
+    if (baseStatus === "pending" && Number.isFinite(Number(safeRecord.lastErrorCode))) {
+      const statusCode = Number(safeRecord.lastErrorCode);
+      if (statusCode >= 400 && statusCode < 500) {
+        displayStatus = "requires_review";
+      }
+    }
+  } else {
+    note = "Listo para sincronizar en cuanto haya sesion e internet.";
+  }
+
+  return {
+    status: displayStatus,
+    label: getOfflineReceivablePaymentStatusLabel(displayStatus),
+    note,
+    canRetry: true,
+    canReject: false,
+    canReactivate: false,
+  };
+}
+
+function getOfflineReceivablePaymentsStatusSummary(records = state.offlineReceivablePayments) {
+  return (Array.isArray(records) ? records : []).reduce((summary, record) => {
+    const displayStatus = getOfflineReceivablePaymentDisplayState(record).status;
+
+    if (displayStatus === "synced") {
+      summary.synced += 1;
+      return summary;
+    }
+
+    if (displayStatus === "rejected") {
+      summary.rejected += 1;
+      return summary;
+    }
+
+    summary.outstanding += 1;
+    if (displayStatus === "requires_review") {
+      summary.requiresReview += 1;
+    } else {
+      summary.pending += 1;
+    }
+
+    return summary;
+  }, {
+    pending: 0,
+    requiresReview: 0,
+    synced: 0,
+    rejected: 0,
+    outstanding: 0,
+  });
+}
+
+function getOfflineOperationStatusSummary() {
+  const sales = getOfflineSalesStatusSummary();
+  const receivablePayments = getOfflineReceivablePaymentsStatusSummary();
+  return {
+    pending: sales.pending + receivablePayments.pending,
+    requiresReview: sales.requiresReview + receivablePayments.requiresReview,
+    synced: sales.synced + receivablePayments.synced,
+    rejected: sales.rejected + receivablePayments.rejected,
+    outstanding: sales.outstanding + receivablePayments.outstanding,
+    sales,
+    receivablePayments,
+  };
 }
 
 function getStatusLabel(status) {
@@ -696,6 +1170,7 @@ function getEmptyRegisterSummary() {
     withdrawalsAmount: 0,
     cardSales: 0,
     transferSales: 0,
+    creditSales: 0,
     nonCashSales: 0,
     totalSales: 0,
     expectedCash: 0,

@@ -77,7 +77,7 @@ function registerServiceWorker() {
     return;
   }
 
-  const serviceWorkerUrl = "/sw.js?v=13";
+  const serviceWorkerUrl = "/sw.js?v=14";
   let controllerRefreshScheduled = false;
 
   navigator.serviceWorker.addEventListener("controllerchange", () => {
@@ -97,8 +97,14 @@ function registerServiceWorker() {
 
 function setRouteMode(enabled) {
   state.ui.routeMode = Boolean(enabled);
+  if (state.ui.routeMode) {
+    state.ui.routeRegisterCollapsed = true;
+  }
   persistPreferences();
   renderRouteMode();
+  if (state.ui.routeMode) {
+    focusRouteSearchInput();
+  }
 }
 
 function toggleRouteMode() {
@@ -135,11 +141,32 @@ function openCatalogProductById(productId) {
     return;
   }
 
-  refs.searchInput?.blur();
-  openItemModal(product);
+  handleCatalogProductSelection(product);
 }
 
 let lastProductSearchSubmitAt = 0;
+
+function pickDirectProductSearchMatch(rawSearch, products = []) {
+  const normalizedSearch = normalizeSearchText(rawSearch);
+  if (!normalizedSearch || !Array.isArray(products) || products.length === 0) {
+    return null;
+  }
+
+  if (products.length === 1) {
+    return products[0];
+  }
+
+  return products.find((product) => {
+    const exactCandidates = [
+      product.sku,
+      product.barcode,
+      product.name,
+    ]
+      .map((value) => normalizeSearchText(value))
+      .filter(Boolean);
+    return exactCandidates.includes(normalizedSearch);
+  }) || null;
+}
 
 function submitProductSearchFromKeyboard() {
   if (!refs.searchInput) {
@@ -156,6 +183,13 @@ function submitProductSearchFromKeyboard() {
     return;
   }
   lastProductSearchSubmitAt = now;
+
+  const filteredProducts = getFilteredProducts();
+  const directMatch = pickDirectProductSearchMatch(search, filteredProducts);
+  if (directMatch) {
+    openCatalogProductById(directMatch.id);
+    return;
+  }
 
   requestProductsRender(true);
   refs.searchInput.blur();
@@ -332,6 +366,7 @@ async function bootstrap() {
   refs.openFinalCutButton = $("open-final-cut-button");
   refs.registerSummaryPill = $("register-summary-pill");
   refs.openQuickImportButton = $("open-quick-import-button");
+  refs.openReceivablesButton = $("open-receivables-button");
   refs.openMerchandiseRequestButton = $("open-merchandise-request-button");
   refs.refreshCatalogButton = $("refresh-catalog-button");
   refs.exportDateInput = $("export-date-input");
@@ -347,6 +382,12 @@ async function bootstrap() {
   refs.routeCartFab = $("route-cart-fab");
   refs.routeCartFabTotal = $("route-cart-fab-total");
   refs.routeCartFabCount = $("route-cart-fab-count");
+  refs.approvalsMobileShell = $("approvals-mobile-shell");
+  refs.approvalsMobileStatus = $("approvals-mobile-status");
+  refs.approvalsMobileCount = $("approvals-mobile-count");
+  refs.approvalsMobileNetwork = $("approvals-mobile-network");
+  refs.closeApprovalsMobileButton = $("close-approvals-mobile-button");
+  refs.approvalsMobileContent = $("approvals-mobile-content");
   refs.itemModal = $("item-modal");
   refs.itemModalCard = $("item-modal-card");
   refs.itemModalName = $("item-modal-name");
@@ -358,13 +399,36 @@ async function bootstrap() {
   refs.itemRouteConfirmButton = $("item-route-confirm-button");
   refs.itemTotal = $("item-total");
   refs.itemUnitPrice = $("item-unit-price");
+  refs.itemPricingHint = $("item-pricing-hint");
+  refs.addItemButton = $("add-item-button");
+  refs.routeCartEditorModal = $("route-cart-editor-modal");
+  refs.routeCartEditorCard = $("route-cart-editor-card");
+  refs.routeCartEditorName = $("route-cart-editor-name");
+  refs.routeCartEditorMeta = $("route-cart-editor-meta");
+  refs.routeCartEditorQuantity = $("route-cart-editor-quantity");
+  refs.routeCartEditorUnitPrice = $("route-cart-editor-unit-price");
+  refs.routeCartEditorTotal = $("route-cart-editor-total");
+  refs.routeCartEditorHint = $("route-cart-editor-hint");
+  refs.routeCartEditorResetPriceButton = $("route-cart-editor-reset-price-button");
+  refs.routeCartEditorRemoveButton = $("route-cart-editor-remove-button");
+  refs.saveRouteCartEditorButton = $("save-route-cart-editor-button");
   refs.paymentModal = $("payment-modal");
   refs.paymentModalCard = $("payment-modal-card");
   refs.paymentTotal = $("payment-total");
   refs.paymentMethods = $("payment-methods");
+  refs.paymentContextNote = $("payment-context-note");
+  refs.paymentReceivedLabel = $("payment-received-label");
   refs.moneyDisplay = $("money-display");
   refs.paymentExactShortcutButton = $("payment-exact-shortcut-button");
+  refs.paymentCustomerField = $("payment-customer-field");
+  refs.paymentCustomerLabel = $("payment-customer-label");
+  refs.paymentCustomerInput = $("payment-customer-input");
+  refs.paymentReceivedMethodField = $("payment-received-method-field");
+  refs.paymentReceivedMethodInput = $("payment-received-method-input");
+  refs.paymentNoteField = $("payment-note-field");
+  refs.paymentNoteInput = $("payment-note-input");
   refs.paymentReceived = $("payment-received");
+  refs.paymentChangeLabel = $("payment-change-label");
   refs.paymentChange = $("payment-change");
   refs.confirmSaleButton = $("confirm-sale-button");
   refs.paymentRouteDecisionBar = $("payment-route-decision-bar");
@@ -430,12 +494,25 @@ async function bootstrap() {
   refs.merchandiseRequestDetailCloseButton = $("close-merchandise-request-detail-button");
   refs.merchandiseRequestDetailApproveButton = $("approve-merchandise-request-button");
   refs.merchandiseRequestDetailRejectButton = $("reject-merchandise-request-button");
+  refs.receivablesModal = $("receivables-modal");
+  refs.receivablesSearch = $("receivables-search");
+  refs.receivablesCustomerList = $("receivables-customer-list");
+  refs.receivablesCustomerDetail = $("receivables-customer-detail");
+  refs.receivablePaymentModal = $("receivable-payment-modal");
+  refs.receivablePaymentTitle = $("receivable-payment-title");
+  refs.receivablePaymentMeta = $("receivable-payment-meta");
+  refs.receivablePaymentSummary = $("receivable-payment-summary");
+  refs.receivablePaymentAmount = $("receivable-payment-amount");
+  refs.receivablePaymentMethod = $("receivable-payment-method");
+  refs.receivablePaymentNote = $("receivable-payment-note");
+  refs.saveReceivablePaymentButton = $("save-receivable-payment-button");
   refs.registerModal = $("register-modal");
   refs.registerModalEyebrow = $("register-modal-eyebrow");
   refs.registerModalTitle = $("register-modal-title");
   refs.registerModalDescription = $("register-modal-description");
   refs.registerOpeningAmount = $("register-opening-amount");
   refs.registerCashSales = $("register-cash-sales");
+  refs.registerCreditSales = $("register-credit-sales");
   refs.registerExpectedCash = $("register-expected-cash");
   refs.registerWithdrawalsAmount = $("register-withdrawals-amount");
   refs.registerTotalSales = $("register-total-sales");
@@ -446,6 +523,13 @@ async function bootstrap() {
   refs.registerNoteInput = $("register-note-input");
   refs.registerHelperText = $("register-helper-text");
   refs.saveRegisterButton = $("save-register-button");
+  refs.cashierBlindAuditModal = $("cashier-blind-audit-modal");
+  refs.cashierBlindAuditTitle = $("cashier-blind-audit-title");
+  refs.cashierBlindAuditMeta = $("cashier-blind-audit-meta");
+  refs.cashierBlindAuditSummary = $("cashier-blind-audit-summary");
+  refs.cashierBlindAuditItems = $("cashier-blind-audit-items");
+  refs.cashierBlindAuditHelper = $("cashier-blind-audit-helper");
+  refs.saveCashierBlindAuditButton = $("save-cashier-blind-audit-button");
   refs.detailViewerModal = $("detail-viewer-modal");
   refs.detailViewerTitle = $("detail-viewer-title");
   refs.detailViewerMeta = $("detail-viewer-meta");
@@ -464,6 +548,10 @@ async function bootstrap() {
   refs.adminSnapshotRender = $("admin-snapshot-render");
   refs.adminVisibleProducts = $("admin-visible-products");
   refs.adminDomNodes = $("admin-dom-nodes");
+  refs.adminRouteQuickAdd = $("admin-route-quick-add");
+  refs.adminRouteQuickAddDetail = $("admin-route-quick-add-detail");
+  refs.adminRouteEditorOpen = $("admin-route-editor-open");
+  refs.adminRouteEditorOpenDetail = $("admin-route-editor-open-detail");
   refs.adminServerRuntime = $("admin-server-runtime");
   refs.adminServerMemory = $("admin-server-memory");
   refs.adminClientMemory = $("admin-client-memory");
@@ -639,17 +727,27 @@ async function bootstrap() {
   // Restaurar estado persistido
   await restorePreferences();
   await restoreCart();
+  await restoreReceivablesCache();
   await restoreQueue();
   await restoreOfflineSales();
+  await restoreOfflineReceivablePayments();
   syncOfflineSalesAuditWithQueue();
+  syncOfflineReceivablePaymentsAuditWithQueue();
   await restoreRegisterEvents();
   await restoreCashierSession();
   const cachedSnapshot = await restoreSnapshot();
   if (cachedSnapshot) {
-    const initialSnapshot =
-      !state.online && state.cashier.authenticated
-        ? cachedSnapshot
-        : buildPublicSnapshotCacheView(cachedSnapshot);
+    const offlineCashierBranch = state.cashier.branch || getActiveCashierBranch();
+    const preparedOfflineSnapshot =
+      !state.online
+      && state.cashier.authenticated
+      && typeof getPreparedOfflineSnapshot === "function"
+        ? await getPreparedOfflineSnapshot(offlineCashierBranch)
+        : null;
+    const initialSnapshot = resolveStartupSnapshotFromCache(cachedSnapshot, {
+      branch: offlineCashierBranch,
+      preparedSnapshot: preparedOfflineSnapshot,
+    });
     applySnapshot(initialSnapshot, {
       skipPersist: true,
       persistPreparedSnapshot: false,
@@ -662,6 +760,9 @@ async function bootstrap() {
   } catch (error) {
     if (error.statusCode === 401 || error.statusCode === 403) {
       clearCashierSessionState();
+      if (typeof sanitizeAfterCashierSessionLoss === "function") {
+        sanitizeAfterCashierSessionLoss();
+      }
     }
   }
   try {
@@ -674,6 +775,23 @@ async function bootstrap() {
       state.admin.setupAllowed = false;
       state.admin.authenticated = false;
       state.admin.csrfToken = "";
+      state.admin.capabilitiesResolved = false;
+    }
+  }
+  try {
+    if (state.online) {
+      await loadOwnerAuthStatus();
+    }
+  } catch (error) {
+    if (!isNetworkError(error)) {
+      state.owner.configured = false;
+      state.owner.setupAllowed = false;
+      state.owner.authenticated = false;
+      state.owner.csrfToken = "";
+      state.owner.accessLoaded = false;
+      if (!state.admin.authenticated) {
+        state.admin.capabilitiesResolved = false;
+      }
     }
   }
 
@@ -685,6 +803,7 @@ async function bootstrap() {
   renderMerchandiseRequestModal();
   renderMerchandiseRequestItemModal();
   renderMerchandiseRequestDetailModal();
+  renderApprovalsMobileView();
   renderRegisterModal();
   renderRegisterSummaryPill();
   renderRecentActivity();
@@ -821,6 +940,7 @@ async function bootstrap() {
 
   // Quick Import
   refs.openQuickImportButton.addEventListener("click", openQuickImportModal);
+  refs.openReceivablesButton.addEventListener("click", openReceivablesModal);
   refs.openMerchandiseRequestButton.addEventListener("click", openMerchandiseRequestModal);
   refs.refreshCatalogButton.addEventListener("click", reimportCatalog);
   refs.exportWorkbookButton.addEventListener("click", exportWorkbook);
@@ -906,10 +1026,16 @@ async function bootstrap() {
   refs.itemRouteCancelButton?.addEventListener("click", closeItemModal);
   refs.itemRouteConfirmButton?.addEventListener("click", addCurrentProductToCart);
   refs.itemQuantity.addEventListener("input", syncItemTotalFromQuantity);
+  refs.itemQuantity.addEventListener("focus", () => focusAndSelectInput(refs.itemQuantity, { defer: false }));
   refs.itemTotal.addEventListener("input", syncItemQuantityFromTotal);
-  refs.itemUnitPrice.addEventListener("input", syncItemTotalFromQuantity);
+  refs.itemUnitPrice.addEventListener("input", syncItemFromUnitPrice);
+  refs.itemQuantity.addEventListener("keydown", submitCurrentProductFromKeyboard);
+  refs.itemTotal.addEventListener("keydown", submitCurrentProductFromKeyboard);
+  refs.itemUnitPrice.addEventListener("keydown", submitCurrentProductFromKeyboard);
   refs.itemTotal.addEventListener("blur", finalizeItemTotalInput);
-  refs.itemTotal.addEventListener("focus", () => refs.itemTotal.select());
+  refs.itemUnitPrice.addEventListener("blur", finalizeItemUnitPriceInput);
+  refs.itemTotal.addEventListener("focus", () => focusAndSelectInput(refs.itemTotal, { defer: false }));
+  refs.itemUnitPrice.addEventListener("focus", () => focusAndSelectInput(refs.itemUnitPrice, { defer: false }));
   refs.itemQuickQuantities?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-quantity]");
     if (!button) {
@@ -917,6 +1043,28 @@ async function bootstrap() {
     }
     applyItemQuickQuantity(Number(button.dataset.quantity));
   });
+
+  // Modal Edicion rapida de carrito
+  $("close-route-cart-editor-modal").addEventListener("click", closeRouteCartEditor);
+  $("cancel-route-cart-editor-button").addEventListener("click", closeRouteCartEditor);
+  refs.saveRouteCartEditorButton.addEventListener("click", saveRouteCartEditor);
+  refs.routeCartEditorRemoveButton.addEventListener("click", () => {
+    if (Number.isInteger(state.routeCartEditor.index)) {
+      removeCartItem(state.routeCartEditor.index);
+    }
+  });
+  refs.routeCartEditorResetPriceButton.addEventListener("click", restoreRouteCartEditorBasePrice);
+  refs.routeCartEditorQuantity.addEventListener("input", syncRouteCartEditorFromQuantity);
+  refs.routeCartEditorQuantity.addEventListener("focus", () => focusAndSelectInput(refs.routeCartEditorQuantity, { defer: false }));
+  refs.routeCartEditorUnitPrice.addEventListener("input", syncRouteCartEditorFromUnitPrice);
+  refs.routeCartEditorUnitPrice.addEventListener("focus", () => focusAndSelectInput(refs.routeCartEditorUnitPrice, { defer: false }));
+  refs.routeCartEditorTotal.addEventListener("input", syncRouteCartEditorFromTotal);
+  refs.routeCartEditorTotal.addEventListener("focus", () => focusAndSelectInput(refs.routeCartEditorTotal, { defer: false }));
+  refs.routeCartEditorTotal.addEventListener("blur", finalizeRouteCartEditorTotalInput);
+  refs.routeCartEditorUnitPrice.addEventListener("blur", finalizeRouteCartEditorUnitPriceInput);
+  refs.routeCartEditorQuantity.addEventListener("keydown", submitRouteCartEditorFromKeyboard);
+  refs.routeCartEditorUnitPrice.addEventListener("keydown", submitRouteCartEditorFromKeyboard);
+  refs.routeCartEditorTotal.addEventListener("keydown", submitRouteCartEditorFromKeyboard);
 
   // Modal Payment
   $("close-payment-modal").addEventListener("click", closePaymentModal);
@@ -1063,6 +1211,68 @@ async function bootstrap() {
   refs.merchandiseRequestDetailCloseButton.addEventListener("click", closeMerchandiseRequestDetailModal);
   refs.merchandiseRequestDetailApproveButton.addEventListener("click", approveCurrentMerchandiseRequest);
   refs.merchandiseRequestDetailRejectButton.addEventListener("click", rejectCurrentMerchandiseRequest);
+  refs.merchandiseRequestDetailBody.addEventListener("input", (event) => {
+    const rejectField = event.target.closest("[data-merchandise-detail-reject-reason]");
+    if (!rejectField) {
+      return;
+    }
+    state.merchandise.detailRejectReason = rejectField.value;
+  });
+
+  // Bandeja movil de aprobaciones
+  refs.closeApprovalsMobileButton?.addEventListener("click", closeApprovalsMobileView);
+  refs.approvalsMobileContent?.addEventListener("click", (event) => {
+    void handleApprovalsMobileContentClick(event);
+  });
+  refs.approvalsMobileContent?.addEventListener("input", handleApprovalsMobileContentInput);
+
+  // Modal Cartera
+  $("close-receivables-modal").addEventListener("click", closeReceivablesModal);
+  refs.receivablesSearch.addEventListener("input", () => {
+    state.receivables.search = refs.receivablesSearch.value;
+    queueReceivablesSearch();
+  });
+  refs.receivablesCustomerList.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="select-receivable-customer"]');
+    if (!button) {
+      return;
+    }
+    state.receivables.selectedCustomerKey = button.dataset.customerKey || "";
+    void loadReceivableCustomerDetail(state.receivables.selectedCustomerKey);
+  });
+  refs.receivablesCustomerDetail.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="open-receivable-payment"]');
+    if (!button) {
+      return;
+    }
+    openReceivablePaymentModal(button.dataset.saleRef || button.dataset.saleId);
+  });
+
+  // Modal Abono cartera
+  $("close-receivable-payment-modal").addEventListener("click", closeReceivablePaymentModal);
+  $("cancel-receivable-payment-button").addEventListener("click", closeReceivablePaymentModal);
+  refs.saveReceivablePaymentButton.addEventListener("click", submitReceivablePayment);
+  refs.receivablePaymentAmount.addEventListener("input", () => {
+    state.receivables.paymentAmount = refs.receivablePaymentAmount.value;
+  });
+  refs.receivablePaymentMethod.addEventListener("change", () => {
+    state.receivables.paymentMethod = refs.receivablePaymentMethod.value;
+  });
+  refs.receivablePaymentNote.addEventListener("input", () => {
+    state.receivables.paymentNote = refs.receivablePaymentNote.value;
+  });
+  refs.receivablePaymentAmount.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitReceivablePayment();
+    }
+  });
+  refs.receivablePaymentNote.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitReceivablePayment();
+    }
+  });
 
   // Modal Register
   $("close-register-modal").addEventListener("click", closeRegisterModal);
@@ -1096,6 +1306,21 @@ async function bootstrap() {
       saveRegisterAction();
     }
   });
+  refs.cashierBlindAuditItems?.addEventListener("input", (event) => {
+    const field = event.target.closest("[data-blind-audit-item-id]");
+    if (!field) {
+      return;
+    }
+    updateCashierBlindAuditDraft(field.dataset.blindAuditItemId, field.value);
+  });
+  refs.cashierBlindAuditItems?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    saveCashierBlindAuditCapture();
+  });
+  refs.saveCashierBlindAuditButton?.addEventListener("click", saveCashierBlindAuditCapture);
 
   // Filtros de categoría
   refs.categoryFilters.addEventListener("click", (event) => {
@@ -1135,6 +1360,21 @@ async function bootstrap() {
 
   // Carrito
   refs.cartItems.addEventListener("click", (event) => {
+    const stepButton = event.target.closest('[data-action="route-cart-step"]');
+    if (stepButton) {
+      quickAdjustCartItemQuantity(
+        Number(stepButton.dataset.index),
+        Number(stepButton.dataset.delta || 0),
+      );
+      return;
+    }
+
+    const openEditorButton = event.target.closest('[data-action="open-cart-item"]');
+    if (openEditorButton) {
+      openCartItemForEditing(Number(openEditorButton.dataset.index));
+      return;
+    }
+
     const button = event.target.closest('[data-action="remove-cart-item"]');
     if (!button) {
       return;
@@ -1146,6 +1386,12 @@ async function bootstrap() {
   refs.itemModal.addEventListener("click", (event) => {
     if (event.target === refs.itemModal) {
       closeItemModal();
+    }
+  });
+
+  refs.routeCartEditorModal.addEventListener("click", (event) => {
+    if (event.target === refs.routeCartEditorModal) {
+      closeRouteCartEditor();
     }
   });
 
@@ -1167,9 +1413,21 @@ async function bootstrap() {
     }
   });
 
+  refs.receivablesModal.addEventListener("click", (event) => {
+    if (event.target === refs.receivablesModal) {
+      closeReceivablesModal();
+    }
+  });
+
   refs.merchandiseRequestItemModal.addEventListener("click", (event) => {
     if (event.target === refs.merchandiseRequestItemModal) {
       closeMerchandiseRequestItemModal();
+    }
+  });
+
+  refs.receivablePaymentModal.addEventListener("click", (event) => {
+    if (event.target === refs.receivablePaymentModal) {
+      closeReceivablePaymentModal();
     }
   });
 
@@ -1458,10 +1716,38 @@ async function bootstrap() {
     }
 
     state.paymentMethod = button.dataset.method;
-    if (state.paymentMethod !== "Efectivo") {
+    if (isCashPaymentMethod(state.paymentMethod)) {
       state.moneyInput = String(getCartTotal());
+      state.paymentReceivedMethod = "Efectivo";
+    } else if (isCreditPaymentMethod(state.paymentMethod)) {
+      state.moneyInput = "0";
+      state.paymentReceivedMethod = normalizeReceivedPaymentMethod(
+        state.paymentReceivedMethod,
+        "Efectivo",
+      );
+    } else {
+      state.moneyInput = String(getCartTotal());
+      state.paymentReceivedMethod = state.paymentMethod;
     }
     updatePaymentView();
+    if (requiresPaymentCustomer(state.paymentMethod)) {
+      refs.paymentCustomerInput?.focus();
+      refs.paymentCustomerInput?.select?.();
+    }
+  });
+  refs.paymentCustomerInput?.addEventListener("input", () => {
+    state.paymentCustomerName = refs.paymentCustomerInput.value;
+    updatePaymentView();
+  });
+  refs.paymentReceivedMethodInput?.addEventListener("change", () => {
+    state.paymentReceivedMethod = normalizeReceivedPaymentMethod(
+      refs.paymentReceivedMethodInput.value,
+      "Efectivo",
+    );
+    updatePaymentView();
+  });
+  refs.paymentNoteInput?.addEventListener("input", () => {
+    state.paymentNote = refs.paymentNoteInput.value;
   });
 
   // Keypad de pago
@@ -1582,7 +1868,7 @@ async function bootstrap() {
           retries: 2,
         }
       );
-      applySnapshot(snapshot);
+      applySnapshot(snapshot, { syncAuthState: true });
       bootstrapLoaded = true;
       
       if (refs.socketStatus.textContent === "Sin conexion") {
@@ -1603,6 +1889,10 @@ async function bootstrap() {
   // Inicializar socket y sincronización
   connectSocket();
   updatePaymentView();
+  window.addEventListener("popstate", () => {
+    void syncApprovalsMobileViewFromLocation({ autoOpenAuth: false, silent: true });
+  });
+  await syncApprovalsMobileViewFromLocation({ silent: true });
   if (state.cashier.authenticated) {
     void Promise.allSettled([
       loadRegisterSummary({ silent: true }),

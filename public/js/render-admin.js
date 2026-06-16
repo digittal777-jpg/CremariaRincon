@@ -88,6 +88,21 @@ function renderAdminModal() {
     : "0 MB";
   refs.adminProductsRender.textContent = `${formatQuantity(state.performance.productsRenderMs)} ms`;
   refs.adminSnapshotRender.textContent = `${formatQuantity(state.performance.snapshotRenderMs)} ms`;
+  if (refs.adminRouteQuickAdd) {
+    refs.adminRouteQuickAdd.textContent = `${formatQuantity(state.performance.routeQuickAddMs)} ms`;
+  }
+  if (refs.adminRouteQuickAddDetail) {
+    refs.adminRouteQuickAddDetail.textContent =
+      `${formatQuantity(state.performance.routeQuickAddCount)} altas`;
+  }
+  if (refs.adminRouteEditorOpen) {
+    refs.adminRouteEditorOpen.textContent =
+      `${formatQuantity(state.performance.routeCartEditorOpenMs)} ms`;
+  }
+  if (refs.adminRouteEditorOpenDetail) {
+    refs.adminRouteEditorOpenDetail.textContent =
+      `${formatQuantity(state.performance.routeCartEditorOpenCount)} aperturas`;
+  }
   const comparisonBranchOneRows = document.getElementById("inventory-body-branch-1")?.children?.length || 0;
   const comparisonBranchTwoRows = document.getElementById("inventory-body-branch-2")?.children?.length || 0;
   const inventoryVisibleRows = state.admin.branch === "all"
@@ -314,7 +329,7 @@ function renderAdminConfigPanel() {
                 <strong>${escapeHtml(unit.label)}</strong>
                 <span class="small-pill">${escapeHtml(unit.code)}</span>
               </div>
-              <p>Paso ${formatQuantity(unit.step || 0.25)} Â· ${unit.allowDecimals ? "decimales" : "enteros"}</p>
+              <p>Paso ${formatQuantity(unit.step || 0.25)} - ${unit.allowDecimals ? "decimales" : "enteros"}</p>
               <button
                 class="ghost-button compact-button"
                 data-action="deactivate-unit"
@@ -338,7 +353,7 @@ function renderAdminConfigPanel() {
                 <strong>${escapeHtml(definition.label)}</strong>
                 <span class="small-pill">${escapeHtml(definition.key)}</span>
               </div>
-              <p>${escapeHtml(definition.valueType)}${definition.required ? " Â· obligatorio" : ""}${definition.options?.length ? ` Â· ${escapeHtml(definition.options.join(", "))}` : ""}</p>
+              <p>${escapeHtml(definition.valueType)}${definition.required ? " - obligatorio" : ""}${definition.options?.length ? ` - ${escapeHtml(definition.options.join(", "))}` : ""}</p>
               <button
                 class="ghost-button compact-button"
                 data-action="deactivate-attribute"
@@ -455,7 +470,7 @@ function renderAdminDevPanel() {
     : `Cola ${formatBytes(queueBytes)} · cortes ${formatBytes(registerBytes)}`;
 
   const backupNote = lastBackupRun
-    ? `${lastBackupRun.backupDateKey} Â· SQLite ${formatBytes(lastBackupRun.sqliteBytes || 0)} Â· Excel ${formatBytes(lastBackupRun.workbookBytes || 0)}`
+    ? `${lastBackupRun.backupDateKey} - SQLite ${formatBytes(lastBackupRun.sqliteBytes || 0)} - Excel ${formatBytes(lastBackupRun.workbookBytes || 0)}`
     : hasAdminCapability("backups")
       ? "Activa el job nocturno para ver respaldos."
       : "El owner bloqueo respaldos.";
@@ -533,6 +548,7 @@ function renderAdminRecordLists() {
                 <strong>${escapeHtml(sale.ticketNumber)}</strong>
                 <span class="small-pill">${formatCurrency(sale.total)}</span>
               </div>
+              <p>${escapeHtml(getSalePaymentSummary(sale))}</p>
               <p>${escapeHtml(getBranchLabel(sale.branch))} · ${escapeHtml(sale.cashier)} · ${escapeHtml(sale.shift)} · ${escapeHtml(dateTimeFormatter.format(new Date(sale.createdAt)))}</p>
             </button>
           `,
@@ -681,7 +697,9 @@ function renderAdminAuthModal() {
     ? "Este despliegue no permite crear el acceso admin por web. Configura POS_BOOTSTRAP_TOKEN o prepara credenciales antes de exponerlo."
     : isSetup
       ? "Crea usuario y contrasena para proteger el panel admin."
-      : "Ingresa usuario y contrasena para abrir el panel admin.";
+      : state.mobileApprovals?.active
+        ? "Ingresa usuario y contrasena para abrir la bandeja movil de aprobaciones."
+        : "Ingresa usuario y contrasena para abrir el panel admin.";
   refs.adminAuthPasswordLabel.textContent = isSetup ? "Nueva contrasena" : "Contrasena";
   refs.adminAuthConfirmField.hidden = !isSetup;
   if (refs.adminAuthBootstrapStatus) {
@@ -925,12 +943,30 @@ function renderAdminEditorModal() {
       <label class="field">
         <span>Metodo de pago</span>
         <select data-editor-field="paymentMethod">
-          ${["Efectivo", "Tarjeta", "Transferencia"].map((method) => `<option value="${method}" ${detail.paymentMethod === method ? "selected" : ""}>${method}</option>`).join("")}
+          ${PAYMENT_METHOD_OPTIONS.map((method) => `<option value="${method.value}" ${detail.paymentMethod === method.value ? "selected" : ""}>${method.label}</option>`).join("")}
         </select>
       </label>
       <label class="field">
-        <span>Recibido</span>
+        <span>Cliente o referencia</span>
+        <input data-editor-field="customerName" type="text" maxlength="80" value="${escapeHtml(detail.customerName || "")}" />
+      </label>
+      <label class="field">
+        <span>Cobrado hoy / recibido</span>
         <input data-editor-field="receivedAmount" type="number" min="0" step="0.01" value="${detail.receivedAmount}" />
+      </label>
+      <label class="field">
+        <span>Cobrado por</span>
+        <select data-editor-field="receivedPaymentMethod">
+          <option value="">Sin abono</option>
+          ${RECEIVED_PAYMENT_METHOD_OPTIONS.map((method) => {
+            const selectedValue = getSaleReceivedPaymentMethod(
+              detail.paymentMethod,
+              detail.receivedPaymentMethod || "",
+              detail.receivedAmount,
+            );
+            return `<option value="${method.value}" ${selectedValue === method.value ? "selected" : ""}>${method.label}</option>`;
+          }).join("")}
+        </select>
       </label>
       <label class="field">
         <span>Nota</span>
@@ -1008,7 +1044,7 @@ function renderCashierAuthModal() {
   refs.loginCashierButton.textContent = state.cashierAuth.loading ? "Iniciando..." : "Iniciar sesion";
 }
 
-function renderAdminWeightedAuditPanel() {
+function renderAdminWeightedAuditPanelLegacy() {
   if (!refs.adminWeightedAuditSessions || !refs.adminWeightedAuditItems || !refs.adminWeightedAuditStatus) {
     return;
   }

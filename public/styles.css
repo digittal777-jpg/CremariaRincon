@@ -446,6 +446,11 @@ h3 {
   gap: 8px;
 }
 
+.field[hidden],
+[hidden] {
+  display: none !important;
+}
+
 .field span {
   color: var(--muted);
   font-size: 0.84rem;
@@ -454,6 +459,7 @@ h3 {
 
 .field input,
 .field select,
+.field textarea,
 .stepper-wrap input {
   width: 100%;
   border: 1px solid rgba(87, 63, 46, 0.14);
@@ -467,6 +473,7 @@ h3 {
 
 .field input:focus,
 .field select:focus,
+.field textarea:focus,
 .stepper-wrap input:focus {
   border-color: rgba(180, 76, 89, 0.4);
   transform: translateY(-1px);
@@ -926,6 +933,55 @@ h3 {
   gap: 14px;
 }
 
+.route-cart-item-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.route-cart-item-main {
+  width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  display: grid;
+  gap: 10px;
+}
+
+.route-cart-item-controls {
+  display: grid;
+  grid-template-columns: repeat(3, 44px);
+  gap: 8px;
+  align-content: start;
+}
+
+.route-cart-step-button {
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 16px;
+  border: 1px solid rgba(87, 63, 46, 0.12);
+  background: rgba(255, 252, 248, 0.94);
+  color: var(--text);
+  font-size: 1.18rem;
+  font-weight: 800;
+}
+
+.route-cart-edit-kind {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(143, 49, 66, 0.08);
+  color: var(--primary-deep);
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .cart-summary {
   margin-top: 18px;
   padding-top: 18px;
@@ -942,6 +998,19 @@ h3 {
   display: flex;
   gap: 12px;
   margin-top: 18px;
+}
+
+.route-cart-editor-card {
+  width: min(520px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+}
+
+.route-cart-editor-secondary-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+  flex-wrap: wrap;
 }
 
 .route-cart-fab {
@@ -1355,6 +1424,10 @@ h3 {
 
 .payment-card {
   width: min(560px, 100%);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .quick-import-card {
@@ -1375,6 +1448,12 @@ h3 {
 
 .register-card {
   width: min(720px, 100%);
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+}
+
+.cashier-blind-audit-card {
+  width: min(760px, 100%);
   max-height: calc(100vh - 36px);
   overflow: auto;
 }
@@ -1646,6 +1725,93 @@ h3 {
   max-height: min(420px, 42vh);
   overflow: auto;
   padding-right: 4px;
+}
+
+.receivables-card {
+  width: min(1080px, calc(100vw - 32px));
+  max-height: min(88vh, 920px);
+  overflow: auto;
+}
+
+.receivables-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.3fr);
+  gap: 18px;
+  padding: 0 22px 22px;
+  min-height: 320px;
+}
+
+.receivables-customers,
+.receivables-detail {
+  min-width: 0;
+}
+
+.receivables-summary-card {
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(87, 63, 46, 0.08);
+  background: linear-gradient(180deg, rgba(255, 249, 244, 0.96), rgba(250, 242, 235, 0.9));
+  display: grid;
+  gap: 14px;
+}
+
+.receivables-summary-card h4 {
+  margin: 0;
+  color: var(--primary-deep);
+}
+
+.receivables-compact-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.receivables-status-banner {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(87, 63, 46, 0.08);
+  background: rgba(255, 251, 246, 0.92);
+  margin-bottom: 12px;
+}
+
+.receivables-status-banner strong {
+  color: var(--primary-deep);
+}
+
+.receivables-status-banner p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.receivable-sale-head-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.receivable-sale-payments {
+  display: grid;
+  gap: 8px;
+}
+
+.receivable-sale-payment-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.receivable-sale-payment-line.is-pending strong {
+  color: var(--primary-deep);
+}
+
+.receivable-payment-card {
+  width: min(560px, calc(100vw - 32px));
 }
 
 .admin-weighted-panel #admin-weighted-audit-items {
@@ -2047,6 +2213,53 @@ h3 {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.cashier-blind-audit-grid {
+  margin-bottom: 12px;
+}
+
+.cashier-blind-audit-summary {
+  display: grid;
+  gap: 12px;
+}
+
+.cashier-blind-audit-list {
+  display: grid;
+  gap: 12px;
+}
+
+.cashier-blind-audit-field {
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(87, 63, 46, 0.1);
+  background: rgba(255, 249, 244, 0.92);
+}
+
+.cashier-blind-audit-field small {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.cashier-blind-audit-difference {
+  font-weight: 600;
+}
+
+.cashier-blind-audit-difference.pending {
+  color: var(--muted);
+}
+
+.cashier-blind-audit-difference.invalid,
+.cashier-blind-audit-difference.shortage {
+  color: #8c2c2c;
+}
+
+.cashier-blind-audit-difference.surplus {
+  color: #0b7a59;
+}
+
+.cashier-blind-audit-difference.match {
+  color: var(--primary-deep);
 }
 
 .cashier-record-list {
@@ -2693,6 +2906,126 @@ h3 {
   background: linear-gradient(135deg, var(--primary), var(--primary-deep));
 }
 
+body.approvals-mobile-view .page-shell,
+body.approvals-mobile-view .route-cart-fab {
+  display: none !important;
+}
+
+.approvals-mobile-shell {
+  position: relative;
+  z-index: 2;
+  width: min(840px, calc(100% - 16px));
+  margin: 12px auto 28px;
+}
+
+.approvals-mobile-card {
+  display: grid;
+  gap: 18px;
+  padding: 18px;
+  border-radius: 26px;
+  background: rgba(255, 250, 244, 0.94);
+  border: 1px solid rgba(87, 63, 46, 0.12);
+  box-shadow: var(--shadow-lg);
+}
+
+.approvals-mobile-head,
+.approvals-mobile-head-actions,
+.approvals-mobile-request-meta,
+.approvals-mobile-request-line {
+  display: flex;
+  gap: 12px;
+}
+
+.approvals-mobile-head,
+.approvals-mobile-request-meta,
+.approvals-mobile-request-line {
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.approvals-mobile-head-actions {
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.approvals-mobile-content,
+.approvals-mobile-list,
+.approvals-mobile-detail,
+.approvals-mobile-action-stack,
+.approvals-mobile-state {
+  display: grid;
+  gap: 12px;
+}
+
+.approvals-mobile-list-button {
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(87, 63, 46, 0.1);
+  background: rgba(255, 252, 248, 0.92);
+  color: inherit;
+}
+
+.approvals-mobile-list-button.is-selected {
+  border-color: rgba(180, 76, 89, 0.28);
+  box-shadow: 0 12px 26px rgba(143, 49, 66, 0.1);
+}
+
+.approvals-mobile-request-meta {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.approvals-mobile-request-meta p {
+  margin: 0;
+}
+
+.approvals-mobile-request-line {
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(255, 252, 248, 0.92);
+  border: 1px solid rgba(87, 63, 46, 0.08);
+}
+
+.approvals-mobile-request-line p {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.approvals-mobile-request-line strong:last-child {
+  color: var(--primary-deep);
+  white-space: nowrap;
+}
+
+.approvals-mobile-action-stack textarea {
+  width: 100%;
+  min-height: 112px;
+  resize: vertical;
+  border: 1px solid rgba(87, 63, 46, 0.14);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  background: rgba(255, 252, 248, 0.94);
+  color: var(--text);
+}
+
+.approvals-mobile-action-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.approvals-mobile-state {
+  padding: 18px;
+  border-radius: 22px;
+  background: rgba(255, 252, 248, 0.92);
+  border: 1px solid rgba(87, 63, 46, 0.08);
+}
+
+.approvals-mobile-state strong {
+  color: var(--primary-deep);
+}
+
 .route-mode .route-full-only {
   display: none !important;
 }
@@ -2815,11 +3148,74 @@ h3 {
   max-height: 260px;
 }
 
+.route-mode .route-cart-item {
+  padding: 12px;
+}
+
+.route-mode .route-cart-item-main {
+  gap: 8px;
+}
+
+.route-mode .route-cart-item-controls .icon-button,
+.route-mode .route-cart-step-button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
 .route-mode .cart-summary {
   position: sticky;
   bottom: 0;
   background: rgba(247, 239, 228, 0.95);
   backdrop-filter: blur(12px);
+}
+
+.route-mode .route-cart-editor-card,
+.route-mode .payment-card {
+  width: min(560px, calc(100vw - 24px));
+}
+
+.route-mode .route-cart-editor-card .modal-note,
+.route-mode .payment-card .modal-note {
+  line-height: 1.3;
+}
+
+.route-mode #payment-modal .modal-head .modal-note {
+  margin-top: 4px;
+}
+
+.route-mode #payment-modal .payment-summary-stack {
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.route-mode #payment-modal .payment-meta {
+  gap: 10px;
+}
+
+.route-mode #payment-modal .payment-meta > div {
+  padding: 12px 14px;
+  border-radius: 16px;
+}
+
+.route-mode #payment-modal #payment-extra-fields {
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.route-mode #payment-modal .payment-shortcuts {
+  gap: 8px;
+}
+
+.route-mode #payment-modal .modal-actions {
+  position: sticky;
+  bottom: 0;
+  padding-top: 12px;
+  background: linear-gradient(
+    180deg,
+    rgba(252, 248, 243, 0),
+    rgba(252, 248, 243, 0.96) 32%,
+    rgba(252, 248, 243, 0.99)
+  );
 }
 
 .route-mode .register-toolbar-toggle {
@@ -2858,19 +3254,102 @@ h3 {
   order: -1;
 }
 
+.route-mode #receivables-modal {
+  align-items: flex-start;
+  overflow: auto;
+  padding: 12px;
+}
+
+.route-mode .receivables-card {
+  width: min(760px, calc(100vw - 12px));
+  max-height: calc(100dvh - 12px);
+  border-radius: 24px;
+}
+
+.route-mode .receivables-layout {
+  grid-template-columns: 1fr;
+  gap: 14px;
+  padding: 0 0 6px;
+}
+
+.route-mode .receivables-customer-list {
+  max-height: min(28vh, 240px);
+}
+
+.route-mode .receivables-summary-card {
+  padding: 14px;
+  gap: 10px;
+}
+
+.route-mode #receivables-modal .modal-head .modal-note {
+  max-width: 32rem;
+}
+
 .route-mobile-mode .modal-shell {
   padding: 12px;
 }
 
 .route-mobile-mode #item-modal .modal-card,
+.route-mobile-mode .route-cart-editor-card,
 .route-mobile-mode .payment-card {
   max-height: calc(100vh - 12px);
   overflow: auto;
   padding-bottom: calc(16px + env(safe-area-inset-bottom));
 }
 
+.route-mobile-mode .route-cart-item-shell {
+  grid-template-columns: 1fr;
+}
+
+.route-mobile-mode .route-cart-item-controls {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.route-mobile-mode .route-cart-edit-kind {
+  justify-self: start;
+}
+
 .route-mobile-mode .payment-card .modal-head .modal-note {
   display: none;
+}
+
+.route-mobile-mode .receivables-card {
+  width: min(100%, calc(100vw - 8px));
+  max-height: calc(100dvh - 8px);
+  padding: 16px;
+  border-radius: 22px;
+}
+
+.route-mobile-mode #receivables-modal .modal-head .modal-note {
+  display: none;
+}
+
+.route-mobile-mode #receivables-modal .modal-body {
+  margin-top: 12px;
+  gap: 10px;
+}
+
+.route-mobile-mode .receivables-layout {
+  gap: 12px;
+  padding: 0;
+}
+
+.route-mobile-mode .receivables-customer-list {
+  max-height: min(24vh, 220px);
+}
+
+.route-mobile-mode .receivables-summary-card {
+  padding: 12px;
+  gap: 10px;
+}
+
+.route-mobile-mode .receivables-summary-card h4 {
+  font-size: 1.1rem;
+}
+
+.route-mobile-mode .receivables-compact-summary {
+  display: grid;
+  grid-template-columns: 1fr;
 }
 
 .route-mobile-mode .payment-summary-stack {
@@ -3007,6 +3486,7 @@ h3 {
 @media (pointer: coarse) {
   .field input,
   .field select,
+  .field textarea,
   .stepper-wrap input,
   [data-touch-guard="true"] {
     min-height: 52px;
@@ -3208,7 +3688,8 @@ h3 {
   .admin-product-create-form,
   .admin-summary-grid,
   .admin-metrics-grid,
-  .admin-editor-layout {
+  .admin-editor-layout,
+  .receivables-layout {
     grid-template-columns: 1fr;
   }
 
@@ -3265,6 +3746,7 @@ h3 {
 
   .quick-import-card,
   .register-card,
+  .cashier-blind-audit-card,
   .detail-viewer-card,
   .admin-card,
   .editor-card {
@@ -3295,6 +3777,24 @@ h3 {
 
   .comparison-tables {
     grid-template-columns: 1fr;
+  }
+
+  .approvals-mobile-shell {
+    width: min(100% - 8px, 100%);
+    margin: 8px auto 20px;
+  }
+
+  .approvals-mobile-head,
+  .approvals-mobile-head-actions,
+  .approvals-mobile-action-row,
+  .approvals-mobile-request-meta,
+  .approvals-mobile-request-line {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .approvals-mobile-head-actions {
+    justify-content: flex-start;
   }
 }
 

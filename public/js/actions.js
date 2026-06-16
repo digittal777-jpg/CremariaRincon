@@ -79,6 +79,71 @@ function markAdminWorkspaceLoaded(sectionKey) {
   state.admin.workspaceLoadedAt[sectionKey] = Date.now();
 }
 
+function resetAdminSensitiveWorkspaceData() {
+  state.admin.snapshot = null;
+  state.admin.inventoryProducts = [];
+  state.admin.inventoryComparison = null;
+  state.admin.metrics = null;
+  state.admin.backupsStatus = null;
+  state.admin.auditLogs = [];
+  state.admin.cashiers = [];
+  state.admin.branches = [];
+  state.admin.merchandiseRequests = [];
+  state.admin.editorData.sales = [];
+  state.admin.editorData.registerEvents = [];
+  state.admin.editorData.inventoryMovements = [];
+  state.admin.workspaceLoadedAt = {};
+  state.admin.capabilitiesResolved = false;
+  state.admin.metricsLoading = false;
+  state.admin.configLoading = false;
+  state.admin.weightedAudit.sessions = [];
+  state.admin.weightedAudit.currentSession = null;
+  state.admin.weightedAudit.loading = false;
+  state.admin.weightedAudit.saving = false;
+  state.admin.weightedAudit.draftItems = {};
+  state.admin.weightedAudit.notesDraft = "";
+}
+
+function isAdminWorkspaceBlockedByOwner() {
+  return Boolean(
+    state.admin.authenticated
+    && state.admin.capabilitiesResolved
+    && Array.isArray(state.adminCapabilities)
+    && state.adminCapabilities.length === 0
+    && !state.owner.authenticated,
+  );
+}
+
+function shouldRevalidateAdminCapabilities() {
+  return Boolean(
+    state.admin.authenticated
+    && (
+      !state.admin.capabilitiesResolved
+      || (
+        !state.owner.authenticated
+        && Array.isArray(state.adminCapabilities)
+        && state.adminCapabilities.length === 0
+      )
+    ),
+  );
+}
+
+function normalizeSnapshotForAdminAccess(snapshot) {
+  const sourceSnapshot = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const adminAccessExplicitlyBlocked = Boolean(
+    sourceSnapshot?.auth?.adminAuthenticated
+    && sourceSnapshot?.auth?.permissions?.canViewAdmin === false
+    && !sourceSnapshot?.auth?.ownerAuthenticated,
+  );
+  return {
+    sourceSnapshot,
+    adminAccessExplicitlyBlocked,
+    effectiveSnapshot: adminAccessExplicitlyBlocked
+      ? buildPublicSnapshotCacheView(sourceSnapshot)
+      : sourceSnapshot,
+  };
+}
+
 function shouldRefreshAdminWorkspaceSection(sectionKey, options) {
   if (options.force || options.ignoreFresh) {
     return true;
@@ -256,28 +321,150 @@ function applyBusinessBranding() {
   }
 }
 
+function syncAuthStateFromSnapshot(snapshotAuth) {
+  if (!snapshotAuth || typeof snapshotAuth !== "object") {
+    return;
+  }
+
+  const adminAuthenticated = Boolean(snapshotAuth.adminAuthenticated);
+  const ownerAuthenticated = Boolean(snapshotAuth.ownerAuthenticated);
+  const cashierAuthenticated = Boolean(snapshotAuth.cashierAuthenticated);
+
+  state.admin.authenticated = adminAuthenticated;
+  state.admin.username = adminAuthenticated
+    ? String(snapshotAuth.admin?.username || state.admin.username || "admin")
+    : String(state.admin.username || "admin");
+  state.admin.sessionExpiresAt = adminAuthenticated
+    ? snapshotAuth.admin?.sessionExpiresAt || state.admin.sessionExpiresAt || null
+    : null;
+  if (!adminAuthenticated) {
+    state.admin.csrfToken = "";
+    if (typeof closeAdminModal === "function") {
+      closeAdminModal();
+    }
+  }
+
+  state.owner.authenticated = ownerAuthenticated;
+  state.owner.username = ownerAuthenticated
+    ? String(snapshotAuth.owner?.username || state.owner.username || "owner")
+    : String(state.owner.username || "owner");
+  state.owner.sessionExpiresAt = ownerAuthenticated
+    ? snapshotAuth.owner?.sessionExpiresAt || state.owner.sessionExpiresAt || null
+    : null;
+  if (!ownerAuthenticated) {
+    state.owner.csrfToken = "";
+    state.owner.accessLoaded = false;
+    if (typeof closeOwnerConsoleModal === "function") {
+      closeOwnerConsoleModal();
+    }
+    if (typeof closeOwnerAuthModal === "function") {
+      closeOwnerAuthModal();
+    }
+  }
+  if (!adminAuthenticated && !ownerAuthenticated) {
+    state.admin.capabilitiesResolved = false;
+  }
+
+  if (cashierAuthenticated) {
+    state.cashier.id = Number(snapshotAuth.cashier?.id || 0) || state.cashier.id || null;
+    state.cashier.name = String(snapshotAuth.cashier?.name || state.cashier.name || "");
+    state.cashier.branch = String(snapshotAuth.cashier?.branch || state.cashier.branch || "");
+    state.cashier.authenticated = Boolean(
+      state.cashier.token
+      && state.cashier.name
+      && state.cashier.branch,
+    );
+  } else if (typeof clearCashierSessionState === "function") {
+    clearCashierSessionState();
+  } else {
+    state.cashier.id = null;
+    state.cashier.token = "";
+    state.cashier.name = "";
+    state.cashier.branch = "";
+    state.cashier.authenticated = false;
+    if (typeof persistCashierSession === "function") {
+      persistCashierSession();
+    }
+  }
+}
+
 function applySnapshot(snapshot, options = {}) {
   const renderStartedAt =
     typeof performance !== "undefined" ? performance.now() : Date.now();
   const previousCategories = JSON.stringify((state.categories || []).map((category) => [category.id, category.code]));
   const previousUnits = JSON.stringify((state.units || []).map((unit) => [unit.id, unit.code, unit.step]));
   const previousAttributes = JSON.stringify((state.productAttributeDefinitions || []).map((definition) => [definition.id, definition.key]));
-  state.store = snapshot.store || state.store;
-  state.profile = snapshot.profile || state.profile;
-  state.enabledModules = Array.isArray(snapshot.enabledModules) ? snapshot.enabledModules : state.enabledModules;
-  state.adminCapabilities = Array.isArray(snapshot.adminCapabilities) ? snapshot.adminCapabilities : state.adminCapabilities;
-  state.categories = Array.isArray(snapshot.categories) ? snapshot.categories : state.categories;
-  state.units = Array.isArray(snapshot.units) ? snapshot.units : state.units;
-  state.productAttributeDefinitions = Array.isArray(snapshot.productAttributeDefinitions)
-    ? snapshot.productAttributeDefinitions
+  const {
+    sourceSnapshot,
+    adminAccessExplicitlyBlocked: snapshotAdminAccessExplicitlyBlocked,
+    effectiveSnapshot,
+  } = normalizeSnapshotForAdminAccess(snapshot);
+  if (options.syncAuthState === true) {
+    syncAuthStateFromSnapshot(sourceSnapshot?.auth);
+  }
+  const snapshotAdminCapabilities = Array.isArray(sourceSnapshot.adminCapabilities)
+    ? sourceSnapshot.adminCapabilities
+    : null;
+  const snapshotAdminAccessAllowed = sourceSnapshot?.auth?.permissions?.canViewAdmin === true;
+  const snapshotKeepsPrivilegedAccess = Boolean(
+    sourceSnapshot?.auth?.ownerAuthenticated
+      || sourceSnapshot?.auth?.role === "owner"
+      || snapshotAdminAccessAllowed
+  );
+  state.store = effectiveSnapshot.store || state.store;
+  state.profile = effectiveSnapshot.profile || state.profile;
+  state.enabledModules = Array.isArray(effectiveSnapshot.enabledModules) ? effectiveSnapshot.enabledModules : state.enabledModules;
+  if (snapshotAdminCapabilities) {
+    state.admin.capabilitiesResolved = Boolean(
+      sourceSnapshot?.auth?.adminAuthenticated || sourceSnapshot?.auth?.ownerAuthenticated,
+    );
+  }
+  if (
+    snapshotAdminCapabilities
+    && (
+      snapshotAdminCapabilities.length > 0
+      || (!state.admin.authenticated && !state.owner.authenticated)
+      || snapshotKeepsPrivilegedAccess
+      || snapshotAdminAccessExplicitlyBlocked
+    )
+  ) {
+    state.adminCapabilities = snapshotAdminCapabilities;
+  }
+  state.categories = Array.isArray(effectiveSnapshot.categories) ? effectiveSnapshot.categories : state.categories;
+  state.units = Array.isArray(effectiveSnapshot.units) ? effectiveSnapshot.units : state.units;
+  state.productAttributeDefinitions = Array.isArray(effectiveSnapshot.productAttributeDefinitions)
+    ? effectiveSnapshot.productAttributeDefinitions
     : state.productAttributeDefinitions;
-  state.products = Array.isArray(snapshot.products) ? snapshot.products : [];
-  state.lowStock = Array.isArray(snapshot.lowStock) ? snapshot.lowStock : [];
-  state.recentSales = Array.isArray(snapshot.recentSales) ? snapshot.recentSales : [];
-  state.recentActivity = Array.isArray(snapshot.recentActivity) ? snapshot.recentActivity : [];
-  state.salesByHour = Array.isArray(snapshot.salesByHour) ? snapshot.salesByHour : [];
-  state.shiftSummary = Array.isArray(snapshot.shiftSummary) ? snapshot.shiftSummary : [];
-  state.summary = snapshot.summary || state.summary;
+  state.products = Array.isArray(effectiveSnapshot.products) ? effectiveSnapshot.products : [];
+  state.lowStock = Array.isArray(effectiveSnapshot.lowStock) ? effectiveSnapshot.lowStock : [];
+  state.recentSales = Array.isArray(effectiveSnapshot.recentSales) ? effectiveSnapshot.recentSales : [];
+  state.recentActivity = Array.isArray(effectiveSnapshot.recentActivity) ? effectiveSnapshot.recentActivity : [];
+  state.salesByHour = Array.isArray(effectiveSnapshot.salesByHour) ? effectiveSnapshot.salesByHour : [];
+  state.shiftSummary = Array.isArray(effectiveSnapshot.shiftSummary) ? effectiveSnapshot.shiftSummary : [];
+  state.summary = effectiveSnapshot.summary || state.summary;
+  if (snapshotAdminAccessExplicitlyBlocked) {
+    state.admin.snapshot = effectiveSnapshot;
+    state.admin.inventoryProducts = Array.isArray(effectiveSnapshot.inventoryProducts)
+      ? effectiveSnapshot.inventoryProducts
+      : [];
+    state.admin.inventoryComparison = effectiveSnapshot.inventoryComparison || null;
+    state.admin.metrics = null;
+    state.admin.backupsStatus = null;
+    state.admin.auditLogs = [];
+    state.admin.cashiers = [];
+    state.admin.branches = [];
+    state.admin.merchandiseRequests = [];
+    state.admin.editorData.sales = [];
+    state.admin.editorData.registerEvents = [];
+    state.admin.editorData.inventoryMovements = [];
+    state.admin.weightedAudit.sessions = [];
+    state.admin.weightedAudit.currentSession = null;
+    state.admin.weightedAudit.draftItems = {};
+    state.admin.weightedAudit.notesDraft = "";
+    if (typeof closeAdminModal === "function") {
+      closeAdminModal();
+    }
+  }
   state.admin.editorData.sales = state.recentSales.slice(0, 16);
   if (
     state.selectedCategory !== "all"
@@ -334,6 +521,216 @@ function applyPublicSnapshot(sourceSnapshot = buildPersistedSnapshot(), options 
     persistPreparedSnapshot: false,
   });
   return publicSnapshot;
+}
+
+function sanitizeAfterCashierSessionLoss(sourceSnapshot = buildPersistedSnapshot(), options = {}) {
+  if (state.admin.authenticated || state.owner.authenticated) {
+    return false;
+  }
+
+  applyPublicSnapshot(sourceSnapshot, options);
+  return true;
+}
+
+function clearClientBusinessResetState(options = {}) {
+  if (typeof clearCartForSessionChange === "function") {
+    clearCartForSessionChange();
+  } else if (Array.isArray(state.cart) && state.cart.length > 0) {
+    state.cart = [];
+    if (typeof saveCart === "function") {
+      saveCart();
+    }
+  }
+
+  if (typeof clearCashierSessionState === "function") {
+    clearCashierSessionState();
+  } else {
+    state.cashier.id = null;
+    state.cashier.token = "";
+    state.cashier.name = "";
+    state.cashier.branch = "";
+    state.cashier.authenticated = false;
+    if (typeof persistCashierSession === "function") {
+      persistCashierSession();
+    }
+  }
+
+  state.pendingQueue = [];
+  state.offlineSales = [];
+  state.offlineReceivablePayments = [];
+  state.receivablesCache = { branches: {} };
+  state.register.events = [];
+  state.syncingQueue = false;
+
+  if (typeof saveQueue === "function") {
+    saveQueue();
+  }
+  if (typeof saveOfflineSales === "function") {
+    saveOfflineSales();
+  }
+  if (typeof saveOfflineReceivablePayments === "function") {
+    saveOfflineReceivablePayments();
+  }
+  if (typeof saveReceivablesCache === "function") {
+    saveReceivablesCache();
+  }
+  if (typeof saveRegisterEvents === "function") {
+    saveRegisterEvents();
+  }
+  if (typeof clearReceivablesSessionChange === "function") {
+    clearReceivablesSessionChange();
+  }
+  if (typeof persistJson === "function" && typeof STORAGE_KEYS === "object") {
+    if (options.clearSnapshot === true) {
+      persistJson(STORAGE_KEYS.snapshot, null);
+    }
+    persistJson(STORAGE_KEYS.preparedSnapshots, {});
+    persistJson(STORAGE_KEYS.receivablesCache, { branches: {} });
+    persistJson(STORAGE_KEYS.cashierOfflineProfiles, []);
+  }
+  if (typeof renderSyncStatus === "function") {
+    renderSyncStatus();
+  }
+}
+
+function normalizeBranchCodeForClientReset(branchCode) {
+  return String(branchCode || "").trim().toLowerCase();
+}
+
+function getQueuedOperationBranchForClientReset(operation = {}) {
+  if (operation?.branch) {
+    return normalizeBranchCodeForClientReset(operation.branch);
+  }
+
+  try {
+    const payload = JSON.parse(operation?.body || "{}");
+    return normalizeBranchCodeForClientReset(payload?.branch);
+  } catch (_error) {
+    return "";
+  }
+}
+
+function clearAffectedBranchOperationalState(branches = []) {
+  const affectedBranches = new Set(
+    (Array.isArray(branches) ? branches : [])
+      .map((branch) => normalizeBranchCodeForClientReset(branch))
+      .filter(Boolean),
+  );
+  if (affectedBranches.size === 0) {
+    return false;
+  }
+
+  const activeCashierBranch = normalizeBranchCodeForClientReset(state.cashier.branch);
+  if (activeCashierBranch && affectedBranches.has(activeCashierBranch)) {
+    if (typeof clearCartForSessionChange === "function") {
+      clearCartForSessionChange();
+    } else if (Array.isArray(state.cart) && state.cart.length > 0) {
+      state.cart = [];
+      if (typeof saveCart === "function") {
+        saveCart();
+      }
+    }
+    state.register.summary = getEmptyRegisterSummary();
+    if (typeof renderRegisterSummaryPill === "function") {
+      renderRegisterSummaryPill();
+    }
+  }
+
+  state.pendingQueue = state.pendingQueue.filter((operation) => {
+    const branch = getQueuedOperationBranchForClientReset(operation);
+    return !branch || !affectedBranches.has(branch);
+  });
+  state.offlineSales = state.offlineSales.filter((record) =>
+    !affectedBranches.has(normalizeBranchCodeForClientReset(record?.branch)),
+  );
+  state.offlineReceivablePayments = state.offlineReceivablePayments.filter((record) =>
+    !affectedBranches.has(normalizeBranchCodeForClientReset(record?.branch)),
+  );
+  state.register.events = state.register.events.filter((event) =>
+    !affectedBranches.has(normalizeBranchCodeForClientReset(event?.branch)),
+  );
+
+  if (typeof saveQueue === "function") {
+    saveQueue();
+  }
+  if (typeof saveOfflineSales === "function") {
+    saveOfflineSales();
+  }
+  if (typeof saveOfflineReceivablePayments === "function") {
+    saveOfflineReceivablePayments();
+  }
+  if (typeof saveRegisterEvents === "function") {
+    saveRegisterEvents();
+  }
+  if (typeof persistJson === "function" && typeof STORAGE_KEYS === "object") {
+    const currentPreparedSnapshots = readStorageJson(STORAGE_KEYS.preparedSnapshots, {});
+    const nextPreparedSnapshots = Object.fromEntries(
+      Object.entries(currentPreparedSnapshots && typeof currentPreparedSnapshots === "object"
+        ? currentPreparedSnapshots
+        : {}
+      ).filter(([branchCode]) => !affectedBranches.has(normalizeBranchCodeForClientReset(branchCode))),
+    );
+    const currentReceivablesCache = readStorageJson(STORAGE_KEYS.receivablesCache, { branches: {} });
+    const currentReceivablesBranches =
+      currentReceivablesCache?.branches && typeof currentReceivablesCache.branches === "object"
+        ? currentReceivablesCache.branches
+        : {};
+    const nextReceivablesBranches = Object.fromEntries(
+      Object.entries(currentReceivablesBranches).filter(
+        ([branchCode]) => !affectedBranches.has(normalizeBranchCodeForClientReset(branchCode)),
+      ),
+    );
+    persistJson(STORAGE_KEYS.preparedSnapshots, nextPreparedSnapshots);
+    persistJson(STORAGE_KEYS.receivablesCache, { branches: nextReceivablesBranches });
+    persistJson(STORAGE_KEYS.snapshot, null);
+  }
+  const currentReceivablesBranches =
+    state.receivablesCache?.branches && typeof state.receivablesCache.branches === "object"
+      ? state.receivablesCache.branches
+      : {};
+  state.receivablesCache = {
+    branches: Object.fromEntries(
+      Object.entries(currentReceivablesBranches).filter(
+        ([branchCode]) => !affectedBranches.has(normalizeBranchCodeForClientReset(branchCode)),
+      ),
+    ),
+  };
+  if (typeof clearReceivablesSessionChange === "function" && activeCashierBranch && affectedBranches.has(activeCashierBranch)) {
+    clearReceivablesSessionChange();
+  }
+  if (typeof renderSyncStatus === "function") {
+    renderSyncStatus();
+  }
+
+  return true;
+}
+
+function prepareForFullDatabaseInstallReload() {
+  clearClientBusinessResetState({ clearSnapshot: true });
+  state.admin.authenticated = false;
+  state.admin.csrfToken = "";
+  state.admin.sessionExpiresAt = null;
+  state.admin.setupAllowed = false;
+  state.admin.username = String(state.admin.username || "admin");
+  resetAdminSensitiveWorkspaceData();
+  state.owner.authenticated = false;
+  state.owner.csrfToken = "";
+  state.owner.sessionExpiresAt = null;
+  state.owner.setupAllowed = false;
+  state.owner.accessLoaded = false;
+  state.adminCapabilities = [];
+  if (typeof closeAdminModal === "function") {
+    closeAdminModal();
+  }
+  if (typeof closeOwnerConsoleModal === "function") {
+    closeOwnerConsoleModal();
+  }
+  if (typeof closeOwnerAuthModal === "function") {
+    closeOwnerAuthModal();
+  }
+  if (typeof updateModuleVisibility === "function") {
+    updateModuleVisibility();
+  }
 }
 
 function rebuildInventoryDerivedState() {
@@ -396,6 +793,14 @@ function applyOptimisticSale(payload) {
   const itemCount = roundStock(
     payload.items.reduce((sum, item) => sum + roundStock(item.quantity), 0),
   );
+  const receivedAmount = roundMoney(payload.receivedAmount || 0);
+  const paymentMethod = payload.paymentMethod || "Efectivo";
+  const receivedPaymentMethod = getSaleReceivedPaymentMethod(
+    paymentMethod,
+    payload.receivedPaymentMethod || "",
+    receivedAmount,
+  );
+  const pendingAmount = getSalePendingAmount(total, receivedAmount, paymentMethod);
 
   payload.items.forEach((item) => {
     state.products = state.products.map((product) => {
@@ -420,15 +825,18 @@ function applyOptimisticSale(payload) {
     shift: payload.shift,
     cashier: payload.cashier,
     branch: payload.branch,
-    paymentMethod: payload.paymentMethod,
+    paymentMethod,
+    customerName: payload.customerName || "",
     subtotal: total,
     total,
     itemCount,
     notes: payload.notes || "",
-    receivedAmount: payload.receivedAmount,
+    receivedAmount,
+    receivedPaymentMethod,
+    pendingAmount,
     changeAmount:
-      payload.paymentMethod === "Efectivo"
-        ? roundMoney(payload.receivedAmount - total)
+      paymentMethod === "Efectivo"
+        ? roundMoney(receivedAmount - total)
         : 0,
     createdAt: new Date().toISOString(),
     items: payload.items.map((item) => ({
@@ -506,26 +914,33 @@ async function refreshCurrentSnapshot(branch = getActiveCashierBranch()) {
       headers: snapshotHeaders,
     },
   );
-  applySnapshot(snapshot);
+  applySnapshot(snapshot, { syncAuthState: true });
   return snapshot;
 }
 
 function syncAdminSharedState(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") {
+  const {
+    effectiveSnapshot,
+    adminAccessExplicitlyBlocked: snapshotAdminAccessExplicitlyBlocked,
+  } = normalizeSnapshotForAdminAccess(snapshot);
+  if (!effectiveSnapshot || typeof effectiveSnapshot !== "object") {
     return;
   }
 
   const previousCategories = JSON.stringify((state.categories || []).map((category) => [category.id, category.code]));
   const previousUnits = JSON.stringify((state.units || []).map((unit) => [unit.id, unit.code, unit.step]));
   const previousAttributes = JSON.stringify((state.productAttributeDefinitions || []).map((definition) => [definition.id, definition.key]));
-  const nextStore = snapshot.store && typeof snapshot.store === "object"
+  const snapshotAdminCapabilities = Array.isArray(effectiveSnapshot.adminCapabilities)
+    ? effectiveSnapshot.adminCapabilities
+    : null;
+  const nextStore = effectiveSnapshot.store && typeof effectiveSnapshot.store === "object"
     ? {
         ...state.store,
-        ...snapshot.store,
+        ...effectiveSnapshot.store,
       }
     : null;
 
-  if (nextStore && snapshot.store?.currentBranch === "all" && state.store?.currentBranch) {
+  if (nextStore && effectiveSnapshot.store?.currentBranch === "all" && state.store?.currentBranch) {
     nextStore.currentBranch = state.store.currentBranch;
     nextStore.currentBranchLabel = state.store.currentBranchLabel || nextStore.currentBranchLabel;
   }
@@ -533,15 +948,15 @@ function syncAdminSharedState(snapshot) {
   if (nextStore) {
     state.store = nextStore;
   }
-  state.profile = snapshot.profile || state.profile;
-  state.enabledModules = Array.isArray(snapshot.enabledModules) ? snapshot.enabledModules : state.enabledModules;
-  state.adminCapabilities = Array.isArray(snapshot.adminCapabilities)
-    ? snapshot.adminCapabilities
-    : state.adminCapabilities;
-  state.categories = Array.isArray(snapshot.categories) ? snapshot.categories : state.categories;
-  state.units = Array.isArray(snapshot.units) ? snapshot.units : state.units;
-  state.productAttributeDefinitions = Array.isArray(snapshot.productAttributeDefinitions)
-    ? snapshot.productAttributeDefinitions
+  state.profile = effectiveSnapshot.profile || state.profile;
+  state.enabledModules = Array.isArray(effectiveSnapshot.enabledModules) ? effectiveSnapshot.enabledModules : state.enabledModules;
+  if (snapshotAdminCapabilities) {
+    state.adminCapabilities = snapshotAdminCapabilities;
+  }
+  state.categories = Array.isArray(effectiveSnapshot.categories) ? effectiveSnapshot.categories : state.categories;
+  state.units = Array.isArray(effectiveSnapshot.units) ? effectiveSnapshot.units : state.units;
+  state.productAttributeDefinitions = Array.isArray(effectiveSnapshot.productAttributeDefinitions)
+    ? effectiveSnapshot.productAttributeDefinitions
     : state.productAttributeDefinitions;
 
   if (
@@ -567,19 +982,35 @@ function syncAdminSharedState(snapshot) {
   if (catalogsChanged && typeof syncAdminProductCatalogs === "function") {
     syncAdminProductCatalogs();
   }
+  if (snapshotAdminAccessExplicitlyBlocked) {
+    state.admin.metrics = null;
+    state.admin.backupsStatus = null;
+    state.admin.auditLogs = [];
+    state.admin.cashiers = [];
+    state.admin.branches = [];
+    state.admin.merchandiseRequests = [];
+    state.admin.editorData.sales = [];
+    state.admin.editorData.registerEvents = [];
+    state.admin.editorData.inventoryMovements = [];
+    state.admin.weightedAudit.sessions = [];
+    state.admin.weightedAudit.currentSession = null;
+    state.admin.weightedAudit.draftItems = {};
+    state.admin.weightedAudit.notesDraft = "";
+  }
 }
 
 function applyAdminSnapshot(snapshot) {
-  syncAdminSharedState(snapshot);
-  state.admin.snapshot = snapshot || null;
-  state.admin.inventoryProducts = Array.isArray(snapshot?.inventoryProducts)
-    ? snapshot.inventoryProducts
-    : Array.isArray(snapshot?.products)
-      ? snapshot.products
+  const { effectiveSnapshot } = normalizeSnapshotForAdminAccess(snapshot);
+  syncAdminSharedState(effectiveSnapshot);
+  state.admin.snapshot = effectiveSnapshot || null;
+  state.admin.inventoryProducts = Array.isArray(effectiveSnapshot?.inventoryProducts)
+    ? effectiveSnapshot.inventoryProducts
+    : Array.isArray(effectiveSnapshot?.products)
+      ? effectiveSnapshot.products
       : [];
-  state.admin.inventoryComparison = snapshot?.inventoryComparison || null;
-  if (snapshot?.store?.currentBranch) {
-    state.admin.branch = snapshot.store.currentBranch;
+  state.admin.inventoryComparison = effectiveSnapshot?.inventoryComparison || null;
+  if (effectiveSnapshot?.store?.currentBranch) {
+    state.admin.branch = effectiveSnapshot.store.currentBranch;
   }
   renderAdminModal();
 }
@@ -589,6 +1020,7 @@ async function loadAdminSnapshot(branch = getAdminBranch()) {
     `/api/bootstrap?branch=${encodeURIComponent(branch)}&includeInactiveInventory=1`,
   );
   applyAdminSnapshot(snapshot);
+  state.admin.capabilitiesResolved = Array.isArray(snapshot.adminCapabilities);
   markAdminWorkspaceLoaded("snapshot");
   return snapshot;
 }
@@ -730,6 +1162,7 @@ async function loadAdminConfig() {
     state.profile = response.businessProfile || state.profile;
     state.enabledModules = Array.isArray(response.enabledModules) ? response.enabledModules : state.enabledModules;
     state.adminCapabilities = Array.isArray(response.adminCapabilities) ? response.adminCapabilities : state.adminCapabilities;
+    state.admin.capabilitiesResolved = Array.isArray(response.adminCapabilities);
     state.categories = Array.isArray(response.categories)
       ? response.categories.filter((category) => category.active !== false)
       : state.categories;
@@ -963,6 +1396,20 @@ function updateWeightedAuditFilters(partial = {}) {
     ...partial,
   };
   renderAdminWeightedAuditPanel();
+}
+
+function buildWeightedAuditPayloadItems(items = []) {
+  return items
+    .map((item) => {
+      const preview = getWeightedAuditPreviewItem(item);
+      return {
+        itemId: item.id,
+        productId: item.productId,
+        countedStock: preview.rawCountedStock,
+        reason: preview.reason || "",
+      };
+    })
+    .filter((item) => String(item.countedStock || "").trim() !== "");
 }
 
 function fillVisibleWeightedAuditDraftsWithPos() {
@@ -1234,17 +1681,7 @@ async function saveAdminWeightedAuditItems() {
   }
 
   captureWeightedAuditDraftFromDom();
-  const payloadItems = (session.items || [])
-    .map((item) => {
-      const preview = getWeightedAuditPreviewItem(item);
-      return {
-        itemId: item.id,
-        productId: item.productId,
-        countedStock: preview.rawCountedStock,
-        reason: preview.reason || "",
-      };
-    })
-    .filter((item) => String(item.countedStock || "").trim() !== "");
+  const payloadItems = buildWeightedAuditPayloadItems(session.items || []);
   const nextNotes = state.admin.weightedAudit.notesDraft || "";
 
   if (payloadItems.length === 0 && !nextNotes.trim()) {
@@ -1284,6 +1721,7 @@ async function closeAdminWeightedAuditSession() {
   renderAdminWeightedAuditPanel();
   try {
     captureWeightedAuditDraftFromDom();
+    const payloadItems = buildWeightedAuditPayloadItems(session.items || []);
     const response = await requestAdminJson(
       `/api/admin/weighted-audit/sessions/${session.id}/complete`,
       {
@@ -1291,6 +1729,7 @@ async function closeAdminWeightedAuditSession() {
         body: JSON.stringify({
           completedBy: state.admin.username || "admin",
           notes: state.admin.weightedAudit.notesDraft || "",
+          items: payloadItems,
         }),
       },
     );
@@ -1322,8 +1761,7 @@ async function refreshAdminWorkspace(options = {}) {
   adminWorkspaceRefreshPromise = (async () => {
     const needsCapabilityBootstrap = Boolean(
       state.admin.authenticated
-      && Array.isArray(state.adminCapabilities)
-      && state.adminCapabilities.length === 0
+      && !state.admin.capabilitiesResolved
       && (
         normalized.snapshot
         || normalized.editorData
@@ -1453,6 +1891,19 @@ async function openAdminModal() {
     }
   }
 
+  if (shouldRevalidateAdminCapabilities()) {
+    try {
+      await loadAdminSnapshot(getAdminBranch());
+    } catch (_error) {
+      // Si falla el bootstrap, dejamos que el refresh normal del modal lo vuelva a intentar.
+    }
+  }
+
+  if (isAdminWorkspaceBlockedByOwner()) {
+    showToast("El owner bloqueo este panel de admin.", "error");
+    return;
+  }
+
   setModalOpen(refs.adminModal, true);
   if (refs.saveAdminBranchButton && !refs.saveAdminBranchButton.dataset.branchCode) {
     resetAdminBranchForm();
@@ -1482,6 +1933,10 @@ async function logoutAdmin() {
   state.admin.authenticated = false;
   state.admin.csrfToken = "";
   state.admin.sessionExpiresAt = null;
+  resetAdminSensitiveWorkspaceData();
+  if (typeof handleApprovalsMobileAdminSessionLoss === "function") {
+    handleApprovalsMobileAdminSessionLoss();
+  }
   closeAdminModal();
   if (!state.cashier.authenticated && !state.owner.authenticated) {
     applyPublicSnapshot(buildPersistedSnapshot());
@@ -1583,7 +2038,11 @@ async function submitAdminAuth() {
     state.admin.csrfToken = String(loginResponse.csrfToken || "");
     state.admin.sessionExpiresAt = loginResponse.sessionExpiresAt || null;
     closeAdminAuthModal();
-    openAdminModal();
+    if (state.mobileApprovals?.active) {
+      await syncApprovalsMobileViewFromLocation({ autoOpenAuth: false });
+    } else {
+      await openAdminModal();
+    }
   } catch (error) {
     showToast(error.message, "error");
   } finally {
@@ -1755,6 +2214,7 @@ async function loadOwnerConsoleConfig() {
     state.owner.templates = Array.isArray(templatesResponse.templates) ? templatesResponse.templates : [];
     state.enabledModules = Array.isArray(response.enabledModules) ? response.enabledModules : state.enabledModules;
     state.adminCapabilities = Array.isArray(response.adminCapabilities) ? response.adminCapabilities : state.adminCapabilities;
+    state.admin.capabilitiesResolved = Array.isArray(response.adminCapabilities);
     state.profile = response.businessProfile || state.profile;
     if (!state.owner.templates.some((template) => template.key === state.owner.templateReset.selectedTemplateKey)) {
       state.owner.templateReset.selectedTemplateKey = state.owner.templates[0]?.key || "";
@@ -1812,6 +2272,7 @@ async function submitOwnerConsole() {
     state.owner.adminSections = Array.isArray(response.adminSections) ? response.adminSections : state.owner.adminSections;
     state.enabledModules = Array.isArray(response.enabledModules) ? response.enabledModules : state.enabledModules;
     state.adminCapabilities = Array.isArray(response.adminCapabilities) ? response.adminCapabilities : state.adminCapabilities;
+    state.admin.capabilitiesResolved = Array.isArray(response.adminCapabilities);
     state.owner.accessLoaded = true;
     updateModuleVisibility();
     if (refs.adminModal?.classList.contains("open")) {
@@ -1895,24 +2356,27 @@ async function applyOwnerTemplateReset() {
     state.productAttributeDefinitions = Array.isArray(response.productAttributeDefinitions)
       ? response.productAttributeDefinitions.filter((definition) => definition.active !== false)
       : state.productAttributeDefinitions;
-    if (response.snapshot) {
-      applySnapshot(response.snapshot);
-    } else {
-      await refreshCurrentSnapshot();
-    }
     state.admin.configured = false;
     state.admin.authenticated = false;
     state.admin.csrfToken = "";
     state.admin.sessionExpiresAt = null;
     state.admin.setupAllowed = false;
+    resetAdminSensitiveWorkspaceData();
     state.owner.configured = true;
     state.owner.authenticated = false;
     state.owner.csrfToken = "";
     state.owner.sessionExpiresAt = null;
     state.owner.setupAllowed = false;
     state.owner.accessLoaded = false;
+    clearClientBusinessResetState();
+    if (response.snapshot) {
+      applyPublicSnapshot(response.snapshot);
+    } else {
+      await refreshCurrentSnapshot();
+    }
     state.owner.templateReset.confirmText = "";
     state.owner.templateReset.confirmReset = false;
+    closeAdminModal();
     closeOwnerConsoleModal();
     closeOwnerAuthModal();
     showToast("Plantilla aplicada y catalogo reconstruido. Vuelve a iniciar sesion como owner o admin.", "success");
@@ -1968,6 +2432,16 @@ async function ensureAdminActionAccess(capabilityCode, blockedMessage) {
   return true;
 }
 
+async function throwAdminResponseError(response, fallbackMessage) {
+  const data = await response.json().catch(() => ({}));
+  const error = new Error(data.message || fallbackMessage);
+  error.statusCode = response.status;
+  if (typeof handleAdminSessionFailure === "function") {
+    handleAdminSessionFailure(error);
+  }
+  throw error;
+}
+
 async function downloadDatabase() {
   if (!await ensureAdminActionAccess("backups", "La descarga de base de datos esta bloqueada por el owner.")) {
     return;
@@ -1979,8 +2453,7 @@ async function downloadDatabase() {
       credentials: "same-origin",
     });
     if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.message || "No fue posible descargar la base de datos.");
+      await throwAdminResponseError(response, "No fue posible descargar la base de datos.");
     }
     const blob = await response.blob();
     const objectUrl = URL.createObjectURL(blob);
@@ -2031,12 +2504,10 @@ async function installDatabase(event) {
     });
 
     if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(
-        data.message || "No fue posible instalar la base de datos.",
-      );
+      await throwAdminResponseError(response, "No fue posible instalar la base de datos.");
     }
 
+    prepareForFullDatabaseInstallReload();
     showToast("Base de datos instalada correctamente. Recargando...", "success");
     refs.installDbInput.value = "";
 
@@ -2101,14 +2572,15 @@ async function installDatabaseFromPc(event) {
       body: formData,
     });
 
-    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(data.message || "No fue posible instalar la base de datos.");
+      await throwAdminResponseError(response, "No fue posible instalar la base de datos.");
     }
+    const data = await response.json().catch(() => ({}));
 
+    prepareForFullDatabaseInstallReload();
     const successMessage = data.backupPath
-      ? `Base instalada correctamente. Respaldo guardado en ${data.backupPath}.`
-      : "Base instalada correctamente.";
+      ? `Base instalada correctamente. Respaldo guardado en ${data.backupPath}. Vuelve a iniciar sesion.`
+      : "Base instalada correctamente. Vuelve a iniciar sesion.";
     showToast(successMessage, "success");
     refs.installDbInput.value = "";
 
@@ -2174,10 +2646,11 @@ async function installExportWorkbookFromPc(event) {
       body: formData,
     });
 
-    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(data.message || "No fue posible instalar el Excel exportado.");
+      await throwAdminResponseError(response, "No fue posible instalar el Excel exportado.");
     }
+    const data = await response.json().catch(() => ({}));
+    clearAffectedBranchOperationalState(data.branches);
 
     const branchText = Array.isArray(data.branches) && data.branches.length > 0
       ? data.branches.map((branch) => getBranchLabel(branch)).join(", ")
@@ -2290,15 +2763,18 @@ function buildOfflineSalesAuditPayload(options = {}) {
     })
     .map((record) => {
       const displayState = getOfflineSaleDisplayState(record);
-      return {
-        clientSaleId: record.clientSaleId,
-        localSaleId: record.localSaleId,
-        localTicketNumber: record.localTicketNumber,
-        branch: record.branch,
-        cashier: record.cashier,
-        shift: record.shift,
-        paymentMethod: record.paymentMethod,
-        total: record.total,
+        return {
+          clientSaleId: record.clientSaleId,
+          localSaleId: record.localSaleId,
+          localTicketNumber: record.localTicketNumber,
+          branch: record.branch,
+          cashier: record.cashier,
+          shift: record.shift,
+          paymentMethod: record.paymentMethod,
+          receivedPaymentMethod: record.receivedPaymentMethod || "",
+          receivedAmount: record.receivedAmount || 0,
+          customerName: record.customerName || "",
+          total: record.total,
         itemCount: record.itemCount,
         createdAt: record.createdAt,
         queuedAt: record.queuedAt,
@@ -2332,6 +2808,9 @@ function buildOfflineSalesAuditPayload(options = {}) {
     },
     pendingQueueCount: state.pendingQueue.length,
     offlineSales: records,
+    offlineReceivablePayments: Array.isArray(state.offlineReceivablePayments)
+      ? state.offlineReceivablePayments
+      : [],
   };
 }
 
@@ -2429,6 +2908,8 @@ function downloadDebugStateFromDev() {
     syncingQueue: state.syncingQueue,
     pendingQueue: state.pendingQueue,
     offlineSales: state.offlineSales,
+    offlineReceivablePayments: state.offlineReceivablePayments,
+    receivablesCache: state.receivablesCache,
     registerEvents: state.register.events,
     performance: state.performance,
     summary: state.summary,
@@ -3036,8 +3517,7 @@ function exportWorkbook() {
   })
     .then(async (response) => {
       if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.message || "No fue posible exportar el Excel.");
+        await throwAdminResponseError(response, "No fue posible exportar el Excel.");
       }
 
       return response.blob();

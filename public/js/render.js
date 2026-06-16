@@ -84,18 +84,46 @@ function renderCashierSession() {
   const sessionText = state.cashier.authenticated
     ? `${cashierLabel} en ${branchLabel}`
     : "Sin iniciar sesion";
-  const offlineSalesSummary = typeof getOfflineSalesStatusSummary === "function"
-    ? getOfflineSalesStatusSummary()
+  const offlineOperationSummary = typeof getOfflineOperationStatusSummary === "function"
+    ? getOfflineOperationStatusSummary()
     : {
         pending: 0,
         requiresReview: 0,
         synced: 0,
         rejected: 0,
         outstanding: 0,
+        sales: {
+          pending: 0,
+          requiresReview: 0,
+          synced: 0,
+          rejected: 0,
+          outstanding: 0,
+        },
+        receivablePayments: {
+          pending: 0,
+          requiresReview: 0,
+          synced: 0,
+          rejected: 0,
+          outstanding: 0,
+        },
       };
-  const pendingOfflineSalesCount = typeof getPendingOfflineSalesCount === "function"
-    ? getPendingOfflineSalesCount()
-    : 0;
+  const pendingOfflineOperationCount = Math.max(
+    0,
+    Number(offlineOperationSummary.outstanding || 0),
+  );
+  const pendingOfflineSalesCount = Math.max(
+    0,
+    Number(offlineOperationSummary.sales?.outstanding || 0),
+  );
+  const pendingOfflinePaymentCount = Math.max(
+    0,
+    Number(offlineOperationSummary.receivablePayments?.outstanding || 0),
+  );
+  const offlineOperationLabel = pendingOfflinePaymentCount > 0 && pendingOfflineSalesCount > 0
+    ? "movimiento(s)"
+    : pendingOfflinePaymentCount > 0
+      ? "abono(s)"
+      : "venta(s)";
 
   if (refs.branchDisplay) {
     refs.branchDisplay.value = branchLabel;
@@ -111,16 +139,16 @@ function renderCashierSession() {
 
   if (refs.cashierSessionHelper) {
     refs.cashierSessionHelper.textContent = state.cashier.authenticated
-      ? pendingOfflineSalesCount > 0
-        ? offlineSalesSummary.requiresReview > 0
-          ? `Este dispositivo tiene ${pendingOfflineSalesCount} venta(s) offline pendientes; ${offlineSalesSummary.requiresReview} requiere(n) revision antes de cerrar la cola.`
-          : `Este dispositivo tiene ${pendingOfflineSalesCount} venta(s) offline pendientes por sincronizar.`
+      ? pendingOfflineOperationCount > 0
+        ? offlineOperationSummary.requiresReview > 0
+          ? `Este dispositivo tiene ${pendingOfflineOperationCount} ${offlineOperationLabel} offline pendiente(s); ${offlineOperationSummary.requiresReview} requiere(n) revision antes de cerrar la cola.`
+          : `Este dispositivo tiene ${pendingOfflineOperationCount} ${offlineOperationLabel} offline pendiente(s) por sincronizar.`
         : "Puedes cambiar de sucursal o cerrar la sesion del cajero cuando lo necesites."
       : state.online
-        ? pendingOfflineSalesCount > 0
-          ? offlineSalesSummary.requiresReview > 0
-            ? `Tienes ${pendingOfflineSalesCount} venta(s) offline pendientes. Inicia sesion del mismo cajero y revisa las que quedaron en conflicto.`
-            : `Tienes ${pendingOfflineSalesCount} venta(s) offline pendientes. Inicia sesion del mismo cajero para sincronizarlas.`
+        ? pendingOfflineOperationCount > 0
+          ? offlineOperationSummary.requiresReview > 0
+            ? `Tienes ${pendingOfflineOperationCount} ${offlineOperationLabel} offline pendiente(s). Inicia sesion del mismo cajero y revisa lo que quedo en conflicto.`
+            : `Tienes ${pendingOfflineOperationCount} ${offlineOperationLabel} offline pendiente(s). Inicia sesion del mismo cajero para sincronizarlos.`
           : "Selecciona sucursal y entra con la clave del cajero para empezar a vender."
         : "Sin internet: si este cajero ya entro antes en este dispositivo y sucursal, puedes iniciar con su clave para seguir vendiendo offline.";
   }
@@ -141,6 +169,9 @@ function renderCashierSession() {
   }
   if (refs.openFinalCutButton) {
     refs.openFinalCutButton.disabled = isLocked;
+  }
+  if (refs.openReceivablesButton) {
+    refs.openReceivablesButton.disabled = !state.cashier.authenticated;
   }
 
   renderRouteMode();
@@ -198,7 +229,8 @@ function renderCategoryFilters() {
 }
 
 function getFilteredProducts() {
-  const search = refs.searchInput.value.trim().toLowerCase();
+  const rawSearch = refs.searchInput.value.trim();
+  const search = normalizeSearchText(rawSearch);
   if (
     filteredProductsCache.source === state.products
     && filteredProductsCache.category === state.selectedCategory
@@ -210,7 +242,7 @@ function getFilteredProducts() {
   const result = state.products.filter((product) => {
     const matchesCategory =
       state.selectedCategory === "all" || product.category === state.selectedCategory;
-    const matchesSearch = product.name.toLowerCase().includes(search);
+    const matchesSearch = !search || buildProductSearchBlob(product).includes(search);
     return matchesCategory && matchesSearch;
   });
 
@@ -245,11 +277,14 @@ function renderSearchQuickResults(products = getFilteredProducts()) {
 
   const totalResults = products.length;
   const remainingResults = Math.max(totalResults - quickResults.length, 0);
+  const quickResultsHint = isRouteModeEnabled()
+    ? "Toca uno y agrega o edita"
+    : "Toca uno y abre directo";
   refs.searchQuickResults.hidden = false;
   refs.searchQuickResults.innerHTML = `
     <div class="search-quick-results-head">
       <strong>${totalResults} resultado${totalResults === 1 ? "" : "s"}</strong>
-      <span>Toca uno y abre directo</span>
+      <span>${quickResultsHint}</span>
     </div>
     <div class="search-quick-results-list">
       ${quickResults.map((product) => `
@@ -381,12 +416,67 @@ function getCartCount() {
 }
 
 function renderCart() {
+  const routeModeEnabled = isRouteModeEnabled();
   if (state.cart.length === 0) {
     refs.cartItems.innerHTML = `
       <div class="empty-state">
         El carrito esta vacio. Agrega productos para iniciar una venta.
       </div>
     `;
+  } else if (routeModeEnabled) {
+    refs.cartItems.innerHTML = state.cart
+      .map((item, index) => {
+        const product = getCartLineProduct(item);
+        const simpleProduct = isRouteSimpleProduct(product);
+        return `
+          <article class="cart-item route-cart-item ${simpleProduct ? "route-cart-simple" : "route-cart-weighted"}">
+            <div class="route-cart-item-shell">
+              <button
+                class="route-cart-item-main"
+                data-action="open-cart-item"
+                data-index="${index}"
+                type="button"
+              >
+                <div class="cart-item-row">
+                  <div>
+                    <div class="cart-item-title">${escapeHtml(item.name)}</div>
+                    <p class="cart-item-subtitle">
+                      ${escapeHtml(formatQuantity(item.quantity))} ${escapeHtml(item.unit)} - ${formatCurrency(item.unitPrice)}
+                    </p>
+                  </div>
+                  <span class="route-cart-edit-kind">${simpleProduct ? "Edicion rapida" : "Edicion completa"}</span>
+                </div>
+                <div class="cart-item-row">
+                  <span class="cart-item-subtitle">${escapeHtml(item.categoryLabel)}</span>
+                  <span class="cart-item-price">${formatCurrency(item.lineTotal)}</span>
+                </div>
+              </button>
+              <div class="route-cart-item-controls">
+                <button
+                  class="route-cart-step-button"
+                  data-action="route-cart-step"
+                  data-index="${index}"
+                  data-delta="-1"
+                  type="button"
+                >
+                  -
+                </button>
+                <button
+                  class="route-cart-step-button"
+                  data-action="route-cart-step"
+                  data-index="${index}"
+                  data-delta="1"
+                  type="button"
+                >
+                  +
+                </button>
+                <button class="icon-button" data-action="remove-cart-item" data-index="${index}" type="button">&times;</button>
+              </div>
+            </div>
+          </article>
+        `;
+      })
+      .join("");
   } else {
     refs.cartItems.innerHTML = state.cart
       .map(
@@ -464,6 +554,7 @@ function renderRecentSales() {
             </div>
           </div>
           <p>${escapeHtml(itemsSummary)}</p>
+          <p>${escapeHtml(getSalePaymentSummary(sale))}</p>
           <p>${escapeHtml(sale.cashier)} · ${escapeHtml(sale.shift)} · ${escapeHtml(dateTimeFormatter.format(new Date(sale.createdAt)))}</p>
           ${offlineState ? `<p>${escapeHtml(offlineState.note)}</p>` : ""}
         </button>
@@ -768,13 +859,31 @@ function renderRegisterSummaryPill() {
 
   const summary = state.register.summary;
   const cashierName = state.cashier.name || "este cajero";
+  const routeCompact = isRouteModeEnabled();
   if (summary?.cashierLocked) {
-    refs.registerSummaryPill.textContent = `${cashierName} bloqueado por corte final de hoy.`;
+    refs.registerSummaryPill.textContent = routeCompact
+      ? `${cashierName} bloqueado hoy`
+      : `${cashierName} bloqueado por corte final de hoy.`;
     return;
   }
 
   if (!summary || !summary.lastStartAt) {
-    refs.registerSummaryPill.textContent = `Caja sin iniciar para ${refs.shiftSelect?.value || "este turno"}`;
+    refs.registerSummaryPill.textContent = routeCompact
+      ? `Caja sin iniciar · ${refs.shiftSelect?.value || "Turno"}`
+      : `Caja sin iniciar para ${refs.shiftSelect?.value || "este turno"}`;
+    return;
+  }
+
+  if (routeCompact) {
+    const compactParts = [
+      summary.shift,
+      `Inicial ${formatCurrency(summary.openingAmount)}`,
+      `Esp ${formatCurrency(summary.expectedCash)}`,
+    ];
+    if (roundMoney(summary.withdrawalsAmount || 0) > 0) {
+      compactParts.push(`Ret ${formatCurrency(summary.withdrawalsAmount || 0)}`);
+    }
+    refs.registerSummaryPill.textContent = compactParts.join(" · ");
     return;
   }
 
@@ -825,12 +934,114 @@ function renderRegisterModal() {
 
   refs.registerOpeningAmount.textContent = formatCurrency(summary.openingAmount);
   refs.registerCashSales.textContent = formatCurrency(summary.cashSales);
+  if (refs.registerCreditSales) {
+    refs.registerCreditSales.textContent = formatCurrency(summary.creditSales || 0);
+  }
   refs.registerExpectedCash.textContent = formatCurrency(summary.expectedCash);
   refs.registerWithdrawalsAmount.textContent = formatCurrency(summary.withdrawalsAmount || 0);
   refs.registerTotalSales.textContent = formatCurrency(summary.totalSales);
   refs.registerAmountInput.value = state.register.amountInput;
   refs.registerWithdrawInput.value = state.register.withdrawInput;
   refs.registerNoteInput.value = state.register.note;
+}
+
+function renderCashierBlindAuditModal() {
+  if (
+    !refs.cashierBlindAuditModal
+    || !refs.cashierBlindAuditTitle
+    || !refs.cashierBlindAuditMeta
+    || !refs.cashierBlindAuditSummary
+    || !refs.cashierBlindAuditItems
+    || !refs.cashierBlindAuditHelper
+    || !refs.saveCashierBlindAuditButton
+  ) {
+    return;
+  }
+
+  const prompt = state.cashierBlindAudit.prompt;
+  if (!prompt || !Array.isArray(prompt.items) || prompt.items.length === 0) {
+    refs.cashierBlindAuditSummary.innerHTML = "";
+    refs.cashierBlindAuditItems.innerHTML = `
+      <div class="empty-state">
+        No hay productos kg vendidos que requieran pesado en este cierre.
+      </div>
+    `;
+    refs.cashierBlindAuditHelper.textContent = "Si no hubo productos por kilo vendidos, este paso no se muestra.";
+    refs.saveCashierBlindAuditButton.disabled = true;
+    refs.saveCashierBlindAuditButton.textContent = "Guardado";
+    return;
+  }
+
+  refs.cashierBlindAuditTitle.textContent = `Corte final · ${prompt.shift || "Tarde"}`;
+  refs.cashierBlindAuditMeta.textContent = `${getBranchLabel(prompt.branch)} · ${prompt.cashier} · ${prompt.auditedDateKey}`;
+  refs.cashierBlindAuditSummary.innerHTML = `
+    <div class="register-summary-grid cashier-blind-audit-grid">
+      <article class="register-summary-card">
+        <span>Productos vendidos</span>
+        <strong>${prompt.requiredCount || prompt.items.length}</strong>
+      </article>
+      <article class="register-summary-card">
+        <span>Capturados</span>
+        <strong>${prompt.items.filter((item) => {
+          const draftValue = state.cashierBlindAudit.draftItems?.[item.itemId];
+          return String(draftValue ?? item.countedStock ?? "").trim() !== "";
+        }).length}</strong>
+      </article>
+      <article class="register-summary-card">
+        <span>Vista</span>
+        <strong>Solo diferencia</strong>
+      </article>
+    </div>
+  `;
+  refs.cashierBlindAuditItems.innerHTML = prompt.items.map((item) => {
+    const draftValue = state.cashierBlindAudit.draftItems?.[item.itemId];
+    const inputValue = draftValue ?? (item.countedStock == null ? "" : String(item.countedStock));
+    const preview = state.cashierBlindAudit.previewByItemId?.[item.itemId] || null;
+    const differenceText = preview?.status === "invalid"
+      ? "Diferencia: captura un numero valido."
+      : preview?.difference == null
+        ? String(inputValue || "").trim() !== ""
+          ? state.cashierBlindAudit.previewing
+            ? "Diferencia: calculando..."
+            : "Diferencia: pendiente."
+          : "Diferencia: captura el pesado para verla."
+        : preview.difference === 0
+          ? "Diferencia: cuadra exacto."
+          : preview.difference < 0
+            ? `Diferencia: faltan ${formatQuantity(Math.abs(preview.difference))} kg.`
+            : `Diferencia: sobran ${formatQuantity(preview.difference)} kg.`;
+    const differenceClass = preview?.status === "invalid"
+      ? "invalid"
+      : preview?.difference == null
+        ? "pending"
+        : preview.difference === 0
+          ? "match"
+          : preview.difference < 0
+            ? "shortage"
+            : "surplus";
+    return `
+      <label class="field cashier-blind-audit-field">
+        <span>${escapeHtml(item.productName)}</span>
+        <small>Captura lo que marque la bascula ahora mismo.</small>
+        <input
+          class="inventory-input"
+          data-blind-audit-item-id="${item.itemId}"
+          type="number"
+          min="0"
+          step="0.001"
+          inputmode="decimal"
+          value="${escapeHtml(String(inputValue || ""))}"
+          ${state.cashierBlindAudit.saving ? "disabled" : ""}
+        />
+        <small class="cashier-blind-audit-difference ${differenceClass}">${escapeHtml(differenceText)}</small>
+      </label>
+    `;
+  }).join("");
+  refs.cashierBlindAuditHelper.textContent = "Solo se muestra la diferencia. El stock esperado del POS sigue oculto en este paso.";
+  refs.saveCashierBlindAuditButton.disabled = state.cashierBlindAudit.saving;
+  refs.saveCashierBlindAuditButton.textContent = state.cashierBlindAudit.saving
+    ? "Guardando..."
+    : "Guardar pesado";
 }
 
 function renderDetailViewer() {
@@ -862,6 +1073,18 @@ function renderDetailViewer() {
   }
 
   if (kind === "sale") {
+    const pendingAmount = roundMoney(
+      detail.pendingAmount === undefined
+        ? getSalePendingAmount(detail.total, detail.paidAmount || detail.receivedAmount, detail.paymentMethod)
+        : detail.pendingAmount,
+    );
+    const paidAmount = roundMoney(detail.paidAmount || detail.receivedAmount || 0);
+    const laterPaymentsTotal = roundMoney(detail.laterPaymentsTotal || 0);
+    const receivedMethod = getSaleReceivedPaymentMethod(
+      detail.paymentMethod,
+      detail.receivedPaymentMethod || "",
+      detail.receivedAmount,
+    );
     refs.detailViewerTitle.textContent = detail.ticketNumber;
     refs.detailViewerMeta.textContent =
       `${detail.cashier} · ${detail.shift} · ${dateTimeFormatter.format(new Date(detail.createdAt))}`;
@@ -876,14 +1099,52 @@ function renderDetailViewer() {
           <strong>${escapeHtml(detail.paymentMethod)}</strong>
         </article>
         <article class="detail-stat-card">
-          <span>Recibido</span>
-          <strong>${formatCurrency(detail.receivedAmount)}</strong>
+          <span>Cliente</span>
+          <strong>${escapeHtml(detail.customerName || "Mostrador")}</strong>
         </article>
         <article class="detail-stat-card">
-          <span>Cambio</span>
-          <strong>${formatCurrency(detail.changeAmount)}</strong>
+          <span>${escapeHtml(isCreditPaymentMethod(detail.paymentMethod) ? "Abono hoy" : "Recibido")}</span>
+          <strong>${formatCurrency(detail.receivedAmount)}</strong>
+        </article>
+        ${isCreditPaymentMethod(detail.paymentMethod) ? `
+          <article class="detail-stat-card">
+            <span>Pagado acumulado</span>
+            <strong>${formatCurrency(paidAmount)}</strong>
+          </article>
+          <article class="detail-stat-card">
+            <span>Abonos posteriores</span>
+            <strong>${formatCurrency(laterPaymentsTotal)}</strong>
+          </article>
+        ` : ""}
+        ${isCreditPaymentMethod(detail.paymentMethod) && receivedMethod ? `
+          <article class="detail-stat-card">
+            <span>Abono por</span>
+            <strong>${escapeHtml(receivedMethod)}</strong>
+          </article>
+        ` : ""}
+        <article class="detail-stat-card">
+          <span>${escapeHtml(isCreditPaymentMethod(detail.paymentMethod) ? "Pendiente" : "Cambio")}</span>
+          <strong>${formatCurrency(isCreditPaymentMethod(detail.paymentMethod) ? pendingAmount : detail.changeAmount)}</strong>
         </article>
       </div>
+      ${detail.notes ? `<p class="modal-note">${escapeHtml(detail.notes)}</p>` : ""}
+      ${isCreditPaymentMethod(detail.paymentMethod) && Array.isArray(detail.payments) && detail.payments.length ? `
+        <div class="detail-lines">
+          ${detail.payments
+            .map(
+              (payment) => `
+                <div class="detail-line">
+                  <div>
+                    <strong>Abono posterior</strong>
+                    <p>${escapeHtml(payment.paymentMethod || "Efectivo")} · ${escapeHtml(dateTimeFormatter.format(new Date(payment.createdAt)))}</p>
+                  </div>
+                  <span>${formatCurrency(payment.amount || 0)}</span>
+                </div>
+              `,
+            )
+            .join("")}
+        </div>
+      ` : ""}
       <div class="detail-lines">
         ${detail.items
           .map(
@@ -900,6 +1161,32 @@ function renderDetailViewer() {
           .join("")}
       </div>
       ${detail.notes ? `<p class="sale-notes"><strong>Nota:</strong> ${escapeHtml(detail.notes)}</p>` : ""}
+    `;
+    return;
+  }
+
+  if (kind === "credit-payment") {
+    refs.detailViewerTitle.textContent = detail.ticketNumber
+      ? `Abono ${detail.ticketNumber}`
+      : `Abono #${detail.id}`;
+    refs.detailViewerMeta.textContent =
+      `${detail.cashier} · ${detail.shift} · ${dateTimeFormatter.format(new Date(detail.createdAt))}`;
+    refs.detailViewerBody.innerHTML = `
+      <div class="detail-stat-grid">
+        <article class="detail-stat-card">
+          <span>Cliente</span>
+          <strong>${escapeHtml(detail.customerName || "Cliente")}</strong>
+        </article>
+        <article class="detail-stat-card">
+          <span>Metodo</span>
+          <strong>${escapeHtml(detail.paymentMethod || "Efectivo")}</strong>
+        </article>
+        <article class="detail-stat-card">
+          <span>Abono</span>
+          <strong>${formatCurrency(detail.amount || 0)}</strong>
+        </article>
+      </div>
+      ${detail.notes ? `<p class="modal-note">${escapeHtml(detail.notes)}</p>` : ""}
     `;
     return;
   }
@@ -989,7 +1276,7 @@ function renderDetailViewer() {
   if (kind === "audit") {
     refs.detailViewerTitle.textContent = detail.action || "Bitacora admin";
     refs.detailViewerMeta.textContent =
-      `${detail.actorName || "admin"} Â· ${getBranchLabel(detail.branch || "all")} Â· ${dateTimeFormatter.format(new Date(detail.createdAt))}`;
+      `${detail.actorName || "admin"} - ${getBranchLabel(detail.branch || "all")} - ${dateTimeFormatter.format(new Date(detail.createdAt))}`;
     refs.detailViewerBody.innerHTML = `
       <div class="detail-stat-grid">
         <article class="detail-stat-card">
@@ -1013,7 +1300,7 @@ function renderDetailViewer() {
         <div class="detail-line">
           <div>
             <strong>Resumen</strong>
-            <p>${escapeHtml(detail.action || "Sin accion")} Â· ${escapeHtml(detail.entityType || "sin entidad")} Â· ${escapeHtml(getBranchLabel(detail.branch || "all"))}</p>
+            <p>${escapeHtml(detail.action || "Sin accion")} - ${escapeHtml(detail.entityType || "sin entidad")} - ${escapeHtml(getBranchLabel(detail.branch || "all"))}</p>
           </div>
         </div>
       </div>

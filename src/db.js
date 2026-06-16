@@ -14,6 +14,21 @@ const {
 
 let databaseInstance;
 const SQLITE_MAGIC_HEADER = Buffer.from("SQLite format 3\u0000", "utf8");
+const COMPATIBLE_DB_REQUIRED_TABLES = [
+  "business_profile",
+  "branches",
+  "products",
+  "sales",
+  "sale_items",
+];
+const COMPATIBLE_DB_REQUIRED_COLUMNS = {
+  business_profile: ["id", "business_name", "slug"],
+  branches: ["code", "name"],
+  products: ["id", "name", "price", "category", "unit"],
+  sales: ["id", "ticket_number", "shift", "cashier", "subtotal", "total", "received_amount", "created_at"],
+  sale_items: ["id", "sale_id", "product_id", "product_name", "quantity", "unit_price", "line_total"],
+};
+const SQLITE_COMPATIBILITY_ERROR_MESSAGE = "El archivo SQLite no es compatible con este POS.";
 
 function openDatabaseConnection() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -101,6 +116,198 @@ function createMerchandiseRequestTables(db) {
   `);
 }
 
+function createWeightedAuditTables(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS weighted_audit_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      branch TEXT NOT NULL DEFAULT 'carrizal',
+      shift TEXT NOT NULL DEFAULT 'Tarde',
+      audited_date_key TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_by TEXT,
+      completed_by TEXT,
+      notes TEXT,
+      source_register_event_id INTEGER REFERENCES register_events(id) ON DELETE SET NULL,
+      source_cashier TEXT,
+      template_locked INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS weighted_audit_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL REFERENCES weighted_audit_sessions(id) ON DELETE CASCADE,
+      product_id INTEGER NOT NULL REFERENCES products(id),
+      product_name TEXT NOT NULL,
+      unit TEXT NOT NULL DEFAULT 'kg',
+      pos_stock REAL NOT NULL DEFAULT 0,
+      counted_stock REAL,
+      difference REAL,
+      direction TEXT,
+      reason TEXT,
+      unit_price REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(session_id, product_id)
+    );
+  `);
+}
+
+function extractWeightedAuditSourceEventId(value) {
+  const match = String(value || "").match(/\bevento\s+(\d+)\b/i);
+  if (!match) {
+    return null;
+  }
+
+  const eventId = Number(match[1]);
+  return Number.isInteger(eventId) && eventId > 0 ? eventId : null;
+}
+
+function backfillWeightedAuditSessionSources(db) {
+  const sessions = db.prepare(`
+    SELECT id, notes, source_register_event_id, source_cashier
+    FROM weighted_audit_sessions
+    WHERE source_register_event_id IS NULL OR TRIM(COALESCE(source_cashier, '')) = ''
+  `).all();
+
+  if (sessions.length === 0) {
+    return;
+  }
+
+  const getEvent = db.prepare(`
+    SELECT id, cashier
+    FROM register_events
+    WHERE id = ? AND event_type = 'final_cut'
+  `);
+  const updateSource = db.prepare(`
+    UPDATE weighted_audit_sessions
+    SET
+      source_register_event_id = COALESCE(source_register_event_id, ?),
+      source_cashier = CASE
+        WHEN TRIM(COALESCE(source_cashier, '')) = '' THEN ?
+        ELSE source_cashier
+      END
+    WHERE id = ?
+  `);
+
+  sessions.forEach((session) => {
+    const inferredEventId = session.source_register_event_id || extractWeightedAuditSourceEventId(session.notes);
+    if (!inferredEventId) {
+      return;
+    }
+
+    const event = getEvent.get(inferredEventId);
+    if (!event) {
+      return;
+    }
+
+    updateSource.run(event.id, event.cashier || null, session.id);
+  });
+}
+
+function migrateWeightedAuditTables(db) {
+  const sessionColumns = listTableColumns(db, "weighted_audit_sessions");
+  const itemColumns = listTableColumns(db, "weighted_audit_items");
+  if (sessionColumns.length === 0 || itemColumns.length === 0) {
+    return;
+  }
+
+  const needsRebuild = !hasColumn(sessionColumns, "source_register_event_id")
+    || !hasColumn(sessionColumns, "source_cashier")
+    || !hasColumn(sessionColumns, "template_locked");
+
+  if (!needsRebuild) {
+    backfillWeightedAuditSessionSources(db);
+    return;
+  }
+
+  db.exec("PRAGMA foreign_keys = OFF");
+
+  try {
+    const migrate = db.transaction(() => {
+      db.exec("ALTER TABLE weighted_audit_items RENAME TO weighted_audit_items_legacy");
+      db.exec("ALTER TABLE weighted_audit_sessions RENAME TO weighted_audit_sessions_legacy");
+
+      createWeightedAuditTables(db);
+
+      db.exec(`
+        INSERT INTO weighted_audit_sessions (
+          id,
+          branch,
+          shift,
+          audited_date_key,
+          status,
+          created_by,
+          completed_by,
+          notes,
+          source_register_event_id,
+          source_cashier,
+          template_locked,
+          created_at,
+          completed_at
+        )
+        SELECT
+          id,
+          COALESCE(branch, 'carrizal'),
+          COALESCE(shift, 'Tarde'),
+          audited_date_key,
+          COALESCE(status, 'pending'),
+          created_by,
+          completed_by,
+          notes,
+          NULL,
+          NULL,
+          1,
+          created_at,
+          completed_at
+        FROM weighted_audit_sessions_legacy
+      `);
+
+      db.exec(`
+        INSERT INTO weighted_audit_items (
+          id,
+          session_id,
+          product_id,
+          product_name,
+          unit,
+          pos_stock,
+          counted_stock,
+          difference,
+          direction,
+          reason,
+          unit_price,
+          created_at,
+          updated_at
+        )
+        SELECT
+          id,
+          session_id,
+          product_id,
+          product_name,
+          unit,
+          pos_stock,
+          counted_stock,
+          difference,
+          direction,
+          reason,
+          unit_price,
+          created_at,
+          updated_at
+        FROM weighted_audit_items_legacy
+      `);
+
+      db.exec("DROP TABLE weighted_audit_items_legacy");
+      db.exec("DROP TABLE weighted_audit_sessions_legacy");
+    });
+
+    migrate();
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+
+  backfillWeightedAuditSessionSources(db);
+}
+
 function resolveLegacyColumn(columns, snakeCaseName, camelCaseName = snakeCaseName, fallback = "NULL") {
   if (hasColumn(columns, snakeCaseName)) {
     return snakeCaseName;
@@ -111,6 +318,76 @@ function resolveLegacyColumn(columns, snakeCaseName, camelCaseName = snakeCaseNa
   }
 
   return fallback;
+}
+
+function normalizeLegacyReceivableCustomerFragment(value, fallback = "cliente") {
+  const normalized = String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+
+  return normalized || fallback;
+}
+
+function buildLegacyReceivableCustomerKey(branch, customerName) {
+  const branchFragment = normalizeLegacyReceivableCustomerFragment(branch, "branch");
+  const customerFragment = normalizeLegacyReceivableCustomerFragment(customerName, "cliente");
+  return `legacy:${branchFragment}:${customerFragment}`.slice(0, 120);
+}
+
+function backfillReceivableCustomerKeys(db) {
+  const salesColumns = listTableColumns(db, "sales");
+  const paymentColumns = listTableColumns(db, "credit_payments");
+  const salesHasCustomerKey = hasColumn(salesColumns, "customer_key");
+  const paymentsHasCustomerKey = hasColumn(paymentColumns, "customer_key");
+
+  if (!salesHasCustomerKey && !paymentsHasCustomerKey) {
+    return;
+  }
+
+  if (salesHasCustomerKey) {
+    const rows = db.prepare(`
+      SELECT id, branch, customer_name
+      FROM sales
+      WHERE payment_method = 'Fiado'
+        AND customer_name IS NOT NULL
+        AND TRIM(customer_name) != ''
+        AND (customer_key IS NULL OR TRIM(customer_key) = '')
+      ORDER BY branch ASC, customer_name COLLATE NOCASE ASC, id ASC
+    `).all();
+    const updateSaleCustomerKey = db.prepare(`
+      UPDATE sales
+      SET customer_key = ?
+      WHERE id = ?
+    `);
+
+    rows.forEach((row) => {
+      updateSaleCustomerKey.run(
+        buildLegacyReceivableCustomerKey(row.branch, row.customer_name),
+        row.id,
+      );
+    });
+  }
+
+  if (paymentsHasCustomerKey) {
+    db.exec(`
+      UPDATE credit_payments
+      SET customer_key = COALESCE(
+        customer_key,
+        (
+          SELECT s.customer_key
+          FROM sales s
+          WHERE s.id = credit_payments.sale_id
+          LIMIT 1
+        )
+      )
+      WHERE customer_key IS NULL OR TRIM(customer_key) = ''
+    `);
+  }
 }
 
 function migrateLegacyMerchandiseTables(db) {
@@ -327,6 +604,9 @@ function initializeSchema(db) {
       cashier TEXT NOT NULL,
       branch TEXT NOT NULL DEFAULT 'carrizal',
       payment_method TEXT NOT NULL DEFAULT 'Efectivo',
+      customer_name TEXT,
+      customer_key TEXT,
+      received_payment_method TEXT,
       subtotal REAL NOT NULL,
       total REAL NOT NULL,
       received_amount REAL NOT NULL,
@@ -382,6 +662,21 @@ function initializeSchema(db) {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS credit_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+      client_payment_id TEXT,
+      shift TEXT NOT NULL,
+      cashier TEXT NOT NULL,
+      branch TEXT NOT NULL DEFAULT 'carrizal',
+      customer_name TEXT NOT NULL,
+      customer_key TEXT,
+      payment_method TEXT NOT NULL DEFAULT 'Efectivo',
+      amount REAL NOT NULL,
+      notes TEXT,
+      created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS weighted_audit_sessions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       branch TEXT NOT NULL DEFAULT 'carrizal',
@@ -391,9 +686,11 @@ function initializeSchema(db) {
       created_by TEXT,
       completed_by TEXT,
       notes TEXT,
+      source_register_event_id INTEGER REFERENCES register_events(id) ON DELETE SET NULL,
+      source_cashier TEXT,
+      template_locked INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
-      completed_at TEXT,
-      UNIQUE(branch, shift, audited_date_key)
+      completed_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS weighted_audit_items (
@@ -717,6 +1014,22 @@ function initializeSchema(db) {
   if (!salesColumns.some((column) => column.name === "branch")) {
     db.exec("ALTER TABLE sales ADD COLUMN branch TEXT NOT NULL DEFAULT 'carrizal'");
   }
+  if (!salesColumns.some((column) => column.name === "customer_name")) {
+    db.exec("ALTER TABLE sales ADD COLUMN customer_name TEXT");
+  }
+  if (!salesColumns.some((column) => column.name === "customer_key")) {
+    db.exec("ALTER TABLE sales ADD COLUMN customer_key TEXT");
+  }
+  if (!salesColumns.some((column) => column.name === "received_payment_method")) {
+    db.exec("ALTER TABLE sales ADD COLUMN received_payment_method TEXT");
+  }
+
+  const creditPaymentsColumns = db.prepare("PRAGMA table_info(credit_payments)").all();
+  if (creditPaymentsColumns.length > 0 && !creditPaymentsColumns.some((column) => column.name === "customer_key")) {
+    db.exec("ALTER TABLE credit_payments ADD COLUMN customer_key TEXT");
+  }
+
+  backfillReceivableCustomerKeys(db);
 
   const inventoryMovementsColumns = db.prepare("PRAGMA table_info(inventory_movements)").all();
   if (!inventoryMovementsColumns.some((column) => column.name === "branch")) {
@@ -737,6 +1050,7 @@ function initializeSchema(db) {
     db.exec("ALTER TABLE register_events ADD COLUMN over_withdrawal_amount REAL NOT NULL DEFAULT 0");
   }
 
+  migrateWeightedAuditTables(db);
   migrateLegacyMerchandiseTables(db);
   createMerchandiseRequestTables(db);
 
@@ -767,7 +1081,12 @@ function initializeSchema(db) {
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_sales_branch_created_at ON sales(branch, created_at);
+    CREATE INDEX IF NOT EXISTS idx_sales_branch_customer_key ON sales(branch, customer_key);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_client_sale_id_unique ON sales(client_sale_id);
+    CREATE INDEX IF NOT EXISTS idx_credit_payments_sale_id_created_at ON credit_payments(sale_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_credit_payments_branch_created_at ON credit_payments(branch, created_at);
+    CREATE INDEX IF NOT EXISTS idx_credit_payments_branch_customer_key ON credit_payments(branch, customer_key);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_payments_client_payment_id_unique ON credit_payments(client_payment_id);
     CREATE INDEX IF NOT EXISTS idx_inventory_movements_branch_created_at ON inventory_movements(branch, created_at);
     CREATE INDEX IF NOT EXISTS idx_register_events_branch_shift_created_at ON register_events(branch, shift, created_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_register_events_client_event_id_unique ON register_events(client_event_id);
@@ -788,6 +1107,12 @@ function initializeSchema(db) {
       ON weighted_audit_sessions(branch, shift, audited_date_key);
     CREATE INDEX IF NOT EXISTS idx_weighted_audit_sessions_created_at
       ON weighted_audit_sessions(created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_weighted_audit_sessions_source_event
+      ON weighted_audit_sessions(source_register_event_id)
+      WHERE source_register_event_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_weighted_audit_sessions_manual_scope
+      ON weighted_audit_sessions(branch, shift, audited_date_key)
+      WHERE source_register_event_id IS NULL;
     CREATE INDEX IF NOT EXISTS idx_weighted_audit_items_session_id
       ON weighted_audit_items(session_id);
     CREATE INDEX IF NOT EXISTS idx_weighted_audit_items_product_id
@@ -856,6 +1181,55 @@ function verifyReadableDatabase(databasePath) {
   }
 }
 
+function verifyCompatiblePosDatabase(databasePath) {
+  const tempDb = new Database(databasePath, { fileMustExist: true });
+  try {
+    const tableNames = new Set(
+      tempDb.prepare(`
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+      `).all().map((row) => String(row.name || "")),
+    );
+    const missingTables = COMPATIBLE_DB_REQUIRED_TABLES.filter((tableName) => !tableNames.has(tableName));
+    if (missingTables.length > 0) {
+      throw new Error(SQLITE_COMPATIBILITY_ERROR_MESSAGE);
+    }
+
+    Object.entries(COMPATIBLE_DB_REQUIRED_COLUMNS).forEach(([tableName, requiredColumns]) => {
+      const tableColumns = listTableColumns(tempDb, tableName);
+      const missingColumns = requiredColumns.filter((columnName) => !hasColumn(tableColumns, columnName));
+      if (missingColumns.length > 0) {
+        throw new Error(SQLITE_COMPATIBILITY_ERROR_MESSAGE);
+      }
+    });
+
+    const profileRow = tempDb.prepare(`
+      SELECT business_name, slug
+      FROM business_profile
+      WHERE id = 1
+      LIMIT 1
+    `).get();
+    if (
+      !profileRow
+      || !String(profileRow.business_name || "").trim()
+      || !String(profileRow.slug || "").trim()
+    ) {
+      throw new Error(SQLITE_COMPATIBILITY_ERROR_MESSAGE);
+    }
+  } finally {
+    tempDb.close();
+  }
+}
+
+function purgeImportedSessionTables(database = ensureDatabaseConnection()) {
+  database.transaction(() => {
+    database.prepare("DELETE FROM admin_sessions").run();
+    database.prepare("DELETE FROM owner_sessions").run();
+    database.prepare("DELETE FROM cashier_sessions").run();
+  })();
+}
+
 async function installDatabaseFromBuffer(buffer) {
   validateSqliteBuffer(buffer);
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -868,6 +1242,7 @@ async function installDatabaseFromBuffer(buffer) {
   try {
     fs.writeFileSync(tempPath, buffer);
     verifyReadableDatabase(tempPath);
+    verifyCompatiblePosDatabase(tempPath);
 
     if (ENABLE_DB_INSTALL_BACKUP && fs.existsSync(DB_PATH)) {
       backupPath = path.join(DATA_DIR, `cremaria-rincon.backup-${stamp}.sqlite`);
@@ -879,10 +1254,12 @@ async function installDatabaseFromBuffer(buffer) {
     cleanupSqliteSidecars();
     fs.writeFileSync(DB_PATH, buffer);
     reloadDatabaseConnection();
+    purgeImportedSessionTables();
 
     return {
       backupPath,
       installedAt: nowIso(),
+      sessionsPurged: true,
     };
   } catch (error) {
     if (backupPath && fs.existsSync(backupPath)) {
@@ -953,5 +1330,6 @@ module.exports = {
   installDatabaseFromBuffer,
   nowIso,
   reloadDatabaseConnection,
+  SQLITE_COMPATIBILITY_ERROR_MESSAGE,
   getTodayBounds,
 };

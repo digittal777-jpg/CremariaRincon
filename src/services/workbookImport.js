@@ -7,6 +7,9 @@ const { DATA_DIR, DB_PATH, ENABLE_DB_INSTALL_BACKUP } = require("../config");
 const { createDatabaseBackup, getDb, nowIso } = require("../db");
 const {
   createHttpError,
+  getSaleReceivedPaymentMethod,
+  getMeasurementUnitRecord,
+  getProductCategoryRecord,
   listConfiguredBranches,
   listMeasurementUnits,
   listProductCategories,
@@ -400,15 +403,53 @@ function parseSalesSheets(workbook, defaultBranch) {
       }
 
       const groupKey = `${branch}::${ticketNumber}`;
+      const paymentMethod = normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Metodo"), 24) || "Efectivo";
+      const receivedAmount = cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Cobrado hoy"));
+      const normalizedReceivedAmount = Number.isFinite(receivedAmount)
+        ? roundMoney(receivedAmount)
+        : paymentMethod === "Fiado"
+          ? 0
+          : Number.NaN;
+      const shift = normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Turno"), 24) || "Tarde";
+      const cashier = normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Cajero"), 60) || "Mostrador";
+      const customerName = normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Cliente"), 80) || "";
+      const customerKey = normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Cliente Key"), 120) || "";
+      const receivedPaymentMethod = normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Cobrado por"), 24) || "";
+      const createdAt = cellToIsoDate(getCellFromHeader(row, headerInfo.headerMap, "Fecha"));
       const currentGroup = groupedSales.get(groupKey) || {
         ticketNumber,
         branch,
-        shift: normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Turno"), 24) || "Tarde",
-        cashier: normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Cajero"), 60) || "Mostrador",
-        paymentMethod: normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Metodo"), 24) || "Efectivo",
-        createdAt: cellToIsoDate(getCellFromHeader(row, headerInfo.headerMap, "Fecha")),
+        shift,
+        cashier,
+        paymentMethod,
+        customerName,
+        customerKey,
+        receivedAmount: normalizedReceivedAmount,
+        receivedPaymentMethod,
+        createdAt,
         items: [],
       };
+
+      if (groupedSales.has(groupKey)) {
+        const hasConflictingHeader =
+          currentGroup.shift !== shift
+          || currentGroup.cashier !== cashier
+          || currentGroup.paymentMethod !== paymentMethod
+          || currentGroup.customerName !== customerName
+          || currentGroup.customerKey !== customerKey
+          || currentGroup.receivedPaymentMethod !== receivedPaymentMethod
+          || currentGroup.createdAt !== createdAt
+          || (
+            Number.isFinite(currentGroup.receivedAmount)
+            && Number.isFinite(normalizedReceivedAmount)
+            && currentGroup.receivedAmount !== normalizedReceivedAmount
+          );
+        if (hasConflictingHeader) {
+          throw createHttpError(
+            `El ticket "${ticketNumber}" de la sucursal "${branch}" aparece con datos contradictorios en el Excel.`,
+          );
+        }
+      }
 
       currentGroup.items.push({
         productName,
@@ -435,6 +476,64 @@ function parseSalesSheets(workbook, defaultBranch) {
     }))
     .filter((sale) => sale.items.length > 0)
     .sort(sortByCreatedAt);
+}
+
+function parseCreditPaymentSheets(workbook, defaultBranch) {
+  const sheets = getMatchingWorksheets(workbook, "Abonos Cartera");
+  const payments = [];
+
+  sheets.forEach((worksheet) => {
+    const sheetBranch = resolveSheetBranch(worksheet.name, "Abonos Cartera", defaultBranch);
+    const headerInfo = findHeaderMap(worksheet, [
+      "Ticket",
+      "Fecha",
+      "Sucursal",
+      "Turno",
+      "Cajero",
+      "Cliente",
+      "Metodo",
+      "Abono",
+    ]);
+    if (!headerInfo) {
+      return;
+    }
+
+    for (let rowIndex = headerInfo.rowIndex + 1; rowIndex <= worksheet.rowCount; rowIndex += 1) {
+      const row = worksheet.getRow(rowIndex);
+      const ticketNumber = normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Ticket"), 40);
+      if (!ticketNumber) {
+        continue;
+      }
+
+      const amount = roundMoney(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Abono")));
+      if (!Number.isFinite(amount) || amount <= 0) {
+        continue;
+      }
+
+      const branch = getBranchCodeFromText(getCellFromHeader(row, headerInfo.headerMap, "Sucursal"))
+        || sheetBranch;
+      if (!branch) {
+        throw createHttpError(
+          `No pude identificar la sucursal del abono ligado al ticket "${ticketNumber}".`,
+        );
+      }
+
+      payments.push({
+        ticketNumber,
+        branch,
+        shift: normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Turno"), 24) || "Tarde",
+        cashier: normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Cajero"), 60) || "Mostrador",
+        customerName: normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Cliente"), 80) || "",
+        customerKey: normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Cliente Key"), 120) || "",
+        paymentMethod: normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Metodo"), 24) || "Efectivo",
+        amount,
+        notes: normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Nota"), 240) || null,
+        createdAt: cellToIsoDate(getCellFromHeader(row, headerInfo.headerMap, "Fecha")),
+      });
+    }
+  });
+
+  return payments.sort(sortByCreatedAt);
 }
 
 function parseRegisterSheets(workbook, defaultBranch) {
@@ -587,6 +686,7 @@ async function parseExportWorkbookBuffer(buffer) {
     branches,
     productsByBranch,
     sales: parseSalesSheets(workbook, defaultBranch),
+    creditPayments: parseCreditPaymentSheets(workbook, defaultBranch),
     registerEvents: parseRegisterSheets(workbook, defaultBranch),
     inventoryMovements: parseMovementSheets(workbook, defaultBranch),
   };
@@ -594,6 +694,10 @@ async function parseExportWorkbookBuffer(buffer) {
 
 function buildProductLookupKey(branch, productName) {
   return `${normalizeBranch(branch)}::${normalizeLookupKey(productName)}`;
+}
+
+function buildImportedSaleLookupKey(branch, ticketNumber) {
+  return `${normalizeBranch(branch)}::${normalizeLookupKey(ticketNumber)}`;
 }
 
 function buildUniqueImportedTicketNumber(ticketNumber, existingTickets) {
@@ -620,6 +724,9 @@ function buildUniqueImportedTicketNumber(ticketNumber, existingTickets) {
 
 function validateParsedWorkbook(parsedWorkbook) {
   ensureBranchesExist(parsedWorkbook.branches);
+  const salesLookup = new Set(
+    parsedWorkbook.sales.map((sale) => buildImportedSaleLookupKey(sale.branch, sale.ticketNumber)),
+  );
 
   parsedWorkbook.sales.forEach((sale) => {
     if (!parsedWorkbook.productsByBranch.has(sale.branch)) {
@@ -641,6 +748,19 @@ function validateParsedWorkbook(parsedWorkbook) {
     if (!parsedWorkbook.productsByBranch.has(movement.branch)) {
       throw createHttpError(
         `El movimiento de inventario de "${movement.productName}" no coincide con ninguna sucursal importable.`,
+      );
+    }
+  });
+
+  (parsedWorkbook.creditPayments || []).forEach((payment) => {
+    if (!parsedWorkbook.productsByBranch.has(payment.branch)) {
+      throw createHttpError(
+        `El abono ligado al ticket "${payment.ticketNumber}" no coincide con ninguna sucursal importable.`,
+      );
+    }
+    if (!salesLookup.has(buildImportedSaleLookupKey(payment.branch, payment.ticketNumber))) {
+      throw createHttpError(
+        `No encontre la venta "${payment.ticketNumber}" para restaurar su abono de cartera.`,
       );
     }
   });
@@ -689,6 +809,9 @@ function installParsedWorkbookData(parsedWorkbook) {
       cashier,
       branch,
       payment_method,
+      customer_name,
+      customer_key,
+      received_payment_method,
       subtotal,
       total,
       received_amount,
@@ -696,7 +819,7 @@ function installParsedWorkbookData(parsedWorkbook) {
       notes,
       item_count,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertSaleItem = db.prepare(`
     INSERT INTO sale_items (
@@ -742,11 +865,27 @@ function installParsedWorkbookData(parsedWorkbook) {
       created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const insertCreditPayment = db.prepare(`
+    INSERT INTO credit_payments (
+      sale_id,
+      client_payment_id,
+      shift,
+      cashier,
+      branch,
+      customer_name,
+      customer_key,
+      payment_method,
+      amount,
+      notes,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
 
   const counters = {
     products: 0,
     sales: 0,
     saleItems: 0,
+    creditPayments: 0,
     registerEvents: 0,
     inventoryMovements: 0,
   };
@@ -763,6 +902,7 @@ function installParsedWorkbookData(parsedWorkbook) {
       db.prepare("SELECT ticket_number FROM sales").all().map((row) => row.ticket_number),
     );
     const productIdByKey = new Map();
+    const saleIdByKey = new Map();
     const productCreatedAt = nowIso();
 
     parsedWorkbook.branches.forEach((branch) => {
@@ -816,13 +956,25 @@ function installParsedWorkbookData(parsedWorkbook) {
       const itemCount = roundStock(
         sale.items.reduce((sum, item) => sum + roundStock(item.quantity), 0),
       );
-      const receivedAmount = roundMoney(subtotal);
+      const receivedAmount = Number.isFinite(sale.receivedAmount)
+        ? roundMoney(sale.receivedAmount)
+        : sale.paymentMethod === "Fiado"
+          ? 0
+          : roundMoney(subtotal);
+      const receivedPaymentMethod = getSaleReceivedPaymentMethod(
+        sale.paymentMethod,
+        sale.receivedPaymentMethod || "",
+        receivedAmount,
+      ) || null;
       const saleInsert = insertSale.run(
         ticketNumber,
         sale.shift,
         sale.cashier,
         sale.branch,
         sale.paymentMethod,
+        sale.customerName || null,
+        sale.customerKey || null,
+        receivedPaymentMethod,
         subtotal,
         subtotal,
         receivedAmount,
@@ -832,6 +984,7 @@ function installParsedWorkbookData(parsedWorkbook) {
         sale.createdAt,
       );
       const saleId = Number(saleInsert.lastInsertRowid);
+      saleIdByKey.set(buildImportedSaleLookupKey(sale.branch, sale.ticketNumber), saleId);
       counters.sales += 1;
 
       sale.items.forEach((item) => {
@@ -868,6 +1021,30 @@ function installParsedWorkbookData(parsedWorkbook) {
         );
         counters.inventoryMovements += 1;
       });
+    });
+
+    (parsedWorkbook.creditPayments || []).forEach((payment) => {
+      const saleId = saleIdByKey.get(buildImportedSaleLookupKey(payment.branch, payment.ticketNumber));
+      if (!saleId) {
+        throw createHttpError(
+          `No encontre la venta "${payment.ticketNumber}" para restaurar su abono de cartera.`,
+        );
+      }
+
+      insertCreditPayment.run(
+        saleId,
+        null,
+        payment.shift,
+        payment.cashier,
+        payment.branch,
+        payment.customerName || null,
+        payment.customerKey || null,
+        getSaleReceivedPaymentMethod("Fiado", payment.paymentMethod, payment.amount) || payment.paymentMethod,
+        roundMoney(payment.amount),
+        payment.notes || null,
+        payment.createdAt,
+      );
+      counters.creditPayments += 1;
     });
 
     parsedWorkbook.registerEvents.forEach((event) => {

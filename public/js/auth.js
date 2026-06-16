@@ -45,7 +45,13 @@ function clearCashierSessionState() {
   state.cashier.authenticated = false;
   persistCashierSession();
   clearMerchandiseRequestsForSessionChange();
+  if (typeof clearReceivablesSessionChange === "function") {
+    clearReceivablesSessionChange();
+  }
   state.register.summary = getEmptyRegisterSummary();
+  if (typeof clearCashierBlindAuditPrompt === "function") {
+    clearCashierBlindAuditPrompt();
+  }
   if (typeof renderRegisterSummaryPill === "function") {
     renderRegisterSummaryPill();
   }
@@ -177,6 +183,8 @@ async function getPreparedOfflineSnapshot(branch) {
   }
 
   if (
+    state.cashier.authenticated
+    && 
     normalizedBranch === String(state.store?.currentBranch || "")
     && Array.isArray(state.products)
     && state.products.length > 0

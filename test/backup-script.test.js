@@ -43,6 +43,24 @@ function openLatestBackupRow(dbPath) {
   }
 }
 
+function openLatestBackupRunWithSummary(dbPath) {
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const row = db.prepare(`
+      SELECT status, sync_state, backup_date_key, sqlite_remote_key, workbook_remote_key, sqlite_bytes, workbook_bytes, error_message, summary_json
+      FROM backup_runs
+      ORDER BY id DESC
+      LIMIT 1
+    `).get();
+    return {
+      ...row,
+      summary: row?.summary_json ? JSON.parse(row.summary_json) : null,
+    };
+  } finally {
+    db.close();
+  }
+}
+
 test("backup-nightly writes sqlite and workbook to file-backed storage and records ok", async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "retail-base-backup-ok-"));
   const dbPath = path.join(tempDir, "backup.sqlite");
@@ -155,4 +173,184 @@ test("backup-nightly records failed when external storage upload breaks", (t) =>
   assert.equal(latest.status, "failed");
   assert.equal(latest.sync_state, "unknown");
   assert.ok(String(latest.error_message || "").length > 0);
+});
+
+test("runNightlyBackup cleans remote artifacts when an upload fails mid-flight", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "retail-base-backup-cleanup-"));
+  const dbPath = path.join(tempDir, "backup.sqlite");
+  const bucketRoot = path.join(tempDir, "bucket");
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const env = {
+    ...process.env,
+    POS_DB_PATH: dbPath,
+    BACKUP_ENABLED: "true",
+  };
+
+  const result = runInlineScript(`
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const services = require("./src/services");
+
+    const bucketRoot = ${JSON.stringify(bucketRoot)};
+    let uploadAttempt = 0;
+
+    function walk(targetDir) {
+      if (!fs.existsSync(targetDir)) {
+        return [];
+      }
+      return fs.readdirSync(targetDir, { withFileTypes: true }).flatMap((entry) => {
+        const entryPath = path.join(targetDir, entry.name);
+        return entry.isDirectory() ? walk(entryPath) : [entryPath];
+      });
+    }
+
+    const storageAdapter = {
+      mode: "file",
+      bucketName: "local",
+      async uploadFile(localPath, key) {
+        uploadAttempt += 1;
+        if (uploadAttempt === 2) {
+          throw new Error("Falla simulada subiendo workbook.");
+        }
+        const targetPath = path.join(bucketRoot, ...String(key).split("/"));
+        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        fs.copyFileSync(localPath, targetPath);
+        return {
+          key,
+          bytes: Number(fs.statSync(targetPath).size || 0),
+        };
+      },
+      async listKeys(prefix = "") {
+        return walk(bucketRoot)
+          .map((filePath) => path.relative(bucketRoot, filePath).split(path.sep).join("/"))
+          .filter((key) => key.startsWith(prefix))
+          .sort();
+      },
+      async deleteKeys(keys = []) {
+        keys.forEach((key) => {
+          const targetPath = path.join(bucketRoot, ...String(key).split("/"));
+          if (fs.existsSync(targetPath)) {
+            fs.rmSync(targetPath, { force: true });
+          }
+        });
+      },
+    };
+
+    (async () => {
+      let errorMessage = "";
+      try {
+        await services.runNightlyBackup({
+          allowWhenDisabled: true,
+          storageAdapter,
+        });
+      } catch (error) {
+        errorMessage = error.message || "";
+      }
+
+      console.log(JSON.stringify({
+        errorMessage,
+        uploadedFiles: walk(bucketRoot).map((filePath) => path.relative(bucketRoot, filePath).split(path.sep).join("/")).sort(),
+      }));
+    })().catch((error) => {
+      console.error(error);
+      process.exit(1);
+    });
+  `, env);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const payload = JSON.parse(result.stdout.trim());
+  const latest = openLatestBackupRunWithSummary(dbPath);
+  assert.match(payload.errorMessage, /Falla simulada subiendo workbook/i);
+  assert.equal(latest.status, "failed");
+  assert.equal(Array.isArray(payload.uploadedFiles), true);
+  assert.equal(payload.uploadedFiles.length, 0);
+  assert.equal(latest.summary.artifactCleanup.ok, true);
+  assert.equal(latest.summary.artifactCleanup.deletedKeyCount, 1);
+});
+
+test("runNightlyBackup keeps successful backups as ok when retention pruning fails", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "retail-base-backup-retention-warning-"));
+  const dbPath = path.join(tempDir, "backup.sqlite");
+  const bucketRoot = path.join(tempDir, "bucket");
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const env = {
+    ...process.env,
+    POS_DB_PATH: dbPath,
+    BACKUP_ENABLED: "true",
+    BACKUP_RETENTION_DAILY: "1",
+  };
+
+  const result = runInlineScript(`
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const services = require("./src/services");
+
+    const bucketRoot = ${JSON.stringify(bucketRoot)};
+
+    function walk(targetDir) {
+      if (!fs.existsSync(targetDir)) {
+        return [];
+      }
+      return fs.readdirSync(targetDir, { withFileTypes: true }).flatMap((entry) => {
+        const entryPath = path.join(targetDir, entry.name);
+        return entry.isDirectory() ? walk(entryPath) : [entryPath];
+      });
+    }
+
+    const storageAdapter = {
+      mode: "file",
+      bucketName: "local",
+      async uploadFile(localPath, key) {
+        const targetPath = path.join(bucketRoot, ...String(key).split("/"));
+        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        fs.copyFileSync(localPath, targetPath);
+        return {
+          key,
+          bytes: Number(fs.statSync(targetPath).size || 0),
+        };
+      },
+      async listKeys(prefix = "") {
+        const actualKeys = walk(bucketRoot)
+          .map((filePath) => path.relative(bucketRoot, filePath).split(path.sep).join("/"))
+          .filter((key) => key.startsWith(prefix));
+        return [...actualKeys, prefix + "2000-01-01/legacy.sqlite", prefix + "2000-01-01/legacy.xlsx"].sort();
+      },
+      async deleteKeys() {
+        throw new Error("No pude borrar el respaldo viejo.");
+      },
+    };
+
+    (async () => {
+      const run = await services.runNightlyBackup({
+        allowWhenDisabled: true,
+        storageAdapter,
+      });
+
+      console.log(JSON.stringify({
+        status: run.status,
+        uploadedFiles: walk(bucketRoot).map((filePath) => path.relative(bucketRoot, filePath).split(path.sep).join("/")).sort(),
+      }));
+    })().catch((error) => {
+      console.error(error);
+      process.exit(1);
+    });
+  `, env);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const payload = JSON.parse(result.stdout.trim());
+  const latest = openLatestBackupRunWithSummary(dbPath);
+  assert.equal(payload.status, "ok");
+  assert.equal(latest.status, "ok");
+  assert.ok(Array.isArray(payload.uploadedFiles));
+  assert.ok(payload.uploadedFiles.length >= 2);
+  assert.ok(Array.isArray(latest.summary.warnings));
+  assert.ok(latest.summary.warnings.some((warning) => /retention:/i.test(warning)));
 });

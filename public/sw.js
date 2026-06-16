@@ -1,5 +1,5 @@
-const STATIC_CACHE_NAME = "retail-base-static-v13";
-const API_CACHE_NAME = "retail-base-api-v14";
+const STATIC_CACHE_NAME = "retail-base-static-v14";
+const API_CACHE_NAME = "retail-base-api-v15";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -53,8 +53,13 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (requestUrl.origin === self.location.origin && requestUrl.pathname === "/api/bootstrap") {
+  if (isBootstrapApiRequest(requestUrl)) {
     event.respondWith(handleBootstrapRequest(event.request));
+    return;
+  }
+
+  if (isNetworkOnlyApiRequest(requestUrl)) {
+    event.respondWith(fetch(event.request));
     return;
   }
 
@@ -118,12 +123,33 @@ async function shouldCacheGuestBootstrapResponse(request, response) {
 async function handleNavigationRequest(request) {
   try {
     const response = await fetch(request);
-    const cache = await caches.open(STATIC_CACHE_NAME);
-    cache.put("/index.html", response.clone());
+    if (isCacheableNavigationResponse(response)) {
+      const cache = await caches.open(STATIC_CACHE_NAME);
+      cache.put("/index.html", response.clone());
+    }
     return response;
   } catch (_error) {
     return caches.match("/index.html");
   }
+}
+
+function isBootstrapApiRequest(requestUrl) {
+  return requestUrl.origin === self.location.origin && requestUrl.pathname === "/api/bootstrap";
+}
+
+function isNetworkOnlyApiRequest(requestUrl) {
+  return requestUrl.origin === self.location.origin
+    && requestUrl.pathname.startsWith("/api/")
+    && requestUrl.pathname !== "/api/bootstrap";
+}
+
+function isCacheableNavigationResponse(response) {
+  if (!response?.ok) {
+    return false;
+  }
+
+  const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
+  return contentType.includes("text/html");
 }
 
 async function handleStaticRequest(request) {

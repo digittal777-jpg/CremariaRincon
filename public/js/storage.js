@@ -153,14 +153,18 @@ if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", () => {
     flushDeferredJsonPersist(STORAGE_KEYS.snapshot);
     flushDeferredJsonPersist(STORAGE_KEYS.preparedSnapshots);
+    flushDeferredJsonPersist(STORAGE_KEYS.receivablesCache);
     flushDeferredJsonPersist(STORAGE_KEYS.offlineSales);
+    flushDeferredJsonPersist(STORAGE_KEYS.offlineReceivablePayments);
   });
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       flushDeferredJsonPersist(STORAGE_KEYS.snapshot);
       flushDeferredJsonPersist(STORAGE_KEYS.preparedSnapshots);
+      flushDeferredJsonPersist(STORAGE_KEYS.receivablesCache);
       flushDeferredJsonPersist(STORAGE_KEYS.offlineSales);
+      flushDeferredJsonPersist(STORAGE_KEYS.offlineReceivablePayments);
     }
   });
 }
@@ -204,15 +208,44 @@ function buildPersistedSnapshot() {
   };
 }
 
-function canPersistPreparedSnapshot(snapshot) {
+function isCashierPreparedSnapshot(snapshot, branch = "") {
+  const normalizedBranch = String(branch || "").trim();
+  const snapshotBranch = String(snapshot?.store?.currentBranch || "").trim();
   const auth = snapshot?.auth;
-  if (!auth || auth.role === "guest") {
+
+  if (!snapshot || typeof snapshot !== "object" || !auth) {
+    return false;
+  }
+  if (auth.cashierAuthenticated !== true || auth.role !== "cashier") {
+    return false;
+  }
+  if (normalizedBranch && snapshotBranch !== normalizedBranch) {
     return false;
   }
 
   return Boolean(
-    auth.cashierAuthenticated || auth.adminAuthenticated || auth.ownerAuthenticated,
+    snapshotBranch
+    && Array.isArray(snapshot.products)
+    && snapshot.products.length > 0,
   );
+}
+
+function resolveStartupSnapshotFromCache(cachedSnapshot, options = {}) {
+  const branch = String(options.branch || "").trim();
+  const preparedSnapshot = options.preparedSnapshot || null;
+
+  if (isCashierPreparedSnapshot(preparedSnapshot, branch)) {
+    return preparedSnapshot;
+  }
+  if (isCashierPreparedSnapshot(cachedSnapshot, branch)) {
+    return cachedSnapshot;
+  }
+
+  return buildPublicSnapshotCacheView(cachedSnapshot);
+}
+
+function canPersistPreparedSnapshot(snapshot) {
+  return isCashierPreparedSnapshot(snapshot);
 }
 
 function saveSnapshot(snapshot, options = {}) {
@@ -258,13 +291,211 @@ async function restorePreparedSnapshot(branch) {
     return null;
   }
 
-  return preparedSnapshots[normalizedBranch] || null;
+  const snapshot = preparedSnapshots[normalizedBranch] || null;
+  return isCashierPreparedSnapshot(snapshot, normalizedBranch) ? snapshot : null;
+}
+
+function normalizeCachedReceivablePaymentLine(payment = {}) {
+  return {
+    id: Number(payment.id || 0) || null,
+    saleId: Number(payment.saleId || payment.sale_id || 0) || null,
+    clientPaymentId: String(payment.clientPaymentId || payment.client_payment_id || ""),
+    ticketNumber: String(payment.ticketNumber || ""),
+    shift: String(payment.shift || ""),
+    cashier: String(payment.cashier || ""),
+    branch: String(payment.branch || ""),
+    customerName: String(payment.customerName || ""),
+    customerKey: String(payment.customerKey || ""),
+    paymentMethod: String(payment.paymentMethod || "Efectivo"),
+    amount: roundMoney(payment.amount || 0),
+    notes: String(payment.notes || ""),
+    createdAt: payment.createdAt || payment.created_at || null,
+  };
+}
+
+function normalizeCachedReceivableSale(sale = {}) {
+  const payments = Array.isArray(sale.payments)
+    ? sale.payments.map((payment) => normalizeCachedReceivablePaymentLine(payment))
+    : [];
+  return {
+    saleId: Number(sale.saleId || sale.id || 0) || null,
+    id: Number(sale.id || sale.saleId || 0) || null,
+    ticketNumber: String(sale.ticketNumber || ""),
+    shift: String(sale.shift || ""),
+    cashier: String(sale.cashier || ""),
+    branch: String(sale.branch || ""),
+    paymentMethod: String(sale.paymentMethod || "Fiado"),
+    customerName: String(sale.customerName || ""),
+    customerKey: String(sale.customerKey || ""),
+    receivedPaymentMethod: String(sale.receivedPaymentMethod || ""),
+    total: roundMoney(sale.total || 0),
+    receivedAmount: roundMoney(sale.receivedAmount || 0),
+    laterPaymentsTotal: roundMoney(sale.laterPaymentsTotal || 0),
+    paidAmount: roundMoney(sale.paidAmount || 0),
+    pendingAmount: roundMoney(sale.pendingAmount || 0),
+    notes: String(sale.notes || ""),
+    createdAt: sale.createdAt || null,
+    lastPaymentAt: sale.lastPaymentAt || null,
+    payments,
+  };
+}
+
+function normalizeCachedReceivableCustomer(customer = {}) {
+  return {
+    customerKey: String(customer.customerKey || ""),
+    customerName: String(customer.customerName || ""),
+    branch: String(customer.branch || ""),
+    pendingAmount: roundMoney(customer.pendingAmount || 0),
+    paidAmount: roundMoney(customer.paidAmount || 0),
+    openSalesCount: Math.max(0, Number(customer.openSalesCount || 0)),
+    oldestSaleAt: customer.oldestSaleAt || null,
+    latestActivityAt: customer.latestActivityAt || null,
+  };
+}
+
+function normalizeCachedReceivableCustomerDetail(customer = {}) {
+  return {
+    ...normalizeCachedReceivableCustomer(customer),
+    sales: Array.isArray(customer.sales)
+      ? customer.sales.map((sale) => normalizeCachedReceivableSale(sale))
+      : [],
+  };
+}
+
+function normalizeReceivablesCacheBranchRecord(record = {}) {
+  const detailsSource =
+    record.details && typeof record.details === "object" ? record.details : {};
+  const details = Object.fromEntries(
+    Object.entries(detailsSource)
+      .filter(([customerKey]) => String(customerKey || "").trim())
+      .map(([customerKey, detail]) => [
+        String(customerKey || "").trim(),
+        normalizeCachedReceivableCustomerDetail(detail),
+      ]),
+  );
+  return {
+    updatedAt: record.updatedAt || null,
+    customers: Array.isArray(record.customers)
+      ? record.customers.map((customer) => normalizeCachedReceivableCustomer(customer))
+      : [],
+    details,
+  };
+}
+
+function normalizeReceivablesCache(cache = {}) {
+  const branchEntries =
+    cache?.branches && typeof cache.branches === "object"
+      ? cache.branches
+      : cache && typeof cache === "object"
+        ? cache
+        : {};
+
+  return {
+    branches: Object.fromEntries(
+      Object.entries(branchEntries)
+        .filter(([branch]) => String(branch || "").trim())
+        .map(([branch, record]) => [
+          String(branch || "").trim(),
+          normalizeReceivablesCacheBranchRecord(record),
+        ]),
+    ),
+  };
+}
+
+function saveReceivablesCache() {
+  persistJsonDeferred(STORAGE_KEYS.receivablesCache, state.receivablesCache, 180);
+}
+
+async function restoreReceivablesCache() {
+  const restoredCache = await readPersistedJson(STORAGE_KEYS.receivablesCache, {
+    branches: {},
+  });
+  state.receivablesCache = normalizeReceivablesCache(restoredCache);
+}
+
+function getReceivablesCacheBranch(branch = "") {
+  const normalizedBranch = String(branch || "").trim();
+  const cache = state.receivablesCache?.branches?.[normalizedBranch];
+  return cache
+    ? normalizeReceivablesCacheBranchRecord(cache)
+    : {
+        updatedAt: null,
+        customers: [],
+        details: {},
+      };
+}
+
+function getCachedReceivableCustomers(branch = "") {
+  return getReceivablesCacheBranch(branch).customers;
+}
+
+function getCachedReceivableCustomerDetail(branch = "", customerKey = "") {
+  const safeCustomerKey = String(customerKey || "").trim();
+  if (!safeCustomerKey) {
+    return null;
+  }
+
+  const branchCache = getReceivablesCacheBranch(branch);
+  return branchCache.details[safeCustomerKey] || null;
+}
+
+function upsertReceivablesCacheCustomers(branch = "", customers = []) {
+  const normalizedBranch = String(branch || "").trim();
+  if (!normalizedBranch) {
+    return [];
+  }
+
+  const currentCache = getReceivablesCacheBranch(normalizedBranch);
+  const nextBranches = {
+    ...(state.receivablesCache?.branches && typeof state.receivablesCache.branches === "object"
+      ? state.receivablesCache.branches
+      : {}),
+    [normalizedBranch]: {
+      ...currentCache,
+      updatedAt: new Date().toISOString(),
+      customers: Array.isArray(customers)
+        ? customers.map((customer) => normalizeCachedReceivableCustomer(customer))
+        : [],
+    },
+  };
+  state.receivablesCache = normalizeReceivablesCache({ branches: nextBranches });
+  saveReceivablesCache();
+  return getCachedReceivableCustomers(normalizedBranch);
+}
+
+function upsertReceivablesCacheCustomerDetail(branch = "", customer = null) {
+  const normalizedBranch = String(branch || "").trim();
+  const safeCustomerKey = String(customer?.customerKey || "").trim();
+  if (!normalizedBranch || !safeCustomerKey) {
+    return null;
+  }
+
+  const currentCache = getReceivablesCacheBranch(normalizedBranch);
+  const nextBranches = {
+    ...(state.receivablesCache?.branches && typeof state.receivablesCache.branches === "object"
+      ? state.receivablesCache.branches
+      : {}),
+    [normalizedBranch]: {
+      ...currentCache,
+      updatedAt: new Date().toISOString(),
+      details: {
+        ...(currentCache.details || {}),
+        [safeCustomerKey]: normalizeCachedReceivableCustomerDetail(customer),
+      },
+    },
+  };
+  state.receivablesCache = normalizeReceivablesCache({ branches: nextBranches });
+  saveReceivablesCache();
+  return getCachedReceivableCustomerDetail(normalizedBranch, safeCustomerKey);
 }
 
 function saveQueue() {
   persistJson(STORAGE_KEYS.queue, state.pendingQueue);
   if (typeof syncOfflineSalesAuditWithQueue === "function") {
     syncOfflineSalesAuditWithQueue();
+  }
+  if (typeof syncOfflineReceivablePaymentsAuditWithQueue === "function") {
+    syncOfflineReceivablePaymentsAuditWithQueue();
   }
   if (typeof scheduleClientSyncHealthReport === "function" && state.online) {
     scheduleClientSyncHealthReport();
@@ -329,6 +560,8 @@ function normalizeOfflineSaleRecord(record = {}) {
   const safeStatus = ["pending", "synced", "rejected", "requires_review"].includes(record.status)
     ? record.status
     : "pending";
+  const paymentMethod = String(record.paymentMethod || payload.paymentMethod || "Efectivo");
+  const receivedAmount = roundMoney(record.receivedAmount ?? payload.receivedAmount ?? 0);
   const requestBody =
     typeof record.request?.body === "string" && record.request.body.trim()
       ? record.request.body
@@ -342,8 +575,15 @@ function normalizeOfflineSaleRecord(record = {}) {
     shift: String(record.shift || payload.shift || ""),
     cashier: String(record.cashier || payload.cashier || ""),
     branch: String(record.branch || payload.branch || ""),
-    paymentMethod: String(record.paymentMethod || payload.paymentMethod || "Efectivo"),
-    receivedAmount: roundMoney(record.receivedAmount ?? payload.receivedAmount ?? 0),
+    paymentMethod,
+    receivedPaymentMethod: String(
+      record.receivedPaymentMethod
+      || payload.receivedPaymentMethod
+      || getSaleReceivedPaymentMethod(paymentMethod, "", receivedAmount),
+    ),
+    customerName: String(record.customerName || payload.customerName || ""),
+    notes: String(record.notes || payload.notes || ""),
+    receivedAmount,
     total: roundMoney(record.total ?? totals.total),
     itemCount: roundStock(record.itemCount ?? totals.itemCount),
     createdAt,
@@ -432,6 +672,9 @@ function buildOfflineSaleRecordFromQueuedOperation(operation = {}) {
     cashier: payload.cashier || "",
     branch: payload.branch || "",
     paymentMethod: payload.paymentMethod || "Efectivo",
+    receivedPaymentMethod: payload.receivedPaymentMethod || "",
+    customerName: payload.customerName || "",
+    notes: payload.notes || "",
     receivedAmount: payload.receivedAmount || 0,
     createdAt: operation.queuedAt || new Date().toISOString(),
     queuedAt: operation.queuedAt || new Date().toISOString(),
@@ -522,6 +765,9 @@ function registerPendingOfflineSale(payload, options = {}) {
     cashier: payload?.cashier || "",
     branch: payload?.branch || "",
     paymentMethod: payload?.paymentMethod || "Efectivo",
+    receivedPaymentMethod: payload?.receivedPaymentMethod || "",
+    customerName: payload?.customerName || "",
+    notes: payload?.notes || "",
     receivedAmount: payload?.receivedAmount || 0,
     createdAt: tempSale?.createdAt || options.createdAt || new Date().toISOString(),
     queuedAt: queueOperation?.queuedAt || new Date().toISOString(),
@@ -662,6 +908,286 @@ function reactivateOfflineSaleRecord(clientSaleId) {
   });
 }
 
+function normalizeOfflineReceivablePaymentRecord(record = {}) {
+  const payload =
+    record.requestPayload && typeof record.requestPayload === "object"
+      ? record.requestPayload
+      : getOfflineReceivablePaymentPayload(record) || {};
+  const clientPaymentId = String(record.clientPaymentId || payload.clientPaymentId || "").trim();
+  const queuedAt = record.queuedAt || record.createdAt || new Date().toISOString();
+  const createdAt = record.createdAt || queuedAt;
+  const safeStatus = ["pending", "synced", "rejected", "requires_review"].includes(record.status)
+    ? record.status
+    : "pending";
+  const requestBody =
+    typeof record.request?.body === "string" && record.request.body.trim()
+      ? record.request.body
+      : JSON.stringify(payload || {});
+
+  return {
+    clientPaymentId,
+    queueOperationId: String(record.queueOperationId || ""),
+    saleId: Number(record.saleId ?? payload.saleId ?? 0) || null,
+    linkedClientSaleId: String(record.linkedClientSaleId || payload.linkedClientSaleId || ""),
+    ticketNumber: String(record.ticketNumber || payload.ticketNumber || ""),
+    shift: String(record.shift || payload.shift || ""),
+    cashier: String(record.cashier || payload.cashier || ""),
+    branch: String(record.branch || payload.branch || ""),
+    customerName: String(record.customerName || payload.customerName || ""),
+    customerKey: String(record.customerKey || payload.customerKey || ""),
+    paymentMethod: String(record.paymentMethod || payload.paymentMethod || "Efectivo"),
+    amount: roundMoney(record.amount ?? payload.amount ?? 0),
+    notes: String(record.notes || payload.notes || ""),
+    createdAt,
+    queuedAt,
+    status: safeStatus,
+    retryCount: Math.max(0, Number(record.retryCount || 0)),
+    lastSyncAttemptAt: record.lastSyncAttemptAt || null,
+    syncedAt: record.syncedAt || null,
+    syncedPaymentId: Number(record.syncedPaymentId || 0) || null,
+    syncedSaleId: Number(record.syncedSaleId || payload.saleId || 0) || null,
+    lastError: String(record.lastError || ""),
+    lastErrorCode: Number.isFinite(Number(record.lastErrorCode))
+      ? Number(record.lastErrorCode)
+      : null,
+    rejectedAt: record.rejectedAt || null,
+    rejectedReason: String(record.rejectedReason || ""),
+    reviewReason: String(record.reviewReason || ""),
+    requestPayload: payload,
+    request: {
+      url: String(record.request?.url || "/api/receivables/payments"),
+      method: String(record.request?.method || "POST").toUpperCase(),
+      body: requestBody,
+      headers:
+        record.request?.headers && typeof record.request.headers === "object"
+          ? { ...record.request.headers }
+          : {},
+    },
+  };
+}
+
+function saveOfflineReceivablePayments() {
+  persistJsonDeferred(
+    STORAGE_KEYS.offlineReceivablePayments,
+    state.offlineReceivablePayments,
+    150,
+  );
+}
+
+async function restoreOfflineReceivablePayments() {
+  const restoredRecords = await readPersistedJson(STORAGE_KEYS.offlineReceivablePayments, []);
+  state.offlineReceivablePayments = Array.isArray(restoredRecords)
+    ? restoredRecords
+        .map((record) => normalizeOfflineReceivablePaymentRecord(record))
+        .filter((record) => record.clientPaymentId)
+        .sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")))
+    : [];
+}
+
+function getQueuedReceivablePaymentOperationByClientPaymentId(clientPaymentId) {
+  const safeClientPaymentId = String(clientPaymentId || "").trim();
+  if (!safeClientPaymentId) {
+    return null;
+  }
+
+  return state.pendingQueue.find((operation) => {
+    if (String(operation?.url || "") !== "/api/receivables/payments") {
+      return false;
+    }
+
+    try {
+      const payload = JSON.parse(operation.body || "{}");
+      return String(payload?.clientPaymentId || "") === safeClientPaymentId;
+    } catch (_error) {
+      return false;
+    }
+  }) || null;
+}
+
+function buildOfflineReceivablePaymentRecordFromQueuedOperation(operation = {}) {
+  if (String(operation?.url || "") !== "/api/receivables/payments") {
+    return null;
+  }
+
+  let payload = null;
+  try {
+    payload = JSON.parse(operation.body || "{}");
+  } catch (_error) {
+    payload = null;
+  }
+
+  if (!payload?.clientPaymentId) {
+    return null;
+  }
+
+  return normalizeOfflineReceivablePaymentRecord({
+    clientPaymentId: payload.clientPaymentId,
+    queueOperationId: operation.id || "",
+    saleId: payload.saleId || null,
+    linkedClientSaleId: payload.linkedClientSaleId || "",
+    ticketNumber: payload.ticketNumber || "",
+    shift: payload.shift || "",
+    cashier: payload.cashier || "",
+    branch: payload.branch || "",
+    customerName: payload.customerName || "",
+    customerKey: payload.customerKey || "",
+    paymentMethod: payload.paymentMethod || "Efectivo",
+    amount: payload.amount || 0,
+    notes: payload.notes || "",
+    createdAt: payload.createdAt || operation.queuedAt || new Date().toISOString(),
+    queuedAt: operation.queuedAt || new Date().toISOString(),
+    status: operation.syncBlocked ? "requires_review" : "pending",
+    retryCount: Math.max(0, Number(operation.syncAttempts || 0)),
+    lastSyncAttemptAt: operation.lastSyncAttemptAt || null,
+    lastError: operation.lastSyncError || "",
+    lastErrorCode: operation.lastSyncErrorCode ?? null,
+    requestPayload: payload,
+    request: {
+      url: "/api/receivables/payments",
+      method: String(operation.method || "POST").toUpperCase(),
+      body: operation.body || JSON.stringify(payload),
+      headers:
+        operation.headers && typeof operation.headers === "object"
+          ? { ...operation.headers }
+          : {},
+    },
+  });
+}
+
+function upsertOfflineReceivablePaymentRecord(record = {}) {
+  const normalizedRecord = normalizeOfflineReceivablePaymentRecord(record);
+  if (!normalizedRecord.clientPaymentId) {
+    return null;
+  }
+
+  const currentRecords = Array.isArray(state.offlineReceivablePayments)
+    ? state.offlineReceivablePayments
+    : [];
+  const index = currentRecords.findIndex(
+    (entry) => String(entry?.clientPaymentId || "") === normalizedRecord.clientPaymentId,
+  );
+  if (index === -1) {
+    state.offlineReceivablePayments = [normalizedRecord, ...currentRecords].sort((left, right) =>
+      String(right.createdAt || "").localeCompare(String(left.createdAt || "")),
+    );
+  } else {
+    const mergedRecord = normalizeOfflineReceivablePaymentRecord({
+      ...currentRecords[index],
+      ...normalizedRecord,
+      requestPayload: normalizedRecord.requestPayload || currentRecords[index].requestPayload,
+      request: {
+        ...(currentRecords[index].request || {}),
+        ...(normalizedRecord.request || {}),
+      },
+    });
+    state.offlineReceivablePayments = currentRecords.slice();
+    state.offlineReceivablePayments[index] = mergedRecord;
+  }
+
+  saveOfflineReceivablePayments();
+  return getOfflineReceivablePaymentRecordByClientPaymentId(normalizedRecord.clientPaymentId);
+}
+
+function syncOfflineReceivablePaymentsAuditWithQueue() {
+  const paymentOperations = state.pendingQueue
+    .map((operation) => buildOfflineReceivablePaymentRecordFromQueuedOperation(operation))
+    .filter(Boolean);
+  if (paymentOperations.length === 0 && state.offlineReceivablePayments.length === 0) {
+    return;
+  }
+
+  paymentOperations.forEach((record) => {
+    const currentRecord = getOfflineReceivablePaymentRecordByClientPaymentId(record.clientPaymentId);
+    upsertOfflineReceivablePaymentRecord({
+      ...currentRecord,
+      ...record,
+      status:
+        currentRecord?.status === "synced" || currentRecord?.status === "rejected"
+          ? currentRecord.status
+          : record.status,
+    });
+  });
+}
+
+function registerPendingOfflineReceivablePayment(payload, options = {}) {
+  const queueOperation =
+    options.queueOperationId
+      ? state.pendingQueue.find((operation) => operation.id === options.queueOperationId)
+      : getQueuedReceivablePaymentOperationByClientPaymentId(payload?.clientPaymentId);
+  return upsertOfflineReceivablePaymentRecord({
+    clientPaymentId: payload?.clientPaymentId,
+    queueOperationId: queueOperation?.id || options.queueOperationId || "",
+    saleId: payload?.saleId || null,
+    linkedClientSaleId: payload?.linkedClientSaleId || "",
+    ticketNumber: payload?.ticketNumber || "",
+    shift: payload?.shift || "",
+    cashier: payload?.cashier || "",
+    branch: payload?.branch || "",
+    customerName: payload?.customerName || "",
+    customerKey: payload?.customerKey || "",
+    paymentMethod: payload?.paymentMethod || "Efectivo",
+    amount: payload?.amount || 0,
+    notes: payload?.notes || "",
+    createdAt: options.createdAt || payload?.createdAt || new Date().toISOString(),
+    queuedAt: queueOperation?.queuedAt || new Date().toISOString(),
+    status: "pending",
+    requestPayload: payload,
+    request: {
+      url: "/api/receivables/payments",
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+      headers:
+        queueOperation?.headers && typeof queueOperation.headers === "object"
+          ? { ...queueOperation.headers }
+          : {},
+    },
+    lastError: "",
+    lastErrorCode: null,
+    rejectedAt: null,
+    rejectedReason: "",
+    reviewReason: "",
+  });
+}
+
+function markOfflineReceivablePaymentSynced(clientPaymentId, payment) {
+  const currentRecord = getOfflineReceivablePaymentRecordByClientPaymentId(clientPaymentId);
+  return upsertOfflineReceivablePaymentRecord({
+    ...currentRecord,
+    clientPaymentId,
+    status: "synced",
+    syncedAt: new Date().toISOString(),
+    syncedPaymentId: Number(payment?.id || 0) || null,
+    syncedSaleId: Number(payment?.saleId || currentRecord?.saleId || 0) || null,
+    lastError: "",
+    lastErrorCode: null,
+    reviewReason: "",
+  });
+}
+
+function markOfflineReceivablePaymentForReview(clientPaymentId, patch = {}) {
+  const currentRecord = getOfflineReceivablePaymentRecordByClientPaymentId(clientPaymentId);
+  if (!currentRecord) {
+    return null;
+  }
+
+  return upsertOfflineReceivablePaymentRecord({
+    ...currentRecord,
+    status: patch.status || "requires_review",
+    retryCount: Math.max(
+      currentRecord.retryCount || 0,
+      Number(patch.retryCount ?? currentRecord.retryCount ?? 0),
+    ),
+    lastSyncAttemptAt: patch.lastSyncAttemptAt || currentRecord.lastSyncAttemptAt || new Date().toISOString(),
+    lastError: patch.lastError ?? currentRecord.lastError,
+    lastErrorCode:
+      patch.lastErrorCode === undefined
+        ? currentRecord.lastErrorCode
+        : patch.lastErrorCode,
+    reviewReason: patch.reviewReason || currentRecord.reviewReason || "",
+    queueOperationId: patch.queueOperationId || currentRecord.queueOperationId,
+  });
+}
+
 function saveCart() {
   persistJson(STORAGE_KEYS.cart, state.cart);
 }
@@ -695,10 +1221,13 @@ async function restorePreferences() {
   }
   if (savedRouteMode === "1" || savedRouteMode === "0") {
     state.ui.routeMode = savedRouteMode === "1";
-    return;
+  } else {
+    state.ui.routeMode = shouldPreferRouteModeByDefault();
   }
 
-  state.ui.routeMode = shouldPreferRouteModeByDefault();
+  if (state.ui.routeMode) {
+    state.ui.routeRegisterCollapsed = true;
+  }
 }
 
 function persistCashierSession() {
@@ -788,16 +1317,26 @@ function getOfflineCashSalesFromQueue(shift, branch) {
           if (payload.shift !== shift || payload.branch !== branch) {
             return sum;
           }
-          if (payload.paymentMethod !== "Efectivo") {
-            return sum;
-          }
           const total = roundMoney(
             (Array.isArray(payload.items) ? payload.items : []).reduce(
               (lineSum, item) => lineSum + roundMoney(item.lineTotal || 0),
               0,
             ),
           );
-          return roundMoney(sum + total);
+          if (payload.paymentMethod === "Efectivo") {
+            return roundMoney(sum + total);
+          }
+          if (
+            payload.paymentMethod === "Fiado"
+            && getSaleReceivedPaymentMethod(
+              payload.paymentMethod,
+              payload.receivedPaymentMethod || "",
+              payload.receivedAmount || 0,
+            ) === "Efectivo"
+          ) {
+            return roundMoney(sum + roundMoney(payload.receivedAmount || 0));
+          }
+          return sum;
         } catch (_error) {
           return sum;
         }
@@ -809,11 +1348,18 @@ function getOfflineCashSalesFromQueue(shift, branch) {
 function calculateRegisterSummaryWithOffline(summary, offlineEvents) {
   const currentShift = refs.shiftSelect?.value || "Tarde";
   const branch = getActiveCashierBranch();
+  const currentCashier = state.cashier.name || "Mostrador";
   
   // Filtrar eventos offline del turno actual
   const shiftOfflineEvents = offlineEvents.filter(
     (e) => e.shift === currentShift && e.branch === branch
   );
+  const cashierOfflineEvents = shiftOfflineEvents.filter(
+    (event) => String(event.cashier || "") === currentCashier,
+  );
+  const offlineFinalCut = cashierOfflineEvents
+    .filter((event) => event.eventType === "final_cut")
+    .sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")))[0] || null;
   
   // Calcular entradas offline por inicio de caja y ventas pendientes en cola.
   const offlineOpeningAmount = roundMoney(
@@ -835,5 +1381,7 @@ function calculateRegisterSummaryWithOffline(summary, offlineEvents) {
     expectedCash: roundMoney(summary.expectedCash + offlineOpeningAmount + offlineCashSales - offlineWithdrawals),
     quickCuts: summary.quickCuts + shiftOfflineEvents.filter((e) => e.eventType === "quick_cut").length,
     finalCuts: summary.finalCuts + shiftOfflineEvents.filter((e) => e.eventType === "final_cut").length,
+    cashierLocked: Boolean(summary.cashierLocked || offlineFinalCut),
+    cashierFinalCutAt: summary.cashierFinalCutAt || offlineFinalCut?.createdAt || null,
   };
 }

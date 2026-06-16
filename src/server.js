@@ -19,15 +19,23 @@ const {
   ROOT_DIR,
   SESSION_COOKIE_SECURE,
 } = require("./config");
-const { createDatabaseBackup, installDatabaseFromBuffer, nowIso } = require("./db");
+const {
+  createDatabaseBackup,
+  installDatabaseFromBuffer,
+  nowIso,
+  SQLITE_COMPATIBILITY_ERROR_MESSAGE,
+} = require("./db");
 
 const services = require("./services");
 const adminAuth = require("./admin/auth");
 const ownerAuth = require("./owner/auth");
 const cashierAuth = require("./cashier/auth");
-const { getBusinessProfile } = require("./utils/helpers");
+const { getBusinessProfile, getStoreDateKey } = require("./utils/helpers");
 const { getSetting, setSetting } = require("./utils/settings");
 const { getSystemMetrics } = require("./admin/metrics");
+const {
+  notifyMerchandiseRequestCreated,
+} = require("./services/merchandiseRequestNotifications");
 
 const app = express();
 const server = http.createServer(app);
@@ -66,48 +74,28 @@ function getDefaultBranchCode() {
 
 function getRequestAccessContext(request, options = {}) {
   const cashierSession = cashierAuth.getCashierSessionFromRequest(request);
-  if (cashierSession) {
-    return {
-      authenticated: true,
-      role: "cashier",
-      cashierSession,
-      adminSession: null,
-      ownerSession: null,
-    };
-  }
-
   const ownerSession = ownerAuth.getOwnerSession(request, {
     touch: options.touchOwner !== false,
   });
-  if (ownerSession) {
-    return {
-      authenticated: true,
-      role: "owner",
-      cashierSession: null,
-      adminSession: null,
-      ownerSession,
-    };
-  }
-
   const adminSession = adminAuth.getAdminSession(request, {
     touch: options.touchAdmin !== false,
   });
-  if (adminSession) {
-    return {
-      authenticated: true,
-      role: "admin",
-      cashierSession: null,
-      adminSession,
-      ownerSession: null,
-    };
+
+  let role = "guest";
+  if (cashierSession) {
+    role = "cashier";
+  } else if (ownerSession) {
+    role = "owner";
+  } else if (adminSession) {
+    role = "admin";
   }
 
   return {
-    authenticated: false,
-    role: "guest",
-    cashierSession: null,
-    adminSession: null,
-    ownerSession: null,
+    authenticated: Boolean(cashierSession || ownerSession || adminSession),
+    role,
+    cashierSession: cashierSession || null,
+    adminSession: adminSession || null,
+    ownerSession: ownerSession || null,
   };
 }
 
@@ -134,15 +122,40 @@ function resolveRequestedBranch(request, accessContext, options = {}) {
   return requestedBranch;
 }
 
-function buildBootstrapAuthState(accessContext) {
+function getAccessContextAdminCapabilities(accessContext) {
+  return accessContext.adminSession || accessContext.ownerSession
+    ? services.getAdminCapabilities()
+    : [];
+}
+
+function canAccessAdminWorkspace(accessContext, adminCapabilities = getAccessContextAdminCapabilities(accessContext)) {
+  return Boolean(
+    accessContext.ownerSession
+    || (accessContext.adminSession && adminCapabilities.length > 0),
+  );
+}
+
+function canReadPrivateDashboard(accessContext, adminCapabilities = getAccessContextAdminCapabilities(accessContext)) {
+  return Boolean(
+    accessContext.cashierSession
+    || accessContext.ownerSession
+    || (accessContext.adminSession && adminCapabilities.length > 0),
+  );
+}
+
+function buildBootstrapAuthState(accessContext, adminCapabilities = getAccessContextAdminCapabilities(accessContext)) {
+  const canViewAdmin = canAccessAdminWorkspace(accessContext, adminCapabilities);
   return {
     role: accessContext.role || "guest",
     adminAuthenticated: Boolean(accessContext.adminSession),
     ownerAuthenticated: Boolean(accessContext.ownerSession),
     cashierAuthenticated: Boolean(accessContext.cashierSession),
     permissions: {
-      canViewAdmin: Boolean(accessContext.adminSession),
-      canManageBranches: Boolean(accessContext.adminSession),
+      canViewAdmin,
+      canManageBranches: Boolean(
+        accessContext.ownerSession
+        || (accessContext.adminSession && adminCapabilities.includes("branches")),
+      ),
       canOperateCashier: Boolean(accessContext.cashierSession),
     },
     admin: accessContext.adminSession
@@ -460,6 +473,23 @@ function broadcastMerchandiseRequestUpdate(requestRecord) {
   });
 }
 
+function broadcastWeightedAuditUpdate(session) {
+  if (!session) {
+    return;
+  }
+
+  io.emit("weighted-audit:updated", {
+    id: session.id,
+    branch: session.branch,
+    shift: session.shift,
+    auditedDateKey: session.auditedDateKey,
+    status: session.status,
+    sourceCashier: session.sourceCashier || "",
+    sourceRegisterEventId: session.sourceRegisterEventId || null,
+    completedAt: session.completedAt || null,
+  });
+}
+
 function requireEnabledModule(moduleCode) {
   return (_request, _response, next) => {
     try {
@@ -500,28 +530,34 @@ app.get("/api/health", (_request, response) => {
 });
 
 app.get("/api/dashboard", requireAuthenticatedActor, (request, response) => {
+  const adminCapabilities = getAccessContextAdminCapabilities(request.accessContext);
   const branch = resolveRequestedBranch(request, request.accessContext, {
-    allowAll: Boolean(request.accessContext.adminSession || request.accessContext.ownerSession),
+    allowAll: canAccessAdminWorkspace(request.accessContext, adminCapabilities),
   });
-  response.json(services.getDashboardSnapshot(branch));
+  response.json(
+    canReadPrivateDashboard(request.accessContext, adminCapabilities)
+      ? services.getDashboardSnapshot(branch)
+      : services.getPublicDashboardSnapshot(branch),
+  );
 });
 
 app.get("/api/bootstrap", (request, response) => {
   const accessContext = getRequestAccessContext(request);
+  const adminCapabilities = getAccessContextAdminCapabilities(accessContext);
   const branch = resolveRequestedBranch(request, accessContext, {
-    allowAll: Boolean(accessContext.adminSession || accessContext.ownerSession),
+    allowAll: canAccessAdminWorkspace(accessContext, adminCapabilities),
   });
   const includeInactiveInventory =
-    Boolean(accessContext.adminSession || accessContext.ownerSession)
+    canAccessAdminWorkspace(accessContext, adminCapabilities)
     && ["1", "true"].includes(String(request.query.includeInactiveInventory || "").toLowerCase());
 
   try {
-    const snapshot = accessContext.authenticated
+    const snapshot = canReadPrivateDashboard(accessContext, adminCapabilities)
       ? services.getDashboardSnapshot(branch, {
           includeInventoryInactive: includeInactiveInventory,
         })
       : services.getPublicDashboardSnapshot(branch);
-    snapshot.auth = buildBootstrapAuthState(accessContext);
+    snapshot.auth = buildBootstrapAuthState(accessContext, adminCapabilities);
     snapshot.profile = snapshot.profile || snapshot.store || {};
     snapshot.enabledModules = Array.isArray(snapshot.enabledModules) ? snapshot.enabledModules : [];
     snapshot.categories = Array.isArray(snapshot.categories) ? snapshot.categories : [];
@@ -530,7 +566,7 @@ app.get("/api/bootstrap", (request, response) => {
       ? snapshot.productAttributeDefinitions
       : [];
     snapshot.branding = snapshot.branding || snapshot.profile?.branding || snapshot.store?.branding || {};
-    snapshot.adminCapabilities = accessContext.adminSession ? services.getAdminCapabilities() : [];
+    snapshot.adminCapabilities = adminCapabilities;
 
     response.json(snapshot);
   } catch (err) {
@@ -562,6 +598,33 @@ app.post("/api/merchandise-requests", requireEnabledModule("merchandise_requests
     cashier: cashierSession.name,
     branch: cashierSession.branch,
   });
+  void notifyMerchandiseRequestCreated(merchandiseRequest)
+    .then((notificationResult) => {
+      if (!notificationResult) {
+        return;
+      }
+
+      if (notificationResult.skipped) {
+        console.warn(
+          `[merchandise-requests] Telegram alert skipped for request ${merchandiseRequest.id}: ${notificationResult.reason || "unknown-reason"}`,
+        );
+        return;
+      }
+
+      if (notificationResult.failedCount === 0) {
+        return;
+      }
+
+      console.warn(
+        `[merchandise-requests] Telegram alert partial failure for request ${merchandiseRequest.id}: `
+          + notificationResult.failed.map((item) => `${item.chatId}: ${item.message}`).join(" | "),
+      );
+    })
+    .catch((error) => {
+      console.warn(
+        `[merchandise-requests] Telegram alert failed for request ${merchandiseRequest.id}: ${error.message}`,
+      );
+    });
   broadcastMerchandiseRequestUpdate(merchandiseRequest);
   response.status(201).json({ request: merchandiseRequest });
 });
@@ -662,8 +725,13 @@ app.post("/api/merchandise-requests/:id/reject", (request, response, next) => {
 
 
 app.get("/api/products/:id", requireAuthenticatedActor, (request, response) => {
+  const adminCapabilities = getAccessContextAdminCapabilities(request.accessContext);
+  if (request.accessContext.adminSession && !canAccessAdminWorkspace(request.accessContext, adminCapabilities)) {
+    response.status(403).json({ message: "Esta seccion del admin esta bloqueada por el owner." });
+    return;
+  }
   const branch = resolveRequestedBranch(request, request.accessContext, {
-    allowAll: Boolean(request.accessContext.adminSession || request.accessContext.ownerSession),
+    allowAll: canAccessAdminWorkspace(request.accessContext, adminCapabilities),
   });
   const productId = Number(request.params.id);
   const product = services.getProductById(productId, branch);
@@ -1183,7 +1251,7 @@ app.post("/api/owner/templates/:key/apply", (request, response, next) => {
       actorType: "owner",
       actorName: request.ownerSession?.username || ownerAuth.getStoredOwnerUsername(),
     });
-    const snapshot = services.getDashboardSnapshot();
+    const snapshot = services.getPublicDashboardSnapshot();
     ownerAuth.destroyOwnerSessionFromRequest(request);
     clearOwnerSessionCookie(response);
     clearAdminSessionCookie(response);
@@ -1441,16 +1509,21 @@ app.post(
         },
       });
       broadcastSnapshot(services.getDashboardSnapshot("all"));
+      clearAdminSessionCookie(response);
+      clearOwnerSessionCookie(response);
 
       response.json({
         message: "Base de datos instalada correctamente.",
         backupPath: result.backupPath ? result.backupPath.replace(ROOT_DIR, "") : null,
         installedAt: result.installedAt,
+        requiresReauth: true,
+        sessionsPurged: result.sessionsPurged === true,
       });
     } catch (error) {
       if (
         error.message === "El archivo esta vacio o incompleto."
         || error.message === "El archivo no es una base de datos SQLite valida."
+        || error.message === SQLITE_COMPATIBILITY_ERROR_MESSAGE
       ) {
         response.status(400).json({ message: error.message });
         return;
@@ -1681,6 +1754,7 @@ app.post("/api/admin/weighted-audit/sessions", (request, response, next) => {
       auditedDateKey: session.auditedDateKey,
     },
   });
+  broadcastWeightedAuditUpdate(session);
   response.status(201).json({ session });
 });
 
@@ -1722,6 +1796,7 @@ app.patch("/api/admin/weighted-audit/sessions/:id/items", (request, response, ne
       itemsUpdated: Array.isArray(request.body?.items) ? request.body.items.length : 0,
     },
   });
+  broadcastWeightedAuditUpdate(session);
   response.json({ session });
 });
 
@@ -1735,7 +1810,8 @@ app.post("/api/admin/weighted-audit/sessions/:id/complete", (request, response, 
   const sessionId = Number(request.params.id);
   const session = services.completeWeightedAuditSession(sessionId, {
     completedBy: request.body?.completedBy || getAdminActorName(request),
-    notes: request.body?.notes || "",
+    notes: request.body?.notes,
+    items: Array.isArray(request.body?.items) ? request.body.items : undefined,
   });
   services.logAdminAction({
     actorName: getAdminActorName(request),
@@ -1749,6 +1825,7 @@ app.post("/api/admin/weighted-audit/sessions/:id/complete", (request, response, 
       incidents: session.summary?.incidentItems || 0,
     },
   });
+  broadcastWeightedAuditUpdate(session);
   response.json({ session });
 });
 
@@ -1800,6 +1877,12 @@ app.patch("/api/admin/register-events/:id", (request, response, next) => {
 }, (request, response) => {
   const eventId = Number(request.params.id);
   const event = services.updateRegisterEventAdmin(eventId, request.body || {});
+  if (event?.eventType === "final_cut" && typeof services.getWeightedAuditSessionBySourceRegisterEventId === "function") {
+    const session = services.getWeightedAuditSessionBySourceRegisterEventId(eventId);
+    if (session) {
+      broadcastWeightedAuditUpdate(session);
+    }
+  }
   services.logAdminAction({
     actorName: getAdminActorName(request),
     action: "register_event_update_admin",
@@ -1848,6 +1931,12 @@ app.get("/api/register/summary", cashierAuth.requireCashierAuth, (request, respo
     summary: services.getRegisterSummary(shift, cashierSession.branch, {
       cashier: cashierSession.name,
     }),
+    blindAuditPrompt: services.findCashierBlindAuditPrompt({
+      branch: cashierSession.branch,
+      shift,
+      cashier: cashierSession.name,
+      dateKey: getStoreDateKey(new Date()),
+    }),
   });
 });
 
@@ -1868,10 +1957,138 @@ app.post("/api/register/cut", cashierAuth.requireCashierAuth, (request, response
     cashier: cashierSession.name,
     branch: cashierSession.branch,
   });
+  const blindAuditPrompt = result.auditSession
+    ? services.findCashierBlindAuditPrompt({
+      branch: cashierSession.branch,
+      shift: result.auditSession.shift || request.body?.shift || "Tarde",
+      cashier: cashierSession.name,
+      dateKey: result.auditSession.auditedDateKey || getStoreDateKey(new Date()),
+    })
+    : null;
+  if (result.auditSession) {
+    broadcastWeightedAuditUpdate(result.auditSession);
+  }
+  response.json({
+    ...result,
+    blindAuditPrompt,
+  });
+});
+
+app.get("/api/register/weighted-audit/:id/blind", cashierAuth.requireCashierAuth, (request, response) => {
+  const cashierSession = request.cashierSession;
+  const sessionId = Number(request.params.id);
+  const prompt = services.buildCashierBlindAuditPrompt(sessionId, {
+    cashier: cashierSession.name,
+  });
+
+  if (!prompt) {
+    response.status(404).json({ message: "No encontre la captura ciega para este corte." });
+    return;
+  }
+  if (prompt.branch !== cashierSession.branch) {
+    response.status(403).json({ message: "Esta captura pertenece a otra sucursal." });
+    return;
+  }
+
+  response.json({ prompt });
+});
+
+app.post("/api/register/weighted-audit/:id/blind/preview", cashierAuth.requireCashierAuth, (request, response) => {
+  const cashierSession = request.cashierSession;
+  const sessionId = Number(request.params.id);
+  const prompt = services.buildCashierBlindAuditPrompt(sessionId, {
+    cashier: cashierSession.name,
+  });
+
+  if (!prompt) {
+    response.status(404).json({ message: "No encontre la captura ciega para este corte." });
+    return;
+  }
+  if (prompt.branch !== cashierSession.branch) {
+    response.status(403).json({ message: "Esta captura pertenece a otra sucursal." });
+    return;
+  }
+
+  const preview = services.previewCashierBlindWeightedAuditItems(sessionId, request.body || {}, {
+    cashier: cashierSession.name,
+  });
+  response.json(preview);
+});
+
+app.patch("/api/register/weighted-audit/:id/blind", cashierAuth.requireCashierAuth, (request, response) => {
+  const cashierSession = request.cashierSession;
+  const sessionId = Number(request.params.id);
+  const prompt = services.buildCashierBlindAuditPrompt(sessionId, {
+    cashier: cashierSession.name,
+  });
+
+  if (!prompt) {
+    response.status(404).json({ message: "No encontre la captura ciega para este corte." });
+    return;
+  }
+  if (prompt.branch !== cashierSession.branch) {
+    response.status(403).json({ message: "Esta captura pertenece a otra sucursal." });
+    return;
+  }
+
+  const result = services.updateCashierBlindWeightedAuditItems(sessionId, request.body || {}, {
+    cashier: cashierSession.name,
+  });
+  if (result.session) {
+    broadcastWeightedAuditUpdate(result.session);
+  }
   response.json(result);
 });
 
+app.get("/api/receivables", cashierAuth.requireCashierAuth, (request, response) => {
+  const cashierSession = request.cashierSession;
+  const search = String(request.query.search || "");
+  response.json({
+    customers: services.listReceivableCustomers(cashierSession.branch, { search }),
+  });
+});
+
+app.get("/api/receivables/customer/:customerKey", cashierAuth.requireCashierAuth, (request, response) => {
+  const cashierSession = request.cashierSession;
+  const customer = services.getReceivableCustomerDetail(
+    request.params.customerKey,
+    cashierSession.branch,
+  );
+
+  if (!customer) {
+    response.status(404).json({ message: "No encontre saldo pendiente para ese cliente." });
+    return;
+  }
+
+  response.json({ customer });
+});
+
+app.post("/api/receivables/payments", cashierAuth.requireCashierAuth, (request, response) => {
+  const cashierSession = request.cashierSession;
+  const payment = services.createReceivablePayment({
+    ...(request.body || {}),
+    cashier: cashierSession.name,
+    branch: cashierSession.branch,
+  });
+  const customer = services.getReceivableCustomerDetail(
+    payment.customerKey || services.normalizeReceivableCustomerKey(payment.customerName),
+    cashierSession.branch,
+  );
+  const snapshot = services.getDashboardSnapshot(cashierSession.branch);
+  broadcastSnapshot(snapshot);
+  response.status(201).json({
+    payment,
+    customer,
+    snapshot,
+  });
+});
+
 app.get("/api/activity/:kind/:id", requireAuthenticatedActor, (request, response, next) => {
+  const adminCapabilities = getAccessContextAdminCapabilities(request.accessContext);
+  if (request.accessContext.adminSession && !canAccessAdminWorkspace(request.accessContext, adminCapabilities)) {
+    response.status(403).json({ message: "Esta seccion del admin esta bloqueada por el owner." });
+    return;
+  }
   const kind = request.params.kind;
   const id = Number(request.params.id);
   let detail = null;
@@ -1886,6 +2103,9 @@ app.get("/api/activity/:kind/:id", requireAuthenticatedActor, (request, response
   } else if (kind === "inventory-movement" || kind === "inventory") {
     detail = services.getInventoryMovementById(id);
     foundKind = "inventory";
+  } else if (kind === "credit-payment" || kind === "receivable-payment") {
+    detail = services.getCreditPaymentById(id);
+    foundKind = "credit-payment";
   }
 
   if (!detail) {

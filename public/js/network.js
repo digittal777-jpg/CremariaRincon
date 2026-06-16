@@ -172,6 +172,52 @@ function getCashierAuthHeaders(token = state.cashier.token) {
     : {};
 }
 
+function getCashierTokenFromHeaders(headers = {}) {
+  if (!headers || typeof headers !== "object") {
+    return "";
+  }
+
+  const match = Object.entries(headers).find(([headerName, headerValue]) =>
+    String(headerName || "").toLowerCase() === "x-cashier-token"
+    && String(headerValue || "").trim(),
+  );
+  return match ? String(match[1] || "").trim() : "";
+}
+
+function shouldInvalidateCurrentCashierSessionForAuthFailure(headers = {}) {
+  const currentToken = String(state.cashier.token || "").trim();
+  if (!currentToken) {
+    return false;
+  }
+
+  const failingToken = getCashierTokenFromHeaders(headers);
+  if (!failingToken) {
+    return true;
+  }
+
+  return failingToken === currentToken;
+}
+
+function handleCashierSessionAuthFailure(options = {}) {
+  if (!shouldInvalidateCurrentCashierSessionForAuthFailure(options.headers || {})) {
+    return false;
+  }
+
+  if (typeof clearCashierSessionState === "function") {
+    clearCashierSessionState();
+  }
+  if (typeof sanitizeAfterCashierSessionLoss === "function") {
+    sanitizeAfterCashierSessionLoss();
+  }
+  if (typeof clearReceivablesSessionChange === "function") {
+    clearReceivablesSessionChange();
+  }
+  if (typeof renderCashierSession === "function") {
+    renderCashierSession();
+  }
+  return true;
+}
+
 function buildQueuedOperationId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 }
@@ -180,6 +226,9 @@ function inferQueuedOperationKind(operation = {}) {
   const method = String(operation.method || "GET").toUpperCase();
   if (operation.url === "/api/sales" && method === "POST") {
     return "sale";
+  }
+  if (operation.url === "/api/receivables/payments" && method === "POST") {
+    return "receivable_payment";
   }
 
   return "request";
@@ -487,17 +536,48 @@ async function requestCashierJson(url, options = {}) {
     });
   } catch (error) {
     if (error.statusCode === 401 || error.statusCode === 403) {
-      if (typeof clearCashierSessionState === "function") {
-        clearCashierSessionState();
-      }
-      if (typeof renderCashierSession === "function") {
-        renderCashierSession();
-      }
+      handleCashierSessionAuthFailure({
+        headers: {
+          ...getCashierAuthHeaders(),
+          ...(options.headers || {}),
+        },
+      });
       throw new Error("La sesion del cajero vencio. Vuelve a iniciar sesion.");
     }
 
     throw error;
   }
+}
+
+function handleAdminSessionFailure(error) {
+  if (!isAdminSessionFailure(error)) {
+    return false;
+  }
+
+  state.admin.authenticated = false;
+  state.admin.csrfToken = "";
+  state.admin.sessionExpiresAt = null;
+  if (typeof resetAdminSensitiveWorkspaceData === "function") {
+    resetAdminSensitiveWorkspaceData();
+  } else {
+    state.admin.capabilitiesResolved = false;
+  }
+  if (!state.owner.authenticated) {
+    state.adminCapabilities = [];
+    if (typeof updateModuleVisibility === "function") {
+      updateModuleVisibility();
+    }
+  }
+  if (typeof closeAdminModal === "function") {
+    closeAdminModal();
+  }
+  if (typeof renderAdminModal === "function") {
+    renderAdminModal();
+  }
+  if (typeof handleApprovalsMobileAdminSessionLoss === "function") {
+    handleApprovalsMobileAdminSessionLoss();
+  }
+  return true;
 }
 
 async function requestAdminJson(url, options = {}) {
@@ -511,18 +591,7 @@ async function requestAdminJson(url, options = {}) {
       },
     });
   } catch (error) {
-    if (isAdminSessionFailure(error)) {
-      state.admin.authenticated = false;
-      state.admin.csrfToken = "";
-      state.admin.sessionExpiresAt = null;
-      if (typeof closeAdminModal === "function") {
-        closeAdminModal();
-      }
-      if (typeof renderAdminModal === "function") {
-        renderAdminModal();
-      }
-    }
-
+    handleAdminSessionFailure(error);
     throw error;
   }
 }
@@ -538,6 +607,9 @@ async function loadAdminAuthStatus() {
   state.admin.authenticated = Boolean(response.authenticated);
   state.admin.csrfToken = state.admin.authenticated ? String(response.csrfToken || "") : "";
   state.admin.sessionExpiresAt = response.sessionExpiresAt || null;
+  if (!state.admin.authenticated && !state.owner.authenticated) {
+    state.admin.capabilitiesResolved = false;
+  }
   if (state.online) {
     scheduleClientSyncHealthReport({ force: true, delayMs: 0 });
   }
@@ -565,6 +637,14 @@ async function requestOwnerJson(url, options = {}) {
       state.owner.authenticated = false;
       state.owner.csrfToken = "";
       state.owner.sessionExpiresAt = null;
+      state.owner.accessLoaded = false;
+      if (!state.admin.authenticated) {
+        state.admin.capabilitiesResolved = false;
+        state.adminCapabilities = [];
+        if (typeof updateModuleVisibility === "function") {
+          updateModuleVisibility();
+        }
+      }
       if (typeof closeOwnerConsoleModal === "function") {
         closeOwnerConsoleModal();
       }
@@ -588,6 +668,9 @@ async function loadOwnerAuthStatus() {
   state.owner.authenticated = Boolean(response.authenticated);
   state.owner.csrfToken = state.owner.authenticated ? String(response.csrfToken || "") : "";
   state.owner.sessionExpiresAt = response.sessionExpiresAt || null;
+  if (!state.owner.authenticated && !state.admin.authenticated) {
+    state.admin.capabilitiesResolved = false;
+  }
   if (state.online) {
     scheduleClientSyncHealthReport({ force: true, delayMs: 0 });
   }
@@ -628,6 +711,9 @@ async function loadCashierAuthStatus() {
     state.cashier.branch = "";
     state.cashier.authenticated = false;
     persistCashierSession();
+  }
+  if (typeof sanitizeAfterCashierSessionLoss === "function") {
+    sanitizeAfterCashierSessionLoss();
   }
   if (typeof renderCashierSession === "function") {
     renderCashierSession();
@@ -673,6 +759,68 @@ function getQueuedSaleOperationIndexByClientSaleId(clientSaleId) {
   );
 }
 
+function getQueuedReceivablePaymentPayload(operation = {}) {
+  if (String(operation?.url || "") !== "/api/receivables/payments") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(operation.body || "{}");
+  } catch (_error) {
+    return null;
+  }
+}
+
+function getQueuedReceivablePaymentClientPaymentId(operation = {}) {
+  return String(getQueuedReceivablePaymentPayload(operation)?.clientPaymentId || "").trim();
+}
+
+function resolveQueuedReceivablePaymentPayload(operation = {}) {
+  const payload = getQueuedReceivablePaymentPayload(operation);
+  if (!payload) {
+    return { payload: null, dependencyWaiting: false, dependencyMissing: false };
+  }
+
+  const linkedClientSaleId = String(payload.linkedClientSaleId || "").trim();
+  if (!linkedClientSaleId) {
+    return {
+      payload,
+      dependencyWaiting: false,
+      dependencyMissing: false,
+    };
+  }
+
+  const linkedSaleRecord = getOfflineSaleRecordByClientSaleId(linkedClientSaleId);
+  if (!linkedSaleRecord) {
+    return {
+      payload,
+      dependencyWaiting: false,
+      dependencyMissing: true,
+      linkedSaleRecord: null,
+    };
+  }
+
+  const resolvedSaleId = Number(linkedSaleRecord.syncedSaleId || payload.saleId || 0) || null;
+  if (!resolvedSaleId) {
+    return {
+      payload,
+      dependencyWaiting: true,
+      dependencyMissing: false,
+      linkedSaleRecord,
+    };
+  }
+
+  return {
+    payload: {
+      ...payload,
+      saleId: resolvedSaleId,
+    },
+    dependencyWaiting: false,
+    dependencyMissing: false,
+    linkedSaleRecord,
+  };
+}
+
 function classifyOfflineSaleReviewReason(error) {
   const message = String(error?.message || "").toLowerCase();
   if (
@@ -690,6 +838,23 @@ function classifyOfflineSaleReviewReason(error) {
   return "sync_error";
 }
 
+function classifyOfflineReceivablePaymentReviewReason(error) {
+  const message = String(error?.message || "").toLowerCase();
+  if (
+    message.includes("saldo")
+    || message.includes("fiado")
+    || message.includes("ticket")
+    || message.includes("abono")
+    || message.includes("corte final")
+    || message.includes("sucursal")
+    || message.includes("cajero")
+  ) {
+    return "payment_conflict";
+  }
+
+  return "sync_error";
+}
+
 function renderSyncStatus() {
   if (state.online) {
     scheduleClientSyncHealthReport();
@@ -697,6 +862,10 @@ function renderSyncStatus() {
 
   if (refs.networkStatus) {
     refs.networkStatus.textContent = state.online ? "En linea" : "Offline";
+  }
+
+  if (typeof renderApprovalsMobileView === "function") {
+    renderApprovalsMobileView();
   }
 
   if (!refs.syncStatus) {
@@ -707,45 +876,74 @@ function renderSyncStatus() {
 
   if (state.syncingQueue) {
     refs.syncStatus.textContent = `Sincronizando ${state.pendingQueue.length}`;
-    syncStatusTarget.title = "Sincronizando ventas offline pendientes.";
+    syncStatusTarget.title = "Sincronizando operaciones offline pendientes.";
     return;
   }
 
   const blockedCount = getBlockedPendingOperationCount();
-  const offlineSalesSummary = typeof getOfflineSalesStatusSummary === "function"
-    ? getOfflineSalesStatusSummary()
+  const offlineOperationSummary = typeof getOfflineOperationStatusSummary === "function"
+    ? getOfflineOperationStatusSummary()
     : {
         pending: 0,
         requiresReview: 0,
         synced: 0,
         rejected: 0,
         outstanding: state.pendingQueue.length,
+        sales: {
+          pending: 0,
+          requiresReview: 0,
+          synced: 0,
+          rejected: 0,
+          outstanding: state.pendingQueue.length,
+        },
+        receivablePayments: {
+          pending: 0,
+          requiresReview: 0,
+          synced: 0,
+          rejected: 0,
+          outstanding: 0,
+        },
       };
-  const pendingSalesCount = typeof getPendingOfflineSalesCount === "function"
-    ? getPendingOfflineSalesCount()
-    : offlineSalesSummary.outstanding;
+  const pendingOperationsCount = Math.max(
+    0,
+    Number(offlineOperationSummary.outstanding || state.pendingQueue.length || 0),
+  );
+  let pendingSalesCount = Math.max(
+    0,
+    Number(offlineOperationSummary.sales?.outstanding || 0),
+  );
+  const pendingPaymentCount = Math.max(
+    0,
+    Number(offlineOperationSummary.receivablePayments?.outstanding || 0),
+  );
+  const pendingLabel = pendingPaymentCount > 0 && pendingSalesCount > 0
+    ? "pendientes"
+    : pendingPaymentCount > 0
+      ? "abonos pendientes"
+      : "ventas pendientes";
+  pendingSalesCount = pendingOperationsCount;
   const needsCashierReauth = Boolean(
     state.online
-    && pendingSalesCount > 0
+    && pendingOperationsCount > 0
     && (!state.cashier.authenticated || !state.cashier.token),
   );
-  const reviewCount = Math.max(blockedCount, offlineSalesSummary.requiresReview);
+  const reviewCount = Math.max(blockedCount, offlineOperationSummary.requiresReview);
   if (reviewCount > 0) {
     refs.syncStatus.textContent = reviewCount === 1
-      ? "1 venta requiere revision"
-      : `${reviewCount} ventas requieren revision`;
-    syncStatusTarget.title = "Toca para descargar el registro local de ventas offline.";
+      ? "1 operacion requiere revision"
+      : `${reviewCount} operaciones requieren revision`;
+    syncStatusTarget.title = "Toca para revisar el registro local de operaciones offline.";
     return;
   }
 
-  refs.syncStatus.textContent = pendingSalesCount > 0
+  refs.syncStatus.textContent = pendingOperationsCount > 0
     ? needsCashierReauth
       ? `${pendingSalesCount} pendientes · iniciar sesion`
-      : `${pendingSalesCount} pendientes`
+      : `${pendingOperationsCount} pendientes`
     : "Sin pendientes";
   syncStatusTarget.title = pendingSalesCount > 0
-    ? "Toca para descargar el registro local de ventas offline."
-    : "Sin ventas offline pendientes.";
+    ? `Toca para revisar ${pendingLabel} en este dispositivo.`
+    : "Sin operaciones offline pendientes.";
 
 }
 
@@ -772,6 +970,47 @@ async function syncPendingQueue(options = {}) {
     const operation = normalizeQueuedOperation(state.pendingQueue[queueIndex]);
     state.pendingQueue[queueIndex] = operation;
     const clientSaleId = getQueuedSaleClientSaleId(operation);
+    const clientPaymentId = getQueuedReceivablePaymentClientPaymentId(operation);
+
+    if (operation.kind === "receivable_payment") {
+      const resolvedPayment = resolveQueuedReceivablePaymentPayload(operation);
+      if (resolvedPayment.dependencyMissing) {
+        operation.syncBlocked = true;
+        operation.lastSyncError = "El ticket offline ligado a este abono ya no esta disponible para sincronizar.";
+        operation.lastSyncErrorCode = null;
+        state.pendingQueue[queueIndex] = operation;
+        saveQueue();
+        if (clientPaymentId) {
+          markOfflineReceivablePaymentForReview(clientPaymentId, {
+            status: "requires_review",
+            lastSyncAttemptAt: operation.lastSyncAttemptAt || new Date().toISOString(),
+            lastError: operation.lastSyncError,
+            lastErrorCode: null,
+            reviewReason: "sale_dependency_missing",
+            queueOperationId: operation.id,
+          });
+        }
+        if (typeof refreshOfflineSalesUi === "function") {
+          refreshOfflineSalesUi();
+        }
+        renderSyncStatus();
+        showToast(
+          "Un abono offline perdio la referencia del ticket original y necesita revision manual.",
+          "error",
+        );
+        break;
+      }
+
+      if (resolvedPayment.dependencyWaiting) {
+        renderSyncStatus();
+        break;
+      }
+
+      if (resolvedPayment.payload) {
+        operation.body = JSON.stringify(resolvedPayment.payload);
+        state.pendingQueue[queueIndex] = operation;
+      }
+    }
 
     if (operation.syncBlocked && !forceBlocked) {
       saveQueue();
@@ -815,8 +1054,14 @@ async function syncPendingQueue(options = {}) {
       if (clientSaleId) {
         markOfflineSaleSynced(clientSaleId, response?.sale || null);
       }
+      if (clientPaymentId) {
+        markOfflineReceivablePaymentSynced(clientPaymentId, response?.payment || null);
+      }
       if (typeof refreshOfflineSalesUi === "function") {
         refreshOfflineSalesUi();
+      }
+      if (typeof refreshReceivablesUi === "function") {
+        void refreshReceivablesUi({ silent: true });
       }
       renderSyncStatus();
       if (stopAfterTarget) {
@@ -825,6 +1070,9 @@ async function syncPendingQueue(options = {}) {
     } catch (error) {
       if (isNetworkError(error) || error.statusCode === 401 || error.statusCode === 403) {
         if (error.statusCode === 401 || error.statusCode === 403) {
+          const invalidatedCurrentSession = handleCashierSessionAuthFailure({
+            headers: operationHeaders,
+          });
           if (clientSaleId) {
             markOfflineSaleForReview(clientSaleId, {
               status: "pending",
@@ -836,10 +1084,26 @@ async function syncPendingQueue(options = {}) {
               queueOperationId: operation.id,
             });
           }
+          if (clientPaymentId) {
+            markOfflineReceivablePaymentForReview(clientPaymentId, {
+              status: "pending",
+              retryCount: operation.syncAttempts,
+              lastSyncAttemptAt: operation.lastSyncAttemptAt,
+              lastError: "La sesion del cajero necesita reactivarse para sincronizar este abono.",
+              lastErrorCode: error.statusCode,
+              reviewReason: "auth_required",
+              queueOperationId: operation.id,
+            });
+          }
           if (typeof refreshOfflineSalesUi === "function") {
             refreshOfflineSalesUi();
           }
-          showToast("Hay ventas pendientes, pero la sesion del cajero necesita reactivarse.", "error");
+          showToast(
+            invalidatedCurrentSession
+              ? "Hay operaciones pendientes, pero la sesion del cajero actual vencio."
+              : "Hay operaciones pendientes, pero el cajero que las capturo necesita reactivar su sesion.",
+            "error",
+          );
         }
         break;
       }
@@ -861,12 +1125,28 @@ async function syncPendingQueue(options = {}) {
           queueOperationId: operation.id,
         });
       }
+      if (clientPaymentId) {
+        markOfflineReceivablePaymentForReview(clientPaymentId, {
+          status: "requires_review",
+          retryCount: operation.syncAttempts,
+          lastSyncAttemptAt: operation.lastSyncAttemptAt,
+          lastError: operation.lastSyncError,
+          lastErrorCode: operation.lastSyncErrorCode,
+          reviewReason: classifyOfflineReceivablePaymentReviewReason(error),
+          queueOperationId: operation.id,
+        });
+      }
       if (typeof refreshOfflineSalesUi === "function") {
         refreshOfflineSalesUi();
       }
+      if (typeof refreshReceivablesUi === "function") {
+        void refreshReceivablesUi({ silent: true });
+      }
       renderSyncStatus();
       showToast(
-        "Una venta offline fue rechazada por el servidor. Sigue pendiente para revision manual y no se descarto.",
+        clientPaymentId
+          ? "Un abono offline fue rechazado por el servidor. Sigue pendiente para revision manual y no se descarto."
+          : "Una venta offline fue rechazada por el servidor. Sigue pendiente para revision manual y no se descarto.",
         "error",
       );
       break;
@@ -973,7 +1253,7 @@ async function syncRegisterEvents() {
           ? getCashierAuthHeaders(state.cashier.token || "")
           : {};
 
-      await performJsonRequest(url, {
+      const response = await performJsonRequest(url, {
         method: "POST",
         body: JSON.stringify(payload),
         headers: eventHeaders,
@@ -982,9 +1262,25 @@ async function syncRegisterEvents() {
       // Marcar como sincronizado
       event.synced = true;
       event.syncedAt = new Date().toISOString();
+      if (
+        event.eventType === "final_cut"
+        && event.cashier === state.cashier.name
+        && event.branch === state.cashier.branch
+        && typeof setCashierBlindAuditPrompt === "function"
+      ) {
+        setCashierBlindAuditPrompt(response?.blindAuditPrompt || null);
+      }
     } catch (error) {
       if (error.statusCode === 401 || error.statusCode === 403) {
-        showToast("Hay cortes guardados offline, pero la sesion del cajero vencio.", "error");
+        const invalidatedCurrentSession = handleCashierSessionAuthFailure({
+          headers: eventHeaders,
+        });
+        showToast(
+          invalidatedCurrentSession
+            ? "Hay cortes guardados offline, pero la sesion del cajero actual vencio."
+            : "Hay cortes guardados offline, pero el cajero que los capturo necesita reactivar su sesion.",
+          "error",
+        );
         break;
       }
       console.error("Error sincronizando evento de caja:", error);
@@ -997,6 +1293,9 @@ async function syncRegisterEvents() {
   // Limpia eventos ya sincronizados para evitar crecimiento infinito del cache local.
   state.register.events = state.register.events.filter((event) => !event.synced);
   saveRegisterEvents();
+  if (typeof loadRegisterSummary === "function" && state.cashier.authenticated) {
+    await loadRegisterSummary({ silent: true });
+  }
 }
 
 // Sincronizar todo (cola + eventos de caja)
@@ -1025,14 +1324,35 @@ function registerConnectionEvents() {
     state.online = true;
     refs.socketStatus.textContent = "Reconectando...";
     renderSyncStatus();
-    const pendingSalesCount = typeof getPendingOfflineSalesCount === "function"
-      ? getPendingOfflineSalesCount()
-      : 0;
-    if (pendingSalesCount > 0) {
+    const offlineOperationSummary = typeof getOfflineOperationStatusSummary === "function"
+      ? getOfflineOperationStatusSummary()
+      : {
+          outstanding: 0,
+          sales: { outstanding: 0 },
+          receivablePayments: { outstanding: 0 },
+        };
+    const pendingOperationsCount = Math.max(
+      0,
+      Number(offlineOperationSummary.outstanding || 0),
+    );
+    const pendingSalesCount = Math.max(
+      0,
+      Number(offlineOperationSummary.sales?.outstanding || 0),
+    );
+    const pendingPaymentsCount = Math.max(
+      0,
+      Number(offlineOperationSummary.receivablePayments?.outstanding || 0),
+    );
+    const pendingLabel = pendingPaymentsCount > 0 && pendingSalesCount > 0
+      ? "operaciones"
+      : pendingPaymentsCount > 0
+        ? "abonos"
+        : "ventas";
+    if (pendingOperationsCount > 0) {
       showToast(
         state.cashier.token
-          ? `Tienes ${pendingSalesCount} ventas pendientes. Intentando sincronizarlas ahora.`
-          : `Tienes ${pendingSalesCount} ventas pendientes. Vuelve a iniciar sesion para sincronizarlas.`,
+          ? `Tienes ${pendingOperationsCount} ${pendingLabel} pendientes. Intentando sincronizarlas ahora.`
+          : `Tienes ${pendingOperationsCount} ${pendingLabel} pendientes. Vuelve a iniciar sesion para sincronizarlas.`,
         "info",
       );
     }
@@ -1146,6 +1466,21 @@ function connectSocket() {
       void loadAdminMerchandiseRequests(getAdminBranch()).catch(() => {});
     }
 
+    if (state.mobileApprovals?.active && state.admin.authenticated) {
+      void loadApprovalsMobileRequests({ silent: true }).then(() => {
+        if (
+          state.mobileApprovals.selectedRequestId
+          && Number(state.mobileApprovals.selectedRequestId) === Number(event.id)
+        ) {
+          return loadApprovalsMobileDetail(event.id, {
+            silent: true,
+            resetReason: false,
+          });
+        }
+        return null;
+      }).catch(() => {});
+    }
+
     if (
       refs.merchandiseRequestDetailModal?.classList.contains("open")
       && state.merchandise.detailAdminMode
@@ -1153,6 +1488,32 @@ function connectSocket() {
       && state.admin.authenticated
     ) {
       void openAdminMerchandiseRequestDetail(event.id).catch(() => {});
+    }
+  });
+
+  state.socket.on("weighted-audit:updated", (event) => {
+    if (!event) {
+      return;
+    }
+
+    if (refs.adminModal?.classList.contains("open") && state.admin.authenticated) {
+      void loadAdminWeightedAuditSessions(getAdminBranch()).then(() => {
+        if (
+          state.admin.weightedAudit?.currentSession?.id
+          && Number(state.admin.weightedAudit.currentSession.id) === Number(event.id)
+        ) {
+          return openAdminWeightedAuditSession(event.id);
+        }
+        return null;
+      }).catch(() => {});
+    }
+
+    if (
+      state.cashier.authenticated
+      && event.branch === state.cashier.branch
+      && event.sourceCashier === state.cashier.name
+    ) {
+      void loadRegisterSummary({ silent: true }).catch(() => {});
     }
   });
 }

@@ -108,14 +108,70 @@ function getMerchandiseRequestById(requestId) {
   return row ? hydrateMerchandiseRequest(row) : null;
 }
 
+function getProductCurrentStock(productId, branch) {
+  const product = db.prepare(`
+    SELECT id, stock, active
+    FROM products
+    WHERE id = ? AND branch = ?
+  `).get(productId, branch);
+
+  if (!product || !product.active) {
+    return null;
+  }
+
+  return roundStock(product.stock);
+}
+
+function assertPreparedItemsHaveFeasibleFinalStock(items, branch) {
+  const netByProductId = new Map();
+
+  items.forEach((item) => {
+    const currentNet = netByProductId.has(item.productId)
+      ? roundStock(netByProductId.get(item.productId))
+      : 0;
+    const quantityDelta = item.mode === "receive" ? item.quantity : roundStock(-item.quantity);
+    netByProductId.set(item.productId, roundStock(currentNet + quantityDelta));
+  });
+
+  netByProductId.forEach((netDelta, productId) => {
+    const currentStock = getProductCurrentStock(productId, branch);
+    if (currentStock == null) {
+      throw createHttpError("Uno de los productos de la solicitud ya no esta disponible.");
+    }
+
+    const finalStock = roundStock(currentStock + netDelta);
+    if (finalStock < 0) {
+      const productName = items.find((item) => Number(item.productId) === Number(productId))?.productName
+        || `Producto ${productId}`;
+      throw createHttpError(`El balance final de ${productName} dejaria stock negativo.`);
+    }
+  });
+}
+
+function orderItemsForApproval(items = []) {
+  return items
+    .map((item, index) => ({ ...item, _originalIndex: index }))
+    .sort((left, right) => {
+      if (Number(left.productId) !== Number(right.productId)) {
+        return Number(left.productId) - Number(right.productId);
+      }
+
+      if (left.mode !== right.mode) {
+        return left.mode === "receive" ? -1 : 1;
+      }
+
+      return left._originalIndex - right._originalIndex;
+    })
+    .map(({ _originalIndex, ...item }) => item);
+}
+
 function prepareMerchandiseRequestItems(incomingItems, branch) {
   if (!Array.isArray(incomingItems) || incomingItems.length === 0) {
     throw createHttpError("Agrega al menos un producto a la solicitud.");
   }
 
   const runningStockByProductId = new Map();
-
-  return incomingItems.map((item) => {
+  const preparedItems = incomingItems.map((item) => {
     const productId = Number(item.productId);
     const mode = normalizeRequestMode(item.mode);
     const requestedQuantity = roundStock(item.quantity);
@@ -130,7 +186,7 @@ function prepareMerchandiseRequestItems(incomingItems, branch) {
     }
 
     const product = db.prepare(`
-      SELECT id, name, price, stock, active, branch
+      SELECT id, name, price, stock, active, branch, unit
       FROM products
       WHERE id = ? AND branch = ?
     `).get(productId, branch);
@@ -158,10 +214,6 @@ function prepareMerchandiseRequestItems(incomingItems, branch) {
     const quantityDelta = mode === "receive" ? quantity : roundStock(-quantity);
     const stockAfter = roundStock(stockBefore + quantityDelta);
 
-    if (mode === "return" && stockAfter < 0) {
-      throw createHttpError(`No hay stock suficiente para retirar ${product.name}.`);
-    }
-
     runningStockByProductId.set(productId, stockAfter);
     const totalMagnitude = requestedTotalValue > 0
       ? requestedTotalValue
@@ -176,6 +228,9 @@ function prepareMerchandiseRequestItems(incomingItems, branch) {
       mode,
     };
   });
+
+  assertPreparedItemsHaveFeasibleFinalStock(preparedItems, branch);
+  return preparedItems;
 }
 
 function createMerchandiseRequest(payload) {
@@ -381,7 +436,7 @@ function approveMerchandiseRequest(requestId) {
     `);
     const runningStockByProductId = new Map();
 
-    currentRequest.items.forEach((item) => {
+    orderItemsForApproval(currentRequest.items).forEach((item) => {
       const product = db.prepare(`
         SELECT id, name, stock, active
         FROM products

@@ -140,6 +140,12 @@ const BACKUP_NOTIFY_TO = String(process.env.BACKUP_NOTIFY_TO || "")
   .filter(Boolean);
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "").trim();
 const RESEND_API_URL = String(process.env.RESEND_API_URL || "https://api.resend.com/emails").trim();
+const TELEGRAM_BOT_TOKEN = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
+const TELEGRAM_CHAT_IDS = String(process.env.TELEGRAM_CHAT_IDS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+const TELEGRAM_API_BASE_URL = String(process.env.TELEGRAM_API_BASE_URL || "https://api.telegram.org").trim();
 const BACKUP_SYNC_REPORT_STALE_HOURS = Math.max(1, Number(process.env.BACKUP_SYNC_REPORT_STALE_HOURS || 36));
 const BACKUP_LOCAL_STAGING_KEEP = Math.max(1, Number(process.env.BACKUP_LOCAL_STAGING_KEEP || 2));
 
@@ -183,6 +189,9 @@ module.exports = {
   BACKUP_NOTIFY_TO,
   RESEND_API_KEY,
   RESEND_API_URL,
+  TELEGRAM_BOT_TOKEN,
+  TELEGRAM_CHAT_IDS,
+  TELEGRAM_API_BASE_URL,
   BACKUP_SYNC_REPORT_STALE_HOURS,
   BACKUP_LOCAL_STAGING_KEEP,
 };

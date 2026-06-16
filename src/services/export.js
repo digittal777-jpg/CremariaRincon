@@ -13,6 +13,9 @@ const {
   getStoreHourLabel,
   getStoreName,
   getStoreTimeZone,
+  getSalePendingAmount,
+  getSaleReceivedPaymentMethod,
+  isCreditPaymentMethod,
   isSameStoreDay,
   normalizeBranch,
   nowIso,
@@ -22,6 +25,7 @@ const {
 const { listAllProductsForExport } = require("./products");
 const { listInventoryMovementsForExport } = require("./inventory");
 const { listRegisterEventsForExport } = require("./register");
+const { listCreditPaymentsForExport } = require("./receivables");
 const { listSalesForExport } = require("./sales");
 const { listWeightedAuditRowsForExport } = require("./weightedAudit");
 
@@ -109,7 +113,7 @@ function resolveExportBaseDate(rawBaseDate, scope) {
 
 function getBar(total, maxTotal) {
   if (maxTotal <= 0) return "";
-  return "█".repeat(Math.max(1, Math.round((total / maxTotal) * 20)));
+  return "#".repeat(Math.max(1, Math.round((total / maxTotal) * 20)));
 }
 
 const reportDateTimeFormatter = new Intl.DateTimeFormat("es-MX", {
@@ -125,6 +129,60 @@ const reportDateTimeFormatter = new Intl.DateTimeFormat("es-MX", {
 
 function formatReportDateTime(value) {
   return reportDateTimeFormatter.format(new Date(value));
+}
+
+function getCollectedTodayByMethod(row, method) {
+  const total = roundMoney(row.total || 0);
+  const receivedAmount = roundMoney(row.received_amount || 0);
+
+  if (!isCreditPaymentMethod(row.payment_method)) {
+    return row.payment_method === method ? total : 0;
+  }
+
+  return getSaleReceivedPaymentMethod(
+    row.payment_method,
+    row.received_payment_method || "",
+    receivedAmount,
+  ) === method
+    ? receivedAmount
+    : 0;
+}
+
+function buildCreditPaymentTotalsBySaleId(rows = []) {
+  const totals = new Map();
+  rows.forEach((row) => {
+    const saleId = Number(row.sale_id);
+    if (!saleId) {
+      return;
+    }
+    const currentValue = totals.get(saleId) || 0;
+    totals.set(saleId, roundMoney(currentValue + roundMoney(row.amount || 0)));
+  });
+  return totals;
+}
+
+function decorateSalesRowsWithCreditPayments(rows = [], creditPaymentTotalsBySaleId = new Map()) {
+  return rows.map((row) => {
+    if (!isCreditPaymentMethod(row.payment_method)) {
+      return {
+        ...row,
+        paid_amount: roundMoney(row.received_amount || row.total || 0),
+        pending_amount: 0,
+        later_payments_total: 0,
+      };
+    }
+
+    const laterPaymentsTotal = roundMoney(
+      creditPaymentTotalsBySaleId.get(Number(row.id)) || 0,
+    );
+    const paidAmount = roundMoney(roundMoney(row.received_amount || 0) + laterPaymentsTotal);
+    return {
+      ...row,
+      paid_amount: paidAmount,
+      pending_amount: getSalePendingAmount(row.total, paidAmount, row.payment_method),
+      later_payments_total: laterPaymentsTotal,
+    };
+  });
 }
 
 function addSummarySheet(workbook, ctx, branchCode, suffix = "") {
@@ -146,11 +204,27 @@ function addSummarySheet(workbook, ctx, branchCode, suffix = "") {
   const products = ctx.products.filter((p) => p.active);
   const totalSales = roundMoney(sales.reduce((sum, row) => sum + roundMoney(row.total), 0));
   const cashSales = roundMoney(
-    sales
-      .filter((row) => row.payment_method === "Efectivo")
-      .reduce((sum, row) => sum + roundMoney(row.total), 0),
+    sales.reduce((sum, row) => sum + getCollectedTodayByMethod(row, "Efectivo"), 0),
   );
   const nonCashSales = roundMoney(totalSales - cashSales);
+  const creditSales = roundMoney(
+    sales.reduce(
+      (sum, row) => sum + roundMoney(row.pending_amount || 0),
+      0,
+    ),
+  );
+  const initialCreditCollections = roundMoney(
+    sales.reduce((sum, row) => {
+      if (!isCreditPaymentMethod(row.payment_method)) {
+        return sum;
+      }
+      return roundMoney(sum + roundMoney(row.received_amount || 0));
+    }, 0),
+  );
+  const laterCreditCollections = roundMoney(
+    ctx.creditPayments.reduce((sum, row) => sum + roundMoney(row.amount || 0), 0),
+  );
+  const creditCollections = roundMoney(initialCreditCollections + laterCreditCollections);
   const totalWithdrawals = roundMoney(
     registerEvents.reduce((sum, row) => sum + roundMoney(row.withdrawals_amount || 0), 0),
   );
@@ -170,6 +244,8 @@ function addSummarySheet(workbook, ctx, branchCode, suffix = "") {
     ["Ventas totales", totalSales],
     ["Ventas efectivo", cashSales],
     ["Ventas no efectivo", nonCashSales],
+    ["Abonos fiado cobrados hoy", creditCollections],
+    ["Fiado pendiente", creditSales],
     ["Unidades vendidas", roundStock(salesItems.reduce((sum, row) => sum + roundStock(row.quantity), 0))],
     ["Retiros acumulados", totalWithdrawals],
     ["Efectivo esperado (sin apertura)", expectedCut],
@@ -200,7 +276,7 @@ function addSummarySheet(workbook, ctx, branchCode, suffix = "") {
 
 function addSalesDetailSheet(workbook, ctx, suffix = "") {
   const sheet = workbook.addWorksheet(`Ventas Detalle${suffix}`);
-  styleSheetHeader(sheet, `${getStoreName()} - Ventas detalle${suffix}`, `Generado: ${ctx.generatedAt}`, 15);
+  styleSheetHeader(sheet, `${getStoreName()} - Ventas detalle${suffix}`, `Generado: ${ctx.generatedAt}`, 19);
   sheet.addRow([]);
   const header = sheet.addRow([
     "Ticket",
@@ -209,6 +285,13 @@ function addSalesDetailSheet(workbook, ctx, suffix = "") {
     "Turno",
     "Cajero",
     "Metodo",
+    "Cliente",
+    "Cliente Key",
+    "Cobrado hoy",
+    "Pendiente",
+    "Cobrado por",
+    "Pagado acumulado",
+    "Abonos posteriores",
     "Producto",
     "Cantidad",
     "Precio Unit",
@@ -232,6 +315,17 @@ function addSalesDetailSheet(workbook, ctx, suffix = "") {
       row.shift,
       row.cashier,
       row.payment_method,
+      row.customer_name || "",
+      row.customer_key || "",
+      roundMoney(row.received_amount || 0),
+      roundMoney(row.pending_amount || 0),
+      getSaleReceivedPaymentMethod(
+        row.payment_method,
+        row.received_payment_method || "",
+        row.received_amount || 0,
+      ),
+      roundMoney(row.paid_amount || row.received_amount || 0),
+      roundMoney(row.later_payments_total || 0),
       row.product_name,
       roundStock(row.quantity),
       roundMoney(row.unit_price),
@@ -244,7 +338,49 @@ function addSalesDetailSheet(workbook, ctx, suffix = "") {
     ]);
   });
 
-  autoFitColumns(sheet, [18, 22, 14, 12, 16, 14, 24, 11, 12, 12, 12, 10, 12, 11, 10]);
+  autoFitColumns(sheet, [18, 22, 14, 12, 16, 14, 20, 12, 12, 14, 12, 12, 24, 11, 12, 12, 12, 10, 12, 11, 10]);
+}
+
+function addReceivablesPaymentsSheet(workbook, ctx, suffix = "") {
+  const sheet = workbook.addWorksheet(`Abonos Cartera${suffix}`);
+  styleSheetHeader(sheet, `${getStoreName()} - Abonos de cartera${suffix}`, `Generado: ${ctx.generatedAt}`, 11);
+  sheet.addRow([]);
+  const header = sheet.addRow([
+    "ID",
+    "Ticket",
+    "Fecha",
+    "Sucursal",
+    "Turno",
+    "Cajero",
+    "Cliente",
+    "Cliente Key",
+    "Metodo",
+    "Abono",
+    "Nota",
+    "Fecha venta",
+    "Total venta",
+  ]);
+  styleTableHeader(header);
+
+  ctx.creditPayments.forEach((row) => {
+    sheet.addRow([
+      row.id,
+      row.ticket_number,
+      formatReportDateTime(row.created_at),
+      getBranchLabel(row.branch),
+      row.shift,
+      row.cashier,
+      row.customer_name || "",
+      row.customer_key || "",
+      row.payment_method,
+      roundMoney(row.amount || 0),
+      row.notes || "",
+      row.sale_created_at ? formatReportDateTime(row.sale_created_at) : "",
+      roundMoney(row.sale_total || 0),
+    ]);
+  });
+
+  autoFitColumns(sheet, [8, 18, 22, 14, 12, 16, 20, 14, 12, 28, 22, 12]);
 }
 
 function addSalesProductsSheet(workbook, ctx, suffix = "") {
@@ -577,8 +713,17 @@ function saleBranchForExport(row) {
 
 function toBranchContext(baseRows, branchCode, scope, baseDate, generatedAt, scopeLabel) {
   const products = baseRows.products.filter((row) => row.branch === branchCode);
-  const salesRows = filterByScope(
-    baseRows.salesRows.filter((row) => saleBranchForExport(row) === branchCode),
+  const salesRows = decorateSalesRowsWithCreditPayments(
+    filterByScope(
+      baseRows.salesRows.filter((row) => saleBranchForExport(row) === branchCode),
+      scope,
+      baseDate,
+      "created_at",
+    ),
+    baseRows.creditPaymentTotalsBySaleId,
+  );
+  const creditPayments = filterByScope(
+    baseRows.creditPayments.filter((row) => row.branch === branchCode),
     scope,
     baseDate,
     "created_at",
@@ -623,6 +768,7 @@ function toBranchContext(baseRows, branchCode, scope, baseDate, generatedAt, sco
     salesRows,
     salesHeaders,
     salesItems,
+    creditPayments,
     movements,
     registerEvents,
     weightedAuditRows,
@@ -648,10 +794,12 @@ async function exportWorkbookReport(options = {}) {
   const baseRows = {
     products: listAllProductsForExport(),
     salesRows: listSalesForExport(),
+    creditPayments: listCreditPaymentsForExport(),
     movements: listInventoryMovementsForExport(),
     registerEvents: listRegisterEventsForExport(),
     weightedAuditRows: listWeightedAuditRowsForExport(),
   };
+  baseRows.creditPaymentTotalsBySaleId = buildCreditPaymentTotalsBySaleId(baseRows.creditPayments);
 
   if (selectedBranch === ALL_BRANCHES) {
     STORE_BRANCHES.forEach((branchCode) => {
@@ -660,6 +808,7 @@ async function exportWorkbookReport(options = {}) {
       const ctx = toBranchContext(baseRows, branchCode, scope, baseDate, generatedAt, scopeLabel);
       addSummarySheet(workbook, ctx, branchCode, suffix);
       addSalesDetailSheet(workbook, ctx, suffix);
+      addReceivablesPaymentsSheet(workbook, ctx, suffix);
       addSalesProductsSheet(workbook, ctx, suffix);
       addRegisterSheet(workbook, ctx, suffix);
       addInventorySheet(workbook, ctx, suffix);
@@ -671,6 +820,7 @@ async function exportWorkbookReport(options = {}) {
     const ctx = toBranchContext(baseRows, selectedBranch, scope, baseDate, generatedAt, scopeLabel);
     addSummarySheet(workbook, ctx, selectedBranch);
     addSalesDetailSheet(workbook, ctx);
+    addReceivablesPaymentsSheet(workbook, ctx);
     addSalesProductsSheet(workbook, ctx);
     addRegisterSheet(workbook, ctx);
     addInventorySheet(workbook, ctx);

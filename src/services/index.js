@@ -10,6 +10,7 @@ const settings = require("./settings");
 const audit = require("./audit");
 const merchandiseRequests = require("./merchandiseRequests");
 const weightedAudit = require("./weightedAudit");
+const receivables = require("./receivables");
 const branches = require("./branches");
 const businessProfile = require("./businessProfile");
 const templateProvisioning = require("./templateProvisioning");
@@ -30,6 +31,7 @@ module.exports = {
   ...audit,
   ...merchandiseRequests,
   ...weightedAudit,
+  ...receivables,
   ...branches,
   ...businessProfile,
   ...templateProvisioning,
