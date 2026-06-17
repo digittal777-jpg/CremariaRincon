@@ -1448,14 +1448,25 @@ function updateCashierBlindAuditDraft(itemId, value) {
     ...(state.cashierBlindAudit.draftItems || {}),
     [safeItemId]: value,
   };
-  if (typeof renderCashierBlindAuditModal === "function") {
-    renderCashierBlindAuditModal();
-  }
+  updateCashierBlindAuditSummaryDom?.();
+  updateCashierBlindAuditDifferenceDom?.(safeItemId);
   scheduleCashierBlindAuditPreview();
 }
 
 let cashierBlindAuditPreviewTimerId = null;
 let cashierBlindAuditPreviewRequestId = 0;
+
+function parseCashierBlindAuditCountedStock(value) {
+  const normalized = String(value ?? "")
+    .trim()
+    .replace(",", ".");
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 function scheduleCashierBlindAuditPreview() {
   if (cashierBlindAuditPreviewTimerId) {
@@ -1479,7 +1490,7 @@ function scheduleCashierBlindAuditPreview() {
     }
 
     hasValue = true;
-    const countedStock = Number(rawValue);
+    const countedStock = parseCashierBlindAuditCountedStock(rawValue);
     if (!Number.isFinite(countedStock) || countedStock < 0) {
       localPreviewOverrides[item.itemId] = {
         difference: null,
@@ -1502,18 +1513,14 @@ function scheduleCashierBlindAuditPreview() {
   if (!hasValue) {
     state.cashierBlindAudit.previewByItemId = {};
     state.cashierBlindAudit.previewing = false;
-    if (typeof renderCashierBlindAuditModal === "function") {
-      renderCashierBlindAuditModal();
-    }
+    refreshCashierBlindAuditInlineState?.();
     return;
   }
 
   const requestId = cashierBlindAuditPreviewRequestId + 1;
   cashierBlindAuditPreviewRequestId = requestId;
   state.cashierBlindAudit.previewing = true;
-  if (typeof renderCashierBlindAuditModal === "function") {
-    renderCashierBlindAuditModal();
-  }
+  refreshCashierBlindAuditInlineState?.();
 
   cashierBlindAuditPreviewTimerId = window.setTimeout(async () => {
     cashierBlindAuditPreviewTimerId = null;
@@ -1548,9 +1555,7 @@ function scheduleCashierBlindAuditPreview() {
     } finally {
       if (requestId === cashierBlindAuditPreviewRequestId) {
         state.cashierBlindAudit.previewing = false;
-        if (typeof renderCashierBlindAuditModal === "function") {
-          renderCashierBlindAuditModal();
-        }
+        refreshCashierBlindAuditInlineState?.();
       }
     }
   }, 160);
@@ -1574,7 +1579,7 @@ async function saveCashierBlindAuditCapture() {
       return;
     }
 
-    const countedStock = Number(rawValue);
+    const countedStock = parseCashierBlindAuditCountedStock(rawValue);
     if (!Number.isFinite(countedStock) || countedStock < 0) {
       showToast(`El pesado de ${item.productName} no es valido.`, "error");
       refs.cashierBlindAuditItems?.querySelector(`[data-blind-audit-item-id="${item.itemId}"]`)?.focus();

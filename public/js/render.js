@@ -945,6 +945,98 @@ function renderRegisterModal() {
   refs.registerNoteInput.value = state.register.note;
 }
 
+function getCashierBlindAuditPromptItems(prompt = state.cashierBlindAudit.prompt) {
+  return Array.isArray(prompt?.items) ? prompt.items : [];
+}
+
+function getCashierBlindAuditDraftValue(item = {}) {
+  const draftValue = state.cashierBlindAudit.draftItems?.[item.itemId];
+  return draftValue ?? (item.countedStock == null ? "" : String(item.countedStock));
+}
+
+function countCashierBlindAuditCapturedItems(prompt = state.cashierBlindAudit.prompt) {
+  return getCashierBlindAuditPromptItems(prompt).filter((item) =>
+    String(getCashierBlindAuditDraftValue(item)).trim() !== ""
+  ).length;
+}
+
+function getCashierBlindAuditDifferenceView(item = {}) {
+  const inputValue = String(getCashierBlindAuditDraftValue(item) || "").trim();
+  const preview = state.cashierBlindAudit.previewByItemId?.[item.itemId] || null;
+  if (preview?.status === "invalid") {
+    return {
+      text: "Diferencia: captura un numero valido.",
+      className: "invalid",
+    };
+  }
+
+  if (preview?.difference == null) {
+    if (!inputValue) {
+      return {
+        text: "Diferencia: captura el pesado para verla.",
+        className: "pending",
+      };
+    }
+
+    return {
+      text: state.cashierBlindAudit.previewing
+        ? "Diferencia: calculando..."
+        : "Diferencia: pendiente.",
+      className: "pending",
+    };
+  }
+
+  if (preview.difference === 0) {
+    return {
+      text: "Diferencia: cuadra exacto.",
+      className: "match",
+    };
+  }
+
+  if (preview.difference < 0) {
+    return {
+      text: `Diferencia: faltan ${formatQuantity(Math.abs(preview.difference))} kg.`,
+      className: "shortage",
+    };
+  }
+
+  return {
+    text: `Diferencia: sobran ${formatQuantity(preview.difference)} kg.`,
+    className: "surplus",
+  };
+}
+
+function updateCashierBlindAuditSummaryDom() {
+  const counter = refs.cashierBlindAuditSummary?.querySelector?.("[data-blind-audit-captured-count]");
+  if (!counter) {
+    return;
+  }
+
+  counter.textContent = String(countCashierBlindAuditCapturedItems());
+}
+
+function updateCashierBlindAuditDifferenceDom(itemId) {
+  const safeItemId = Number(itemId);
+  if (!Number.isInteger(safeItemId) || safeItemId <= 0) {
+    return;
+  }
+
+  const item = getCashierBlindAuditPromptItems().find((entry) => Number(entry.itemId) === safeItemId);
+  const label = refs.cashierBlindAuditItems?.querySelector?.(`[data-blind-audit-difference-for="${safeItemId}"]`);
+  if (!item || !label) {
+    return;
+  }
+
+  const view = getCashierBlindAuditDifferenceView(item);
+  label.textContent = view.text;
+  label.className = `cashier-blind-audit-difference ${view.className}`;
+}
+
+function refreshCashierBlindAuditInlineState() {
+  updateCashierBlindAuditSummaryDom();
+  getCashierBlindAuditPromptItems().forEach((item) => updateCashierBlindAuditDifferenceDom(item.itemId));
+}
+
 function renderCashierBlindAuditModal() {
   if (
     !refs.cashierBlindAuditModal
@@ -982,10 +1074,7 @@ function renderCashierBlindAuditModal() {
       </article>
       <article class="register-summary-card">
         <span>Capturados</span>
-        <strong>${prompt.items.filter((item) => {
-          const draftValue = state.cashierBlindAudit.draftItems?.[item.itemId];
-          return String(draftValue ?? item.countedStock ?? "").trim() !== "";
-        }).length}</strong>
+        <strong data-blind-audit-captured-count>${countCashierBlindAuditCapturedItems(prompt)}</strong>
       </article>
       <article class="register-summary-card">
         <span>Vista</span>
@@ -994,31 +1083,8 @@ function renderCashierBlindAuditModal() {
     </div>
   `;
   refs.cashierBlindAuditItems.innerHTML = prompt.items.map((item) => {
-    const draftValue = state.cashierBlindAudit.draftItems?.[item.itemId];
-    const inputValue = draftValue ?? (item.countedStock == null ? "" : String(item.countedStock));
-    const preview = state.cashierBlindAudit.previewByItemId?.[item.itemId] || null;
-    const differenceText = preview?.status === "invalid"
-      ? "Diferencia: captura un numero valido."
-      : preview?.difference == null
-        ? String(inputValue || "").trim() !== ""
-          ? state.cashierBlindAudit.previewing
-            ? "Diferencia: calculando..."
-            : "Diferencia: pendiente."
-          : "Diferencia: captura el pesado para verla."
-        : preview.difference === 0
-          ? "Diferencia: cuadra exacto."
-          : preview.difference < 0
-            ? `Diferencia: faltan ${formatQuantity(Math.abs(preview.difference))} kg.`
-            : `Diferencia: sobran ${formatQuantity(preview.difference)} kg.`;
-    const differenceClass = preview?.status === "invalid"
-      ? "invalid"
-      : preview?.difference == null
-        ? "pending"
-        : preview.difference === 0
-          ? "match"
-          : preview.difference < 0
-            ? "shortage"
-            : "surplus";
+    const inputValue = getCashierBlindAuditDraftValue(item);
+    const differenceView = getCashierBlindAuditDifferenceView(item);
     return `
       <label class="field cashier-blind-audit-field">
         <span>${escapeHtml(item.productName)}</span>
@@ -1026,14 +1092,17 @@ function renderCashierBlindAuditModal() {
         <input
           class="inventory-input"
           data-blind-audit-item-id="${item.itemId}"
-          type="number"
-          min="0"
-          step="0.001"
+          type="text"
           inputmode="decimal"
+          autocomplete="off"
+          spellcheck="false"
           value="${escapeHtml(String(inputValue || ""))}"
           ${state.cashierBlindAudit.saving ? "disabled" : ""}
         />
-        <small class="cashier-blind-audit-difference ${differenceClass}">${escapeHtml(differenceText)}</small>
+        <small
+          class="cashier-blind-audit-difference ${differenceView.className}"
+          data-blind-audit-difference-for="${item.itemId}"
+        >${escapeHtml(differenceView.text)}</small>
       </label>
     `;
   }).join("");
