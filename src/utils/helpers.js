@@ -364,6 +364,106 @@ function getStoreDateKey(value = new Date()) {
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+function validateStoreDateKey(dateKey, errorMessage = "La fecha debe tener formato YYYY-MM-DD.") {
+  const parsed = String(dateKey || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(parsed)) {
+    throw createHttpError(errorMessage, 400);
+  }
+
+  const [year, month, day] = parsed.split("-").map((fragment) => Number(fragment));
+  const candidate = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  if (formatStoreDateKeyFromUtcDate(candidate) !== parsed) {
+    throw createHttpError(errorMessage, 400);
+  }
+
+  return parsed;
+}
+
+function createStoreDateFromKey(dateKey) {
+  const parsed = validateStoreDateKey(dateKey);
+  const [year, month, day] = parsed.split("-").map((fragment) => Number(fragment));
+  return new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+}
+
+function formatStoreDateKeyFromUtcDate(value) {
+  const year = value.getUTCFullYear();
+  const month = String(value.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(value.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function shiftStoreDateKey(dateKey, daysDelta = 0) {
+  const anchor = createStoreDateFromKey(dateKey);
+  anchor.setUTCDate(anchor.getUTCDate() + Number(daysDelta || 0));
+  return formatStoreDateKeyFromUtcDate(anchor);
+}
+
+function getStoreWeekRange(value = new Date()) {
+  const anchorDateKey = typeof value === "string"
+    ? validateStoreDateKey(value, "La fecha ancla de la semana debe tener formato YYYY-MM-DD.")
+    : getStoreDateKey(value);
+  const anchorDate = createStoreDateFromKey(anchorDateKey);
+  const daysSinceMonday = (anchorDate.getUTCDay() + 6) % 7;
+  const startDateKey = shiftStoreDateKey(anchorDateKey, -daysSinceMonday);
+  return {
+    periodType: "week",
+    anchorDateKey,
+    startDateKey,
+    endDateKey: shiftStoreDateKey(startDateKey, 6),
+  };
+}
+
+function getStoreMonthRange(value = new Date()) {
+  const anchorDateKey = typeof value === "string"
+    ? validateStoreDateKey(value, "La fecha ancla del mes debe tener formato YYYY-MM-DD.")
+    : getStoreDateKey(value);
+  const anchorDate = createStoreDateFromKey(anchorDateKey);
+  const year = anchorDate.getUTCFullYear();
+  const monthIndex = anchorDate.getUTCMonth();
+  const startDateKey = formatStoreDateKeyFromUtcDate(new Date(Date.UTC(year, monthIndex, 1, 12, 0, 0)));
+  const endDateKey = formatStoreDateKeyFromUtcDate(new Date(Date.UTC(year, monthIndex + 1, 0, 12, 0, 0)));
+  return {
+    periodType: "month",
+    anchorDateKey,
+    startDateKey,
+    endDateKey,
+  };
+}
+
+function getStorePeriodRange(periodType, value = new Date()) {
+  const safePeriodType = normalizeText(periodType || "", 24).toLowerCase();
+  if (safePeriodType === "week") {
+    return getStoreWeekRange(value);
+  }
+  if (safePeriodType === "month") {
+    return getStoreMonthRange(value);
+  }
+  throw createHttpError("El periodo solicitado no es valido.", 400);
+}
+
+function isStoreDateKeyInRange(dateKey, startDateKey, endDateKey) {
+  const safeDateKey = validateStoreDateKey(dateKey);
+  const safeStartDateKey = validateStoreDateKey(startDateKey);
+  const safeEndDateKey = validateStoreDateKey(endDateKey);
+  return safeDateKey >= safeStartDateKey && safeDateKey <= safeEndDateKey;
+}
+
+function listStoreDateKeysInRange(startDateKey, endDateKey) {
+  const safeStartDateKey = validateStoreDateKey(startDateKey);
+  const safeEndDateKey = validateStoreDateKey(endDateKey);
+  if (safeStartDateKey > safeEndDateKey) {
+    return [];
+  }
+
+  const keys = [];
+  let cursor = safeStartDateKey;
+  while (cursor <= safeEndDateKey) {
+    keys.push(cursor);
+    cursor = shiftStoreDateKey(cursor, 1);
+  }
+  return keys;
+}
+
 function isSameStoreDay(value, baseDate = new Date()) {
   return getStoreDateKey(value) === getStoreDateKey(baseDate);
 }
@@ -809,10 +909,14 @@ module.exports = {
   getSetting,
   getStockStatus,
   getStoreDateKey,
+  getStoreMonthRange,
   getStoreDateParts,
+  getStorePeriodRange,
+  getStoreWeekRange,
   getStoreHourLabel,
   getStoreName,
   getStoreTimeZone,
+  isStoreDateKeyInRange,
   isBranchActive,
   isKnownBranch,
   isAllBranches,
@@ -835,7 +939,11 @@ module.exports = {
   roundMoney,
   roundStock,
   safeJsonParse,
+  shiftStoreDateKey,
+  createStoreDateFromKey,
+  listStoreDateKeysInRange,
   getSalePendingAmount,
   getSaleReceivedPaymentMethod,
   toNumber,
+  validateStoreDateKey,
 };

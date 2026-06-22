@@ -2201,6 +2201,176 @@ h3 {
   color: #8c2c2c;
 }
 
+.period-closures-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.period-closures-toolbar {
+  margin-bottom: 0;
+}
+
+.period-closure-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.period-closure-summary-card,
+.period-closure-detail-stat,
+.period-closure-breakdown-card,
+.period-closure-detail-card,
+.period-closure-history-card {
+  border: 1px solid rgba(87, 63, 46, 0.08);
+  background: rgba(255, 249, 244, 0.92);
+  border-radius: 20px;
+}
+
+.period-closure-summary-card,
+.period-closure-breakdown-card,
+.period-closure-detail-stat {
+  padding: 14px;
+  display: grid;
+  gap: 6px;
+}
+
+.period-closure-summary-card span,
+.period-closure-detail-stat span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.period-closure-summary-card strong,
+.period-closure-detail-stat strong,
+.period-closure-breakdown-card strong {
+  color: var(--primary-deep);
+  font-size: 1.12rem;
+}
+
+.period-closure-summary-card p,
+.period-closure-breakdown-card p,
+.period-closure-detail-notes p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.period-closure-warning-list {
+  display: grid;
+  gap: 10px;
+}
+
+.period-closure-warning {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(87, 63, 46, 0.08);
+  background: rgba(255, 249, 244, 0.92);
+  display: grid;
+  gap: 6px;
+}
+
+.period-closure-warning strong {
+  color: var(--primary-deep);
+  text-transform: capitalize;
+}
+
+.period-closure-warning p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.period-closure-warning.error {
+  border-color: rgba(186, 91, 70, 0.18);
+  background: rgba(255, 241, 237, 0.95);
+}
+
+.period-closure-warning.ok {
+  border-color: rgba(75, 123, 92, 0.16);
+  background: rgba(243, 251, 246, 0.95);
+}
+
+.period-closure-note-field textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
+.period-closure-breakdowns {
+  display: grid;
+  gap: 16px;
+}
+
+.period-closure-breakdown-block {
+  display: grid;
+  gap: 12px;
+}
+
+.period-closure-breakdown-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.period-closure-footer-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(280px, 0.95fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.period-closure-detail-card,
+.period-closure-history-card {
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+}
+
+.period-closure-detail-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.period-closure-detail-head h3,
+.period-closure-history-card h3 {
+  margin: 0;
+  color: var(--primary-deep);
+  font-size: 1.05rem;
+}
+
+.period-closure-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.period-closure-detail-notes {
+  display: grid;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(87, 63, 46, 0.08);
+}
+
+.period-closure-detail-notes strong {
+  color: var(--primary-deep);
+}
+
+.period-closure-pill-stale {
+  background: rgba(186, 91, 70, 0.14);
+  color: #8c2c2c;
+}
+
+.period-closure-pill-fresh {
+  background: rgba(75, 123, 92, 0.14);
+  color: #2f6b45;
+}
+
+.period-closure-history-list {
+  max-height: min(420px, 44vh);
+}
+
 .weighted-audit-difference.surplus {
   color: #2f6b45;
 }
@@ -3637,6 +3807,10 @@ body.approvals-mobile-view .route-cart-fab {
   .admin-cashier-form {
     grid-template-columns: 1fr;
   }
+
+  .period-closure-footer-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 860px) {
@@ -3690,6 +3864,12 @@ body.approvals-mobile-view .route-cart-fab {
   .admin-metrics-grid,
   .admin-editor-layout,
   .receivables-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .period-closure-summary-grid,
+  .period-closure-breakdown-grid,
+  .period-closure-detail-grid {
     grid-template-columns: 1fr;
   }
 

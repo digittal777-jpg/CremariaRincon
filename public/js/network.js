@@ -107,6 +107,12 @@ async function performJsonRequest(url, options = {}) {
       if (!response.ok) {
         const error = new Error(data.message || "No fue posible completar la accion.");
         error.statusCode = response.status;
+        if (typeof data.code === "string" && data.code) {
+          error.code = data.code;
+        }
+        if (Array.isArray(data.warnings)) {
+          error.warnings = data.warnings;
+        }
         throw error;
       }
 

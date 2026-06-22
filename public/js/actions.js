@@ -19,6 +19,7 @@ const ADMIN_WORKSPACE_TTLS_MS = {
   requests: 10000,
   config: 300000,
   weightedAudit: 15000,
+  periodClosures: 15000,
 };
 const ADMIN_WORKSPACE_SECTION_KEYS = [
   "snapshot",
@@ -29,6 +30,7 @@ const ADMIN_WORKSPACE_SECTION_KEYS = [
   "requests",
   "config",
   "weightedAudit",
+  "periodClosures",
 ];
 
 function getAdminWorkspaceProfile(profile = "full") {
@@ -42,6 +44,7 @@ function getAdminWorkspaceProfile(profile = "full") {
       requests: true,
       config: false,
       weightedAudit: false,
+      periodClosures: false,
     };
   }
 
@@ -54,6 +57,7 @@ function getAdminWorkspaceProfile(profile = "full") {
     requests: true,
     config: true,
     weightedAudit: true,
+    periodClosures: true,
   };
 }
 
@@ -79,6 +83,19 @@ function markAdminWorkspaceLoaded(sectionKey) {
   state.admin.workspaceLoadedAt[sectionKey] = Date.now();
 }
 
+function resetAdminPeriodClosuresState() {
+  state.admin.periodClosures.periodType = "week";
+  state.admin.periodClosures.dateKey = refs.adminPeriodClosureDate?.value || toDateInputValue();
+  state.admin.periodClosures.preview = null;
+  state.admin.periodClosures.closures = [];
+  state.admin.periodClosures.currentClosure = null;
+  state.admin.periodClosures.selectedClosureId = null;
+  state.admin.periodClosures.loading = false;
+  state.admin.periodClosures.detailLoading = false;
+  state.admin.periodClosures.saving = false;
+  state.admin.periodClosures.notesDraft = "";
+}
+
 function resetAdminSensitiveWorkspaceData() {
   state.admin.snapshot = null;
   state.admin.inventoryProducts = [];
@@ -102,6 +119,7 @@ function resetAdminSensitiveWorkspaceData() {
   state.admin.weightedAudit.saving = false;
   state.admin.weightedAudit.draftItems = {};
   state.admin.weightedAudit.notesDraft = "";
+  resetAdminPeriodClosuresState();
 }
 
 function isAdminWorkspaceBlockedByOwner() {
@@ -173,6 +191,7 @@ function normalizeAdminWorkspaceOptions(options = {}) {
         requests: false,
         config: false,
         weightedAudit: false,
+        periodClosures: false,
       }
     : getAdminWorkspaceProfile(profile);
   return {
@@ -188,6 +207,7 @@ function normalizeAdminWorkspaceOptions(options = {}) {
     requests: options.requests === undefined ? profileDefaults.requests : options.requests !== false,
     config: options.config === undefined ? profileDefaults.config : options.config !== false,
     weightedAudit: options.weightedAudit === undefined ? profileDefaults.weightedAudit : options.weightedAudit !== false,
+    periodClosures: options.periodClosures === undefined ? profileDefaults.periodClosures : options.periodClosures !== false,
   };
 }
 
@@ -211,6 +231,7 @@ function mergeAdminWorkspaceOptions(baseOptions, nextOptions) {
     requests: base.requests || next.requests,
     config: base.config || next.config,
     weightedAudit: base.weightedAudit || next.weightedAudit,
+    periodClosures: base.periodClosures || next.periodClosures,
   };
 }
 
@@ -271,6 +292,13 @@ function getAdminWorkspaceTasks(options = {}) {
     && shouldRefreshAdminWorkspaceSection("weightedAudit", normalized)
   ) {
     tasks.push(loadAdminWeightedAuditSessions(normalized.branch));
+  }
+  if (
+    normalized.periodClosures
+    && hasAdminCapability("backups")
+    && shouldRefreshAdminWorkspaceSection("periodClosures", normalized)
+  ) {
+    tasks.push(loadAdminPeriodClosuresWorkspace(normalized.branch));
   }
 
   return tasks;
@@ -461,6 +489,7 @@ function applySnapshot(snapshot, options = {}) {
     state.admin.weightedAudit.currentSession = null;
     state.admin.weightedAudit.draftItems = {};
     state.admin.weightedAudit.notesDraft = "";
+    resetAdminPeriodClosuresState();
     if (typeof closeAdminModal === "function") {
       closeAdminModal();
     }
@@ -996,6 +1025,7 @@ function syncAdminSharedState(snapshot) {
     state.admin.weightedAudit.currentSession = null;
     state.admin.weightedAudit.draftItems = {};
     state.admin.weightedAudit.notesDraft = "";
+    resetAdminPeriodClosuresState();
   }
 }
 
@@ -1189,6 +1219,169 @@ async function loadAdminConfig() {
     }
   } finally {
     state.admin.configLoading = false;
+  }
+}
+
+function getAdminPeriodClosureFilters(branchOverride = getAdminBranch()) {
+  const branch = branchOverride || getAdminBranch();
+  const dateKey =
+    state.admin.periodClosures.dateKey
+    || refs.adminPeriodClosureDate?.value
+    || toDateInputValue();
+
+  state.admin.periodClosures.dateKey = dateKey;
+
+  return {
+    branch,
+    periodType: state.admin.periodClosures.periodType || "week",
+    anchorDateKey: dateKey,
+  };
+}
+
+function updateAdminPeriodClosureNotesDraft(value) {
+  state.admin.periodClosures.notesDraft = String(value || "");
+}
+
+function syncAdminPeriodClosureSelection() {
+  const periodState = state.admin.periodClosures;
+  const selectedId = Number(
+    periodState.selectedClosureId
+      || periodState.currentClosure?.id
+      || periodState.preview?.matchingClosure?.id
+      || 0,
+  );
+  const matchingClosure = periodState.preview?.matchingClosure || null;
+  const selectedFromList = Array.isArray(periodState.closures)
+    ? periodState.closures.find((item) => Number(item.id) === selectedId) || null
+    : null;
+
+  periodState.currentClosure = selectedFromList || matchingClosure || null;
+  periodState.selectedClosureId = periodState.currentClosure?.id || null;
+}
+
+async function loadAdminPeriodClosurePreview(branchOverride = getAdminBranch()) {
+  const filters = getAdminPeriodClosureFilters(branchOverride);
+  const query = new URLSearchParams({
+    branch: filters.branch,
+    periodType: filters.periodType,
+    anchorDateKey: filters.anchorDateKey,
+  });
+  const response = await requestAdminJson(`/api/admin/period-closures/preview?${query.toString()}`);
+  state.admin.periodClosures.preview = response.preview || null;
+  state.admin.periodClosures.dateKey = response.preview?.anchorDateKey || filters.anchorDateKey;
+  state.admin.periodClosures.notesDraft = response.preview?.notes || "";
+  return state.admin.periodClosures.preview;
+}
+
+async function loadAdminPeriodClosureList(branchOverride = getAdminBranch()) {
+  const filters = getAdminPeriodClosureFilters(branchOverride);
+  const query = new URLSearchParams({
+    branch: filters.branch,
+    periodType: filters.periodType,
+    limit: "18",
+  });
+  const response = await requestAdminJson(`/api/admin/period-closures?${query.toString()}`);
+  state.admin.periodClosures.closures = Array.isArray(response.closures) ? response.closures : [];
+  return state.admin.periodClosures.closures;
+}
+
+async function openAdminPeriodClosureDetail(closureId) {
+  const safeClosureId = Number(closureId);
+  if (!safeClosureId) {
+    return;
+  }
+
+  state.admin.periodClosures.detailLoading = true;
+  state.admin.periodClosures.selectedClosureId = safeClosureId;
+  renderAdminPeriodClosuresPanel();
+
+  try {
+    const response = await requestAdminJson(`/api/admin/period-closures/${safeClosureId}`);
+    state.admin.periodClosures.currentClosure = response.closure || null;
+    state.admin.periodClosures.selectedClosureId = response.closure?.id || safeClosureId;
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.admin.periodClosures.detailLoading = false;
+    renderAdminPeriodClosuresPanel();
+  }
+}
+
+async function loadAdminPeriodClosuresWorkspace(branchOverride = getAdminBranch(), options = {}) {
+  const periodState = state.admin.periodClosures;
+  const toastOnError = options.toastOnError === true;
+
+  periodState.loading = true;
+  renderAdminPeriodClosuresPanel();
+
+  try {
+    try {
+      await loadAdminPeriodClosurePreview(branchOverride);
+    } catch (error) {
+      periodState.preview = null;
+      periodState.notesDraft = "";
+      if (toastOnError && error.statusCode !== 403) {
+        showToast(error.message || "No pude cargar la vista previa semanal.", "error");
+      }
+    }
+
+    try {
+      await loadAdminPeriodClosureList(branchOverride);
+    } catch (error) {
+      periodState.closures = [];
+      if (toastOnError && error.statusCode !== 403) {
+        showToast(error.message || "No pude cargar los cierres semanales guardados.", "error");
+      }
+    }
+
+    syncAdminPeriodClosureSelection();
+    markAdminWorkspaceLoaded("periodClosures");
+  } finally {
+    periodState.loading = false;
+    renderAdminPeriodClosuresPanel();
+  }
+}
+
+async function saveAdminPeriodClosure(options = {}) {
+  if (!await ensureAdminActionAccess("backups", "El cierre semanal esta bloqueado por el owner.")) {
+    return;
+  }
+
+  const periodState = state.admin.periodClosures;
+  const filters = getAdminPeriodClosureFilters();
+  periodState.saving = true;
+  renderAdminPeriodClosuresPanel();
+
+  try {
+    const response = await requestAdminJson("/api/admin/period-closures", {
+      method: "POST",
+      body: JSON.stringify({
+        ...filters,
+        notes: periodState.notesDraft || "",
+        regenerate: options.regenerate === true,
+      }),
+    });
+    periodState.currentClosure = response.closure || null;
+    periodState.selectedClosureId = response.closure?.id || null;
+    await loadAdminPeriodClosuresWorkspace(getAdminBranch());
+    showToast(
+      options.regenerate === true
+        ? "Cierre semanal regenerado."
+        : "Cierre semanal guardado.",
+      "success",
+    );
+  } catch (error) {
+    if (Array.isArray(error.warnings) && periodState.preview) {
+      periodState.preview = {
+        ...periodState.preview,
+        warnings: error.warnings,
+        canSave: false,
+      };
+    }
+    showToast(error.message, "error");
+  } finally {
+    periodState.saving = false;
+    renderAdminPeriodClosuresPanel();
   }
 }
 
@@ -1771,6 +1964,7 @@ async function refreshAdminWorkspace(options = {}) {
         || normalized.requests
         || normalized.config
         || normalized.weightedAudit
+        || normalized.periodClosures
       ),
     );
     const effectiveOptions = { ...normalized };
@@ -2436,6 +2630,12 @@ async function throwAdminResponseError(response, fallbackMessage) {
   const data = await response.json().catch(() => ({}));
   const error = new Error(data.message || fallbackMessage);
   error.statusCode = response.status;
+  if (typeof data.code === "string" && data.code) {
+    error.code = data.code;
+  }
+  if (Array.isArray(data.warnings)) {
+    error.warnings = data.warnings;
+  }
   if (typeof handleAdminSessionFailure === "function") {
     handleAdminSessionFailure(error);
   }
@@ -3005,7 +3205,13 @@ async function saveAdminEditor() {
     await refreshAdminWorkspace(
       state.adminEditor.kind === "cashier"
         ? getAdminWorkspaceFullOptions(getAdminBranch(), true)
-        : { ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true },
+        : {
+            ...getAdminWorkspaceLiveOptions(getAdminBranch()),
+            force: true,
+            periodClosures:
+              state.adminEditor.kind === "sale"
+              || state.adminEditor.kind === "register",
+          },
     );
     closeAdminEditor();
     showToast("Registro actualizado desde admin.", "success");
@@ -3501,7 +3707,7 @@ function exportWorkbook() {
   }
 
   const branch = getAdminBranch();
-  const scope = "store-day";
+  const scope = refs.exportScopeSelect?.value === "store-week" ? "store-week" : "store-day";
   const selectedDate = refs.exportDateInput?.value || toDateInputValue();
   const minDate = refs.exportDateInput?.min || shiftDateInputValue(toDateInputValue(), -14);
   const maxDate = refs.exportDateInput?.max || toDateInputValue();
@@ -3525,8 +3731,9 @@ function exportWorkbook() {
     .then((blob) => {
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
+      const scopeSuffix = scope === "store-week" ? `semana-${selectedDate}` : selectedDate;
       anchor.href = objectUrl;
-      anchor.download = `${state.profile?.slug || "retail-pos"}-export-${branch}-${selectedDate}.xlsx`;
+      anchor.download = `${state.profile?.slug || "retail-pos"}-export-${branch}-${scopeSuffix}.xlsx`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();

@@ -803,6 +803,19 @@ function initializeSchema(db) {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS period_closures (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      branch TEXT NOT NULL,
+      period_type TEXT NOT NULL,
+      period_start_date_key TEXT NOT NULL,
+      period_end_date_key TEXT NOT NULL,
+      notes TEXT,
+      snapshot_json TEXT NOT NULL,
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
     CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);
     CREATE INDEX IF NOT EXISTS idx_inventory_movements_product_id ON inventory_movements(product_id);
@@ -1125,6 +1138,10 @@ function initializeSchema(db) {
       ON merchandise_request_items(request_id);
     CREATE INDEX IF NOT EXISTS idx_merchandise_requests_requested_by_branch_created_at
       ON merchandise_requests(requested_by, branch, created_at);
+    CREATE INDEX IF NOT EXISTS idx_period_closures_branch_period_updated
+      ON period_closures(branch, period_type, updated_at DESC, id DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_period_closures_unique_scope
+      ON period_closures(branch, period_type, period_start_date_key, period_end_date_key);
   `);
 }
 

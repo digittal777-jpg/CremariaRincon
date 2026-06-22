@@ -1046,8 +1046,15 @@
                     <h4>Exportar o restaurar</h4>
                   </div>
                   <div class="admin-actions">
+                    <label class="field admin-field-compact" for="export-scope-select">
+                      <span>Alcance Excel</span>
+                      <select id="export-scope-select">
+                        <option value="store-day" selected>Dia</option>
+                        <option value="store-week">Semana</option>
+                      </select>
+                    </label>
                     <label class="field admin-field-compact" for="export-date-input">
-                      <span>Fecha Excel</span>
+                      <span>Fecha ancla</span>
                       <input id="export-date-input" type="date" />
                     </label>
                     <button class="secondary-button" id="export-workbook-button" type="button">
@@ -1154,6 +1161,60 @@
                   <button class="primary-button compact-button" id="complete-weighted-audit-button" type="button">
                     Cerrar auditoria
                   </button>
+                </div>
+              </section>
+
+              <section class="admin-records-panel period-closures-panel" data-admin-capability="backups">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Cierre oficial</p>
+                    <h2>Corte semanal</h2>
+                    <p class="helper-text">
+                      Consolida la semana completa sin tocar el flujo diario de caja.
+                    </p>
+                  </div>
+                  <span class="small-pill" id="admin-period-closures-status">Sin semana cargada</span>
+                </div>
+
+                <div class="admin-cashier-form period-closures-toolbar">
+                  <label class="field">
+                    <span>Fecha ancla</span>
+                    <input id="admin-period-closure-date" type="date" />
+                  </label>
+                  <button class="secondary-button" id="load-admin-period-closures-button" type="button">
+                    Cargar semana
+                  </button>
+                  <button class="secondary-button" id="save-admin-period-closure-button" type="button">
+                    Guardar cierre semanal
+                  </button>
+                  <button class="primary-button" id="regenerate-admin-period-closure-button" type="button">
+                    Regenerar
+                  </button>
+                </div>
+
+                <div class="period-closure-summary-grid" id="admin-period-closures-summary"></div>
+                <div class="period-closure-warning-list" id="admin-period-closures-warnings"></div>
+
+                <label class="field period-closure-note-field">
+                  <span>Notas del cierre</span>
+                  <textarea id="admin-period-closure-notes" rows="3"></textarea>
+                  <small>Estas notas se guardan dentro del snapshot oficial de la semana.</small>
+                </label>
+
+                <div class="period-closure-breakdowns" id="admin-period-closures-breakdowns"></div>
+
+                <div class="period-closure-footer-grid">
+                  <div class="period-closure-detail-card" id="admin-period-closure-detail"></div>
+
+                  <div class="period-closure-history-card">
+                    <div class="panel-head admin-subhead compact-inline-head">
+                      <div>
+                        <p class="eyebrow">Historial</p>
+                        <h3>Cierres guardados</h3>
+                      </div>
+                    </div>
+                    <div class="admin-record-list period-closure-history-list" id="admin-period-closures-list"></div>
+                  </div>
                 </div>
               </section>
 

@@ -15,6 +15,7 @@ const branches = require("./branches");
 const businessProfile = require("./businessProfile");
 const templateProvisioning = require("./templateProvisioning");
 const backups = require("./backups");
+const periodClosures = require("./periodClosures");
 const { assertModuleEnabled } = require("../utils/helpers");
 const ownerConsole = require("./ownerConsole");
 
@@ -36,6 +37,7 @@ module.exports = {
   ...businessProfile,
   ...templateProvisioning,
   ...backups,
+  ...periodClosures,
   ...ownerConsole,
   assertModuleEnabled,
 };

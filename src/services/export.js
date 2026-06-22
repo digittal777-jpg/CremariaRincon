@@ -6,17 +6,19 @@ const {
 } = require("../config");
 const {
   ALL_BRANCHES,
+  createStoreDateFromKey,
   createHttpError,
   STORE_BRANCHES,
   getBranchLabel,
   getStoreDateKey,
   getStoreHourLabel,
   getStoreName,
+  getStorePeriodRange,
   getStoreTimeZone,
   getSalePendingAmount,
   getSaleReceivedPaymentMethod,
   isCreditPaymentMethod,
-  isSameStoreDay,
+  isStoreDateKeyInRange,
   normalizeBranch,
   nowIso,
   roundMoney,
@@ -56,21 +58,46 @@ function autoFitColumns(sheet, widths) {
   });
 }
 
-function filterByScope(rows, scope, baseDate, dateField = "created_at") {
-  if (scope === "all-time") {
-    return rows;
+function normalizeExportScope(scope) {
+  const normalized = String(scope || "store-day").trim().toLowerCase();
+  if (normalized === "all-time") {
+    return "all-time";
   }
-  return rows.filter((row) => isSameStoreDay(row[dateField], baseDate));
+  if (normalized === "store-week") {
+    return "store-week";
+  }
+  return "store-day";
 }
 
-function createStoreDateFromKey(dateKey) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateKey || "").trim());
-  if (!match) {
-    throw createHttpError("La fecha para exportar no tiene un formato valido.", 400);
+function getScopeDateKey(row, dateField = "created_at") {
+  if (typeof dateField === "function") {
+    return String(dateField(row) || "").trim();
   }
 
-  const [, year, month, day] = match;
-  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), 12, 0, 0));
+  if (String(dateField || "").endsWith("_date_key")) {
+    return String(row?.[dateField] || "").trim();
+  }
+
+  return getStoreDateKey(row?.[dateField]);
+}
+
+function filterByScope(rows, scopeContext, dateField = "created_at") {
+  if (scopeContext.scope === "all-time") {
+    return rows;
+  }
+
+  return rows.filter((row) => {
+    const dateKey = getScopeDateKey(row, dateField);
+    if (!dateKey) {
+      return false;
+    }
+
+    return isStoreDateKeyInRange(
+      dateKey,
+      scopeContext.startDateKey,
+      scopeContext.endDateKey,
+    );
+  });
 }
 
 function getPreviousStoreDateKey(baseDate = new Date(), daysBack = 0) {
@@ -80,12 +107,17 @@ function getPreviousStoreDateKey(baseDate = new Date(), daysBack = 0) {
 }
 
 function resolveExportBaseDate(rawBaseDate, scope) {
+  const normalizedScope = normalizeExportScope(scope);
   const today = new Date();
-  if (scope === "all-time") {
+  if (normalizedScope === "all-time") {
     return {
+      scope: normalizedScope,
       baseDate: rawBaseDate ? createStoreDateFromKey(rawBaseDate) : today,
       exportDateKey: null,
       scopeLabel: "Historico completo",
+      anchorDateKey: null,
+      startDateKey: null,
+      endDateKey: null,
     };
   }
 
@@ -104,10 +136,27 @@ function resolveExportBaseDate(rawBaseDate, scope) {
     );
   }
 
+  if (normalizedScope === "store-week") {
+    const weekRange = getStorePeriodRange("week", selectedKey);
+    return {
+      scope: normalizedScope,
+      baseDate: createStoreDateFromKey(selectedKey),
+      exportDateKey: `${weekRange.startDateKey}_a_${weekRange.endDateKey}`,
+      scopeLabel: `Semana ${weekRange.startDateKey} a ${weekRange.endDateKey}`,
+      anchorDateKey: selectedKey,
+      startDateKey: weekRange.startDateKey,
+      endDateKey: weekRange.endDateKey,
+    };
+  }
+
   return {
+    scope: normalizedScope,
     baseDate: createStoreDateFromKey(selectedKey),
     exportDateKey: selectedKey,
     scopeLabel: `Dia ${selectedKey}`,
+    anchorDateKey: selectedKey,
+    startDateKey: selectedKey,
+    endDateKey: selectedKey,
   };
 }
 
@@ -238,13 +287,18 @@ function addSummarySheet(workbook, ctx, branchCode, suffix = "") {
   });
   const topProduct = [...byProduct.entries()].sort((a, b) => b[1] - a[1])[0];
   const expectedCut = roundMoney(cashSales - totalWithdrawals);
+  const creditCollectionsLabel = ctx.scope === "store-day"
+    ? "Abonos fiado cobrados hoy"
+    : ctx.scope === "store-week"
+      ? "Abonos fiado cobrados en la semana"
+      : "Abonos fiado cobrados en esta vista";
 
   [
     ["Tickets", sales.length],
     ["Ventas totales", totalSales],
     ["Ventas efectivo", cashSales],
     ["Ventas no efectivo", nonCashSales],
-    ["Abonos fiado cobrados hoy", creditCollections],
+    [creditCollectionsLabel, creditCollections],
     ["Fiado pendiente", creditSales],
     ["Unidades vendidas", roundStock(salesItems.reduce((sum, row) => sum + roundStock(row.quantity), 0))],
     ["Retiros acumulados", totalWithdrawals],
@@ -254,7 +308,7 @@ function addSummarySheet(workbook, ctx, branchCode, suffix = "") {
     ["Movimientos inventario", ctx.movements.length],
     ["Productos activos", products.length],
     ["Inventario valorizado", inventoryValue],
-    ["Producto top", topProduct ? `${topProduct[0]} (${roundMoney(topProduct[1])})` : "Sin ventas"],
+    ["Producto top", topProduct ? `${topProduct[0]} (${roundMoney(topProduct[1])})` : "Sin ventas en esta vista"],
   ].forEach((entry) => sheet.addRow(entry));
 
   sheet.addRow([]);
@@ -711,46 +765,36 @@ function saleBranchForExport(row) {
   return STORE_BRANCHES[0];
 }
 
-function toBranchContext(baseRows, branchCode, scope, baseDate, generatedAt, scopeLabel) {
+function toBranchContext(baseRows, branchCode, scopeContext, generatedAt) {
   const products = baseRows.products.filter((row) => row.branch === branchCode);
   const salesRows = decorateSalesRowsWithCreditPayments(
     filterByScope(
       baseRows.salesRows.filter((row) => saleBranchForExport(row) === branchCode),
-      scope,
-      baseDate,
+      scopeContext,
       "created_at",
     ),
     baseRows.creditPaymentTotalsBySaleId,
   );
   const creditPayments = filterByScope(
     baseRows.creditPayments.filter((row) => row.branch === branchCode),
-    scope,
-    baseDate,
+    scopeContext,
     "created_at",
   );
   const movements = filterByScope(
     baseRows.movements.filter((row) => row.branch === branchCode),
-    scope,
-    baseDate,
+    scopeContext,
     "created_at",
   );
   const registerEvents = filterByScope(
     baseRows.registerEvents.filter((row) => row.branch === branchCode),
-    scope,
-    baseDate,
+    scopeContext,
     "created_at",
   );
-  const weightedAuditRows = baseRows.weightedAuditRows.filter((row) => {
-    if (row.branch !== branchCode) {
-      return false;
-    }
-
-    if (scope === "all-time") {
-      return true;
-    }
-
-    return String(row.audited_date_key || "") === getStoreDateKey(baseDate);
-  });
+  const weightedAuditRows = filterByScope(
+    baseRows.weightedAuditRows.filter((row) => row.branch === branchCode),
+    scopeContext,
+    (row) => row.audited_date_key,
+  );
 
   const salesHeadersMap = new Map();
   salesRows.forEach((row) => {
@@ -763,7 +807,10 @@ function toBranchContext(baseRows, branchCode, scope, baseDate, generatedAt, sco
 
   return {
     generatedAt,
-    scopeLabel,
+    scope: scopeContext.scope,
+    scopeLabel: scopeContext.scopeLabel,
+    startDateKey: scopeContext.startDateKey,
+    endDateKey: scopeContext.endDateKey,
     products,
     salesRows,
     salesHeaders,
@@ -784,8 +831,7 @@ async function exportWorkbookReport(options = {}) {
   workbook.title = `${getStoreName()} - Exportacion`;
 
   const generatedAt = nowIso();
-  const scope = options.scope === "all-time" ? "all-time" : "store-day";
-  const { baseDate, exportDateKey, scopeLabel } = resolveExportBaseDate(options.baseDate, scope);
+  const scopeContext = resolveExportBaseDate(options.baseDate, options.scope);
   const selectedBranch = normalizeBranch(options.branch || ALL_BRANCHES, {
     allowAll: true,
     fallback: ALL_BRANCHES,
@@ -805,7 +851,7 @@ async function exportWorkbookReport(options = {}) {
     STORE_BRANCHES.forEach((branchCode) => {
       const branchLabel = getBranchLabel(branchCode);
       const suffix = ` - ${branchLabel}`;
-      const ctx = toBranchContext(baseRows, branchCode, scope, baseDate, generatedAt, scopeLabel);
+      const ctx = toBranchContext(baseRows, branchCode, scopeContext, generatedAt);
       addSummarySheet(workbook, ctx, branchCode, suffix);
       addSalesDetailSheet(workbook, ctx, suffix);
       addReceivablesPaymentsSheet(workbook, ctx, suffix);
@@ -817,7 +863,7 @@ async function exportWorkbookReport(options = {}) {
       addWeightedAuditSheet(workbook, ctx, suffix);
     });
   } else {
-    const ctx = toBranchContext(baseRows, selectedBranch, scope, baseDate, generatedAt, scopeLabel);
+    const ctx = toBranchContext(baseRows, selectedBranch, scopeContext, generatedAt);
     addSummarySheet(workbook, ctx, selectedBranch);
     addSalesDetailSheet(workbook, ctx);
     addReceivablesPaymentsSheet(workbook, ctx);
@@ -831,8 +877,8 @@ async function exportWorkbookReport(options = {}) {
 
   return {
     workbook,
-    exportDateKey,
-    scope,
+    exportDateKey: scopeContext.exportDateKey,
+    scope: scopeContext.scope,
   };
 }
 

@@ -1308,6 +1308,94 @@ app.get("/api/admin/backups/status", (request, response, next) => {
   });
 });
 
+app.get("/api/admin/period-closures/preview", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("backups")(request, response, next);
+}, (request, response, next) => {
+  try {
+    const preview = services.getPeriodClosurePreview({
+      branch: request.query.branch || "all",
+      periodType: request.query.periodType || "week",
+      anchorDateKey: request.query.anchorDateKey || request.query.dateKey || getStoreDateKey(new Date()),
+    });
+    response.json({
+      preview,
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/admin/period-closures", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("backups")(request, response, next);
+}, (request, response, next) => {
+  try {
+    const closures = services.listPeriodClosures({
+      branch: request.query.branch || "all",
+      periodType: request.query.periodType || "week",
+      limit: Number(request.query.limit || 12),
+    });
+    response.json({
+      closures,
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/admin/period-closures/:id", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("backups")(request, response, next);
+}, (request, response, next) => {
+  try {
+    const closure = services.getPeriodClosureById(request.params.id);
+    response.json({
+      closure,
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/period-closures", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("backups")(request, response, next);
+}, (request, response, next) => {
+  try {
+    const closure = services.savePeriodClosure({
+      branch: request.body?.branch || "all",
+      periodType: request.body?.periodType || "week",
+      anchorDateKey: request.body?.anchorDateKey || request.body?.dateKey || getStoreDateKey(new Date()),
+      notes: request.body?.notes || "",
+      createdBy: getAdminActorName(request),
+    });
+    services.logAdminAction({
+      actorName: getAdminActorName(request),
+      action: request.body?.regenerate ? "period_closure_regenerate" : "period_closure_save",
+      entityType: "period_closure",
+      entityId: closure.id,
+      branch: closure.branch,
+      payload: {
+        periodType: closure.periodType,
+        periodStartDateKey: closure.periodStartDateKey,
+        periodEndDateKey: closure.periodEndDateKey,
+        isStale: closure.isStale,
+      },
+    });
+    response.json({ closure });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/client-sync-health", (request, response, next) => {
   requireClientSyncReporterAuth(request, response, next);
 }, (request, response) => {
@@ -2125,19 +2213,23 @@ app.get("/api/export-workbook", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
 }, (request, response, next) => {
   requireAdminCapability("backups")(request, response, next);
-}, async (request, response) => {
-  const branch = request.query.branch || "all";
-  const scope = request.query.scope || "store-day";
-  const baseDate = request.query.baseDate || null;
-  const result = await services.exportWorkbookReport({ branch, scope, baseDate });
-  const exportDateSuffix = result.exportDateKey || scope;
-  response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  response.setHeader(
-    "Content-Disposition",
-    "attachment; filename=" + `${services.getStoreName()} - Exportacion-${branch}-${exportDateSuffix}.xlsx`,
-  );
-  await result.workbook.xlsx.write(response);
-  response.end();
+}, async (request, response, next) => {
+  try {
+    const branch = request.query.branch || "all";
+    const scope = request.query.scope || "store-day";
+    const baseDate = request.query.baseDate || null;
+    const result = await services.exportWorkbookReport({ branch, scope, baseDate });
+    const exportDateSuffix = result.exportDateKey || scope;
+    response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    response.setHeader(
+      "Content-Disposition",
+      "attachment; filename=" + `${services.getStoreName()} - Exportacion-${branch}-${exportDateSuffix}.xlsx`,
+    );
+    await result.workbook.xlsx.write(response);
+    response.end();
+  } catch (error) {
+    next(error);
+  }
 });
 
 io.on("connection", (socket) => {
@@ -2146,9 +2238,15 @@ io.on("connection", (socket) => {
 
 app.use((error, _request, response, _next) => {
   console.error("Error:", error.message);
+  const payload = {
+    message: error.message || "Error interno del servidor",
+  };
+  if (error.clientPayload && typeof error.clientPayload === "object") {
+    Object.assign(payload, error.clientPayload);
+  }
   response
     .status(error.statusCode || 500)
-    .json({ message: error.message || "Error interno del servidor" });
+    .json(payload);
 });
 
 // ── INICIO ────────────────────────────────────────────────────────────────────

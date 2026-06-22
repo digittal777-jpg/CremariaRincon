@@ -22,6 +22,7 @@ const {
 } = require("../config");
 const { createDatabaseBackup, getDb, nowIso } = require("../db");
 const {
+  ALL_BRANCHES,
   createHttpError,
   getBusinessProfile,
   getStoreDateKey,
@@ -310,6 +311,22 @@ function listRecentBackupRuns(limit = 6) {
   `).all(Math.max(1, Math.min(Number(limit || 6), 20))).map(mapBackupRunRow);
 }
 
+function normalizeSyncHealthSummaryOptions(optionsOrStaleHours = BACKUP_SYNC_REPORT_STALE_HOURS) {
+  if (optionsOrStaleHours && typeof optionsOrStaleHours === "object") {
+    return {
+      staleHours: Math.max(1, Number(optionsOrStaleHours.staleHours || BACKUP_SYNC_REPORT_STALE_HOURS)),
+      branch: optionsOrStaleHours.branch
+        ? normalizeBranch(optionsOrStaleHours.branch, { allowAll: true, fallback: null })
+        : null,
+    };
+  }
+
+  return {
+    staleHours: Math.max(1, Number(optionsOrStaleHours || BACKUP_SYNC_REPORT_STALE_HOURS)),
+    branch: null,
+  };
+}
+
 function recordClientSyncHealth(payload = {}, actor = {}) {
   const deviceId = normalizeText(payload.deviceId || "", 120);
   if (!deviceId) {
@@ -378,14 +395,16 @@ function recordClientSyncHealth(payload = {}, actor = {}) {
   };
 }
 
-function listRecentClientSyncReports(staleHours = BACKUP_SYNC_REPORT_STALE_HOURS) {
-  const thresholdDate = new Date(Date.now() - Math.max(1, staleHours) * 60 * 60 * 1000).toISOString();
+function listRecentClientSyncReports(optionsOrStaleHours = BACKUP_SYNC_REPORT_STALE_HOURS) {
+  const { staleHours, branch } = normalizeSyncHealthSummaryOptions(optionsOrStaleHours);
+  const thresholdDate = new Date(Date.now() - staleHours * 60 * 60 * 1000).toISOString();
+  const branchFilterSql = branch && branch !== ALL_BRANCHES ? " AND branch = ?" : "";
   return db.prepare(`
     SELECT *
     FROM client_sync_reports
-    WHERE reported_at >= ?
+    WHERE reported_at >= ?${branchFilterSql}
     ORDER BY reported_at DESC, device_id ASC
-  `).all(thresholdDate).map((row) => ({
+  `).all(...(branch && branch !== ALL_BRANCHES ? [thresholdDate, branch] : [thresholdDate])).map((row) => ({
     deviceId: row.device_id,
     branch: row.branch || "",
     actorType: row.actor_type || "device",
@@ -399,14 +418,16 @@ function listRecentClientSyncReports(staleHours = BACKUP_SYNC_REPORT_STALE_HOURS
   }));
 }
 
-function getClientSyncHealthSummary(staleHours = BACKUP_SYNC_REPORT_STALE_HOURS) {
-  const reports = listRecentClientSyncReports(staleHours);
+function getClientSyncHealthSummary(optionsOrStaleHours = BACKUP_SYNC_REPORT_STALE_HOURS) {
+  const { staleHours, branch } = normalizeSyncHealthSummaryOptions(optionsOrStaleHours);
+  const reports = listRecentClientSyncReports({ staleHours, branch });
   const pendingReports = reports.filter((report) => report.pendingQueueCount > 0);
   const blockedReports = reports.filter((report) => report.blockedQueueCount > 0);
   const registerEventReports = reports.filter((report) => report.registerEventsCount > 0);
 
   return {
-    staleAfterHours: Math.max(1, staleHours),
+    branch: branch || ALL_BRANCHES,
+    staleAfterHours: staleHours,
     reportCount: reports.length,
     latestReportedAt: reports[0]?.reportedAt || null,
     hasPending: pendingReports.length > 0 || blockedReports.length > 0 || registerEventReports.length > 0,

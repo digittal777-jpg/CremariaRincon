@@ -369,6 +369,7 @@ async function bootstrap() {
   refs.openReceivablesButton = $("open-receivables-button");
   refs.openMerchandiseRequestButton = $("open-merchandise-request-button");
   refs.refreshCatalogButton = $("refresh-catalog-button");
+  refs.exportScopeSelect = $("export-scope-select");
   refs.exportDateInput = $("export-date-input");
   refs.exportWorkbookButton = $("export-workbook-button");
   refs.downloadDbButton = $("download-db-button");
@@ -601,6 +602,17 @@ async function bootstrap() {
   refs.adminBranchesList = $("admin-branches-list");
   refs.adminMerchandiseRequestsList = $("admin-merchandise-requests-list");
   refs.adminMerchandiseRequestsStatus = $("admin-merchandise-requests-status");
+  refs.adminPeriodClosureDate = $("admin-period-closure-date");
+  refs.adminPeriodClosuresStatus = $("admin-period-closures-status");
+  refs.adminPeriodClosuresSummary = $("admin-period-closures-summary");
+  refs.adminPeriodClosuresWarnings = $("admin-period-closures-warnings");
+  refs.adminPeriodClosureNotes = $("admin-period-closure-notes");
+  refs.adminPeriodClosuresBreakdowns = $("admin-period-closures-breakdowns");
+  refs.adminPeriodClosureDetail = $("admin-period-closure-detail");
+  refs.adminPeriodClosuresList = $("admin-period-closures-list");
+  refs.loadAdminPeriodClosuresButton = $("load-admin-period-closures-button");
+  refs.saveAdminPeriodClosureButton = $("save-admin-period-closure-button");
+  refs.regenerateAdminPeriodClosureButton = $("regenerate-admin-period-closure-button");
   refs.adminWeightedAuditDate = $("admin-weighted-audit-date");
   refs.adminWeightedAuditShift = $("admin-weighted-audit-shift");
   refs.adminWeightedAuditStatus = $("admin-weighted-audit-status");
@@ -717,9 +729,13 @@ async function bootstrap() {
     refs.exportDateInput.min = shiftDateInputValue(todayValue, -14);
     refs.exportDateInput.value = todayValue;
   }
+  if (refs.adminPeriodClosureDate) {
+    refs.adminPeriodClosureDate.value = toDateInputValue();
+  }
   if (refs.adminWeightedAuditDate) {
     refs.adminWeightedAuditDate.value = toDateInputValue();
   }
+  state.admin.periodClosures.dateKey = refs.adminPeriodClosureDate?.value || toDateInputValue();
   state.admin.weightedAudit.dateKey = refs.adminWeightedAuditDate?.value || toDateInputValue();
   state.admin.weightedAudit.shift =
     refs.adminWeightedAuditShift?.value || refs.shiftSelect?.value || "Tarde";
@@ -900,6 +916,21 @@ async function bootstrap() {
   });
   refs.adminWeightedAuditDate?.addEventListener("change", () => {
     state.admin.weightedAudit.dateKey = refs.adminWeightedAuditDate.value;
+  });
+  refs.loadAdminPeriodClosuresButton?.addEventListener("click", () => {
+    void loadAdminPeriodClosuresWorkspace(getAdminBranch(), { toastOnError: true });
+  });
+  refs.saveAdminPeriodClosureButton?.addEventListener("click", () => {
+    void saveAdminPeriodClosure();
+  });
+  refs.regenerateAdminPeriodClosureButton?.addEventListener("click", () => {
+    void saveAdminPeriodClosure({ regenerate: true });
+  });
+  refs.adminPeriodClosureDate?.addEventListener("change", () => {
+    state.admin.periodClosures.dateKey = refs.adminPeriodClosureDate.value;
+  });
+  refs.adminPeriodClosureNotes?.addEventListener("input", () => {
+    updateAdminPeriodClosureNotesDraft(refs.adminPeriodClosureNotes.value);
   });
   refs.adminWeightedAuditSearch?.addEventListener("input", () => {
     updateWeightedAuditFilters({ search: refs.adminWeightedAuditSearch.value });
@@ -1564,6 +1595,13 @@ async function bootstrap() {
       return;
     }
     void openAdminMerchandiseRequestDetail(button.dataset.requestId);
+  });
+  refs.adminPeriodClosuresList?.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="open-period-closure"]');
+    if (!button) {
+      return;
+    }
+    void openAdminPeriodClosureDetail(button.dataset.id);
   });
 
   refs.adminWeightedAuditSessions?.addEventListener("click", (event) => {

@@ -152,6 +152,7 @@ function renderAdminModal() {
   updateModuleVisibility();
   renderAdminDevPanel();
   renderAdminBranches();
+  renderAdminPeriodClosuresPanel();
   renderAdminWeightedAuditPanel();
   updateModuleVisibility();
 } // FIX: llave de cierre de renderAdminModal que faltaba
@@ -1042,6 +1043,299 @@ function renderCashierAuthModal() {
 
   refs.loginCashierButton.disabled = state.cashierAuth.loading;
   refs.loginCashierButton.textContent = state.cashierAuth.loading ? "Iniciando..." : "Iniciar sesion";
+}
+
+function buildPeriodClosureSummaryCards(summary = {}) {
+  return `
+    <article class="period-closure-summary-card">
+      <span>Ventas</span>
+      <strong>${formatCurrency(summary.totalSales || 0)}</strong>
+      <p>${formatQuantity(summary.tickets || 0)} tickets · Promedio ${formatCurrency(summary.averageTicket || 0)}</p>
+    </article>
+    <article class="period-closure-summary-card">
+      <span>Efectivo esperado</span>
+      <strong>${formatCurrency(summary.expectedCash || 0)}</strong>
+      <p>Aperturas ${formatCurrency(summary.openingAmount || 0)} · Retiros ${formatCurrency(summary.withdrawalsAmount || 0)}</p>
+    </article>
+    <article class="period-closure-summary-card">
+      <span>Canales</span>
+      <strong>${formatCurrency(summary.cashSales || 0)}</strong>
+      <p>Tarjeta ${formatCurrency(summary.cardSales || 0)} · Transferencia ${formatCurrency(summary.transferSales || 0)}</p>
+    </article>
+    <article class="period-closure-summary-card">
+      <span>Fiado</span>
+      <strong>${formatCurrency(summary.creditSales || 0)}</strong>
+      <p>Abonos cobrados ${formatCurrency(summary.creditCollections || 0)}</p>
+    </article>
+    <article class="period-closure-summary-card">
+      <span>Cortes</span>
+      <strong>${formatQuantity(summary.finalCuts || 0)}</strong>
+      <p>Rapidos ${formatQuantity(summary.quickCuts || 0)} · Diferencia ${formatCurrency(summary.finalCutDifferenceTotal || 0)}</p>
+    </article>
+    <article class="period-closure-summary-card">
+      <span>Auditoria kg</span>
+      <strong>${formatQuantity(summary.weightedAuditCompletedSessions || 0)}</strong>
+      <p>Pendientes ${formatQuantity(summary.weightedAuditPendingSessions || 0)} · Incidencias ${formatQuantity(summary.weightedAuditIncidentItems || 0)}</p>
+    </article>
+    <article class="period-closure-summary-card">
+      <span>Merma / sobrante</span>
+      <strong>${formatQuantity(summary.weightedAuditShortageKg || 0)} / ${formatQuantity(summary.weightedAuditSurplusKg || 0)}</strong>
+      <p>Kilos agregados o faltantes</p>
+    </article>
+    <article class="period-closure-summary-card">
+      <span>Impacto</span>
+      <strong>${formatCurrency(summary.weightedAuditVarianceValue || 0)}</strong>
+      <p>Variacion economica de auditoria kg</p>
+    </article>
+  `;
+}
+
+function buildPeriodClosureWarningMarkup(warning = {}) {
+  const severity = String(warning.severity || "info").toLowerCase();
+  return `
+    <article class="period-closure-warning ${severity}">
+      <strong>${escapeHtml(String(warning.code || "warning").replaceAll("_", " "))}</strong>
+      <p>${escapeHtml(warning.message || "Advertencia sin detalle.")}</p>
+    </article>
+  `;
+}
+
+function buildPeriodClosureBreakdownMarkup(title, items = [], labelBuilder) {
+  return `
+    <section class="period-closure-breakdown-block">
+      <div class="panel-head admin-subhead compact-inline-head">
+        <div>
+          <p class="eyebrow">Desglose</p>
+          <h3>${escapeHtml(title)}</h3>
+        </div>
+      </div>
+      <div class="period-closure-breakdown-grid">
+        ${items.length
+          ? items.map((item) => `
+              <article class="period-closure-breakdown-card">
+                <strong>${escapeHtml(labelBuilder(item))}</strong>
+                <p>Ventas ${formatCurrency(item.totalSales || 0)} · Tickets ${formatQuantity(item.tickets || 0)}</p>
+                <p>Efectivo ${formatCurrency(item.cashSales || 0)} · Fiado ${formatCurrency(item.creditSales || 0)}</p>
+                <p>Cortes ${formatQuantity(item.finalCuts || 0)} · Kg incidencias ${formatQuantity(item.weightedAuditIncidentItems || 0)}</p>
+              </article>
+            `).join("")
+          : `<div class="empty-state">Sin datos en este desglose.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function buildPeriodClosureDetailMarkup(closure, emptyMessage) {
+  if (!closure) {
+    return `<div class="empty-state">${escapeHtml(emptyMessage)}</div>`;
+  }
+
+  const storedWarnings = Array.isArray(closure.storedWarnings)
+    ? closure.storedWarnings
+    : Array.isArray(closure.warnings)
+      ? closure.warnings
+      : [];
+  const liveWarnings = Array.isArray(closure.liveWarnings) ? closure.liveWarnings : storedWarnings;
+  const detailWarnings = closure.isStale ? liveWarnings : storedWarnings;
+  const warningMarkup = detailWarnings.length
+    ? detailWarnings.map((warning) => buildPeriodClosureWarningMarkup(warning)).join("")
+    : `<div class="empty-state">${closure.isStale ? "Hoy no hay warnings activos, pero el snapshot guardado ya no coincide con los datos vivos." : "Este cierre no tiene warnings guardados."}</div>`;
+  const staleWarningMarkup = closure.isStale
+    ? `
+        <article class="period-closure-warning error">
+          <strong>snapshot desactualizado</strong>
+          <p>Este cierre guardado ya no coincide con el estado actual del periodo. Revisa las advertencias vivas antes de confiar en este snapshot.</p>
+        </article>
+      `
+    : "";
+
+  return `
+    <div class="period-closure-detail-head">
+      <div>
+        <p class="eyebrow">Detalle guardado</p>
+        <h3>${escapeHtml(closure.periodStartDateKey)} a ${escapeHtml(closure.periodEndDateKey)}</h3>
+      </div>
+      <span class="small-pill ${closure.isStale ? "period-closure-pill-stale" : "period-closure-pill-fresh"}">
+        ${closure.isStale ? "Desactualizado" : "Vigente"}
+      </span>
+    </div>
+    <div class="period-closure-detail-grid">
+      <article class="period-closure-detail-stat">
+        <span>Sucursal</span>
+        <strong>${escapeHtml(getBranchLabel(closure.branch))}</strong>
+      </article>
+      <article class="period-closure-detail-stat">
+        <span>Actualizado</span>
+        <strong>${escapeHtml(dateTimeFormatter.format(new Date(closure.updatedAt || closure.createdAt || Date.now())))}</strong>
+      </article>
+      <article class="period-closure-detail-stat">
+        <span>Tickets</span>
+        <strong>${formatQuantity(closure.summary?.tickets || 0)}</strong>
+      </article>
+      <article class="period-closure-detail-stat">
+        <span>Ventas</span>
+        <strong>${formatCurrency(closure.summary?.totalSales || 0)}</strong>
+      </article>
+    </div>
+    <div class="period-closure-detail-notes">
+      <strong>Notas</strong>
+      <p>${escapeHtml(closure.notes || "Sin notas guardadas para este cierre.")}</p>
+    </div>
+    <div class="period-closure-detail-notes">
+      <strong>${closure.isStale ? "Advertencias actuales" : "Advertencias guardadas"}</strong>
+      <p>${closure.isStale ? "Estas advertencias se recalcularon con el estado vivo del periodo." : "Estas advertencias pertenecen al snapshot guardado."}</p>
+    </div>
+    <div class="period-closure-warning-list detail">${staleWarningMarkup}${warningMarkup}</div>
+  `;
+}
+
+function renderAdminPeriodClosuresPanel() {
+  if (
+    !refs.adminPeriodClosuresStatus
+    || !refs.adminPeriodClosuresSummary
+    || !refs.adminPeriodClosuresWarnings
+    || !refs.adminPeriodClosuresBreakdowns
+    || !refs.adminPeriodClosureDetail
+    || !refs.adminPeriodClosuresList
+  ) {
+    return;
+  }
+  if (!refs.adminModal?.classList.contains("open")) {
+    return;
+  }
+
+  const periodState = state.admin.periodClosures || {};
+  const preview = periodState.preview || null;
+  const matchingClosure = preview?.matchingClosure || null;
+  const selectedClosure = periodState.currentClosure || matchingClosure || null;
+
+  if (refs.adminPeriodClosureDate) {
+    if (refs.adminPeriodClosureDate.value !== (periodState.dateKey || toDateInputValue())) {
+      refs.adminPeriodClosureDate.value = periodState.dateKey || toDateInputValue();
+    }
+    refs.adminPeriodClosureDate.disabled = Boolean(periodState.loading || periodState.saving);
+  }
+  if (refs.adminPeriodClosureNotes) {
+    if (refs.adminPeriodClosureNotes.value !== (periodState.notesDraft || "")) {
+      refs.adminPeriodClosureNotes.value = periodState.notesDraft || "";
+    }
+    refs.adminPeriodClosureNotes.disabled = Boolean(periodState.loading || periodState.saving || !preview);
+  }
+
+  const statusParts = [];
+  if (periodState.loading) {
+    statusParts.push("Cargando...");
+  } else if (preview) {
+    statusParts.push(`Semana ${preview.periodStartDateKey} a ${preview.periodEndDateKey}`);
+    statusParts.push(preview.canSave ? "lista para cierre" : "con bloqueos");
+  } else {
+    statusParts.push("Sin semana cargada");
+  }
+  if (matchingClosure) {
+    statusParts.push(matchingClosure.isStale ? "snapshot desactualizado" : "snapshot vigente");
+  }
+  refs.adminPeriodClosuresStatus.textContent = statusParts.join(" · ");
+
+  refs.adminPeriodClosuresSummary.innerHTML = preview
+    ? buildPeriodClosureSummaryCards(preview.summary || {})
+    : `<div class="empty-state">Carga una fecha ancla para ver el consolidado semanal.</div>`;
+
+  refs.adminPeriodClosuresWarnings.innerHTML = preview
+    ? Array.isArray(preview.warnings) && preview.warnings.length
+      ? preview.warnings.map((warning) => buildPeriodClosureWarningMarkup(warning)).join("")
+      : `<div class="period-closure-warning ok"><strong>Sin bloqueos</strong><p>La vista previa semanal esta lista para guardarse como cierre oficial.</p></div>`
+    : "";
+
+  if (preview) {
+    const breakdownBlocks = [
+      buildPeriodClosureBreakdownMarkup(
+        "Por dia",
+        Array.isArray(preview.breakdowns?.byDate) ? preview.breakdowns.byDate : [],
+        (item) => item.dateKey || "Sin fecha",
+      ),
+      buildPeriodClosureBreakdownMarkup(
+        "Por turno",
+        Array.isArray(preview.breakdowns?.byShift) ? preview.breakdowns.byShift : [],
+        (item) => item.shift || "Sin turno",
+      ),
+      buildPeriodClosureBreakdownMarkup(
+        "Por cajero",
+        Array.isArray(preview.breakdowns?.byCashier) ? preview.breakdowns.byCashier : [],
+        (item) => item.branchLabel && preview.branch === "all"
+          ? `${item.branchLabel} · ${item.cashier || "Sin cajero"}`
+          : item.cashier || "Sin cajero",
+      ),
+    ];
+
+    if (Array.isArray(preview.breakdowns?.byBranch)) {
+      breakdownBlocks.push(
+        buildPeriodClosureBreakdownMarkup(
+          "Por sucursal",
+          preview.breakdowns.byBranch,
+          (item) => item.branchLabel || item.branch || "Sin sucursal",
+        ),
+      );
+    }
+
+    refs.adminPeriodClosuresBreakdowns.innerHTML = breakdownBlocks.join("");
+  } else {
+    refs.adminPeriodClosuresBreakdowns.innerHTML = "";
+  }
+
+  refs.adminPeriodClosureDetail.innerHTML = buildPeriodClosureDetailMarkup(
+    selectedClosure,
+    periodState.detailLoading
+      ? "Cargando detalle del cierre guardado..."
+      : "Selecciona un cierre guardado para revisar su snapshot y su estado.",
+  );
+
+  refs.adminPeriodClosuresList.innerHTML = Array.isArray(periodState.closures) && periodState.closures.length
+    ? periodState.closures.map((closure) => `
+        <button
+          class="admin-record-item ${Number(periodState.selectedClosureId || selectedClosure?.id || 0) === Number(closure.id) ? "active" : ""}"
+          data-action="open-period-closure"
+          data-id="${closure.id}"
+          type="button"
+        >
+          <div class="admin-record-item-head">
+            <strong>${escapeHtml(closure.periodStartDateKey)} a ${escapeHtml(closure.periodEndDateKey)}</strong>
+            <span class="small-pill ${closure.isStale ? "period-closure-pill-stale" : "period-closure-pill-fresh"}">
+              ${closure.isStale ? "Desactualizado" : "Vigente"}
+            </span>
+          </div>
+          <p>${escapeHtml(getBranchLabel(closure.branch))} · ${formatCurrency(closure.summary?.totalSales || 0)} · ${formatQuantity(closure.summary?.tickets || 0)} tickets</p>
+          <p>Actualizado ${escapeHtml(dateTimeFormatter.format(new Date(closure.updatedAt || closure.createdAt || Date.now())))}</p>
+        </button>
+      `).join("")
+    : `<div class="empty-state">Aun no hay cierres semanales guardados para esta sucursal.</div>`;
+
+  if (refs.loadAdminPeriodClosuresButton) {
+    refs.loadAdminPeriodClosuresButton.disabled = Boolean(periodState.loading || periodState.saving);
+  }
+  if (refs.saveAdminPeriodClosureButton) {
+    refs.saveAdminPeriodClosureButton.disabled = Boolean(
+      periodState.loading
+      || periodState.saving
+      || !preview
+      || !preview.canSave
+      || matchingClosure,
+    );
+    refs.saveAdminPeriodClosureButton.textContent = periodState.saving && !matchingClosure
+      ? "Guardando..."
+      : "Guardar cierre semanal";
+  }
+  if (refs.regenerateAdminPeriodClosureButton) {
+    refs.regenerateAdminPeriodClosureButton.disabled = Boolean(
+      periodState.loading
+      || periodState.saving
+      || !preview
+      || !preview.canSave
+      || !matchingClosure,
+    );
+    refs.regenerateAdminPeriodClosureButton.textContent = periodState.saving && matchingClosure
+      ? "Regenerando..."
+      : "Regenerar";
+  }
 }
 
 function renderAdminWeightedAuditPanelLegacy() {
