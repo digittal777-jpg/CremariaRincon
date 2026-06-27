@@ -6,6 +6,7 @@ function showToast(message, type = "info") {
   const toast = document.createElement("div");
   toast.className = `toast ${type}`;
   toast.textContent = message;
+  toast.setAttribute?.("role", type === "error" ? "alert" : "status");
   refs.toastRegion.appendChild(toast);
 
   window.setTimeout(() => {
@@ -37,14 +38,22 @@ function renderRouteCartFab() {
   }
 
   const shouldShow = shouldShowRouteCartFab();
+  const cartCount = getCartCount();
   refs.routeCartFab.hidden = !shouldShow;
   if (!shouldShow) {
     return;
   }
 
   refs.routeCartFabTotal.textContent = formatCurrency(getCartTotal());
-  refs.routeCartFabCount.textContent = `${getCartCount()} lineas`;
-  refs.routeCartFab.classList.toggle("has-items", getCartCount() > 0);
+  refs.routeCartFabCount.textContent = `${cartCount} lineas`;
+  refs.routeCartFab.classList.toggle("has-items", cartCount > 0);
+  if (cartCount > 0) {
+    const previousCount = Number(refs.routeCartFab.dataset.cartCount || 0);
+    if (previousCount !== cartCount) {
+      pulseElement(refs.routeCartFab);
+    }
+  }
+  refs.routeCartFab.dataset.cartCount = String(cartCount);
 }
 
 function renderRouteMode() {
@@ -416,6 +425,7 @@ function getCartCount() {
 }
 
 function renderCart() {
+  const previousRenderedTotal = Number(refs.cartTotal?.dataset?.amount || 0);
   const routeModeEnabled = isRouteModeEnabled();
   if (state.cart.length === 0) {
     refs.cartItems.innerHTML = `
@@ -501,8 +511,14 @@ function renderCart() {
       .join("");
   }
 
-  refs.cartCount.textContent = `${getCartCount()} lineas`;
-  refs.cartTotal.textContent = formatCurrency(getCartTotal());
+  const cartCount = getCartCount();
+  const cartTotal = getCartTotal();
+  refs.cartCount.textContent = `${cartCount} lineas`;
+  refs.cartTotal.textContent = formatCurrency(cartTotal);
+  refs.cartTotal.dataset.amount = String(cartTotal);
+  if (cartCount > 0 && roundMoney(previousRenderedTotal) !== roundMoney(cartTotal)) {
+    pulseElement(refs.cartTotal);
+  }
   renderRouteCartFab();
 }
 

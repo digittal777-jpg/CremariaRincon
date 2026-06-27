@@ -353,7 +353,7 @@ function openItemModal(product, options = {}) {
     : focusField === "unitPrice"
       ? refs.itemUnitPrice
       : refs.itemTotal;
-  focusAndSelectInput(focusTarget);
+  focusAndSelectInput(focusTarget, { preserveGesture: true });
 }
 
 function getItemQuickQuantityPresets(product) {
@@ -690,7 +690,7 @@ function openRouteCartEditor(index) {
     }),
   );
   setModalOpen(refs.routeCartEditorModal, true);
-  focusAndSelectInput(refs.routeCartEditorQuantity);
+  focusAndSelectInput(refs.routeCartEditorQuantity, { preserveGesture: true });
   recordRouteCartEditorOpenDuration(
     (typeof performance !== "undefined" ? performance.now() : Date.now()) - startTime,
   );

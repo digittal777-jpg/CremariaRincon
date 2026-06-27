@@ -63,6 +63,7 @@ function formatProductStock(product) {
 }
 
 const productSearchBlobCache = new WeakMap();
+const elementMotionTimers = new WeakMap();
 
 function normalizeSearchText(value) {
   return String(value || "")
@@ -165,7 +166,48 @@ function focusAndSelectInput(input, options = {}) {
     return;
   }
 
+  if (options.preserveGesture === true) {
+    // Keep the original tap/click call stack alive so mobile browsers can open the soft keyboard.
+    runSelection();
+  }
+
   window.requestAnimationFrame(runSelection);
+}
+
+function prefersReducedMotion() {
+  return Boolean(
+    typeof window !== "undefined"
+      && typeof window.matchMedia === "function"
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+}
+
+function pulseElement(element, className = "is-bumping", options = {}) {
+  if (
+    !element
+    || !element.classList
+    || typeof window === "undefined"
+    || prefersReducedMotion()
+  ) {
+    return;
+  }
+
+  const activeClass = String(className || "").trim() || "is-bumping";
+  const durationMs = Math.max(0, toNumber(options.durationMs, 320));
+  const timers = elementMotionTimers.get(element) || {};
+  if (timers[activeClass]) {
+    window.clearTimeout(timers[activeClass]);
+  }
+
+  element.classList.remove(activeClass);
+  window.requestAnimationFrame(() => {
+    element.classList.add(activeClass);
+    timers[activeClass] = window.setTimeout(() => {
+      element.classList.remove(activeClass);
+      delete timers[activeClass];
+    }, durationMs);
+    elementMotionTimers.set(element, timers);
+  });
 }
 
 function getPaymentMethodConfig(value) {
@@ -1071,7 +1113,12 @@ function updateModuleVisibility() {
 }
 
 function setModalOpen(modal, isOpen) {
+  if (!modal) {
+    return;
+  }
+
   modal.classList.toggle("open", isOpen);
+  modal.setAttribute?.("aria-hidden", isOpen ? "false" : "true");
 }
 
 function getShiftOptionsMarkup(selectedShift) {

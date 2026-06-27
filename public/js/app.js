@@ -102,6 +102,10 @@ function setRouteMode(enabled) {
   }
   persistPreferences();
   renderRouteMode();
+  pulseElement(refs.toggleRouteModeButton);
+  pulseElement(refs.routeModePill);
+  pulseElement(refs.productsGrid, "is-settling", { durationMs: 240 });
+  pulseElement(refs.cartPanel, "is-settling", { durationMs: 240 });
   if (state.ui.routeMode) {
     focusRouteSearchInput();
   }
@@ -122,6 +126,8 @@ function setRouteRegisterCollapsed(collapsed) {
   state.ui.routeRegisterCollapsed = Boolean(collapsed);
   persistPreferences();
   renderRouteMode();
+  pulseElement(refs.toggleRegisterToolbarButton);
+  pulseElement(refs.cartPanel, "is-settling", { durationMs: 240 });
 }
 
 function toggleRouteRegisterCollapsed() {
@@ -722,6 +728,9 @@ async function bootstrap() {
   refs.cashierAuthPassword = $("cashier-auth-password");
   refs.loginCashierButton = $("login-cashier-button");
   refs.closeCashierAuthModal = $("close-cashier-auth-modal");
+  document.querySelectorAll(".modal-shell").forEach((modal) => {
+    modal.setAttribute("aria-hidden", modal.classList.contains("open") ? "false" : "true");
+  });
 
   if (refs.exportDateInput) {
     const todayValue = toDateInputValue();
@@ -892,7 +901,7 @@ async function bootstrap() {
     const branch = refs.adminBranchSelect.value;
     try {
       state.admin.branch = branch;
-      await refreshAdminWorkspace(getAdminWorkspaceFullOptions(branch, true));
+      await refreshAdminWorkspace(getAdminWorkspaceBranchSwitchOptions(branch));
       showToast(`Vista admin cambiada a ${getBranchLabel(branch)}`, "info");
     } catch (_error) {
       showToast("Error al cambiar sucursal", "error");

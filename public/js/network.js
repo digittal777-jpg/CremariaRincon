@@ -1444,13 +1444,17 @@ function connectSocket() {
     }
   });
 
-  state.socket.on("dashboard:snapshot", () => {
+  state.socket.on("dashboard:snapshot", (event = {}) => {
     if (!state.online) {
       return;
     }
 
-    void refreshCurrentSnapshot().catch(() => {});
-    if (refs.adminModal?.classList.contains("open") && state.admin.authenticated) {
+    const eventBranch = getDashboardSnapshotEventBranch(event);
+
+    if (shouldRefreshCashierFromDashboardSnapshotEvent(eventBranch)) {
+      void refreshCurrentSnapshot().catch(() => {});
+    }
+    if (shouldRefreshAdminWorkspaceFromDashboardSnapshotEvent(eventBranch)) {
       void refreshAdminWorkspace(getAdminWorkspaceLiveOptions(getAdminBranch())).catch(() => {});
     }
   });
@@ -1522,4 +1526,39 @@ function connectSocket() {
       void loadRegisterSummary({ silent: true }).catch(() => {});
     }
   });
+}
+
+function getDashboardSnapshotEventBranch(event = {}) {
+  const safeBranch = String(event?.branch || "").trim().toLowerCase();
+  return safeBranch || "";
+}
+
+function doesDashboardSnapshotAffectBranch(eventBranch = "", targetBranch = "") {
+  const safeEventBranch = String(eventBranch || "").trim().toLowerCase();
+  const safeTargetBranch = String(targetBranch || "").trim().toLowerCase();
+  if (!safeEventBranch || safeEventBranch === "all") {
+    return true;
+  }
+  if (!safeTargetBranch) {
+    return false;
+  }
+  return safeTargetBranch === "all" || safeTargetBranch === safeEventBranch;
+}
+
+function shouldRefreshCashierFromDashboardSnapshotEvent(eventBranch = "") {
+  return doesDashboardSnapshotAffectBranch(
+    eventBranch,
+    typeof getActiveCashierBranch === "function" ? getActiveCashierBranch() : "",
+  );
+}
+
+function shouldRefreshAdminWorkspaceFromDashboardSnapshotEvent(eventBranch = "") {
+  if (!refs.adminModal?.classList.contains("open") || !state.admin.authenticated) {
+    return false;
+  }
+
+  return doesDashboardSnapshotAffectBranch(
+    eventBranch,
+    typeof getAdminBranch === "function" ? getAdminBranch() : "",
+  );
 }

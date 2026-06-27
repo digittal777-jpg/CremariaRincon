@@ -76,6 +76,23 @@ function getAdminWorkspaceLiveOptions(branch = getAdminBranch()) {
   };
 }
 
+function getAdminWorkspaceBranchSwitchOptions(branch = getAdminBranch()) {
+  return {
+    profile: "custom",
+    branch,
+    force: true,
+    snapshot: true,
+    editorData: true,
+    auditLogs: true,
+    branches: false,
+    cashiers: true,
+    requests: true,
+    config: false,
+    weightedAudit: true,
+    periodClosures: true,
+  };
+}
+
 function markAdminWorkspaceLoaded(sectionKey) {
   if (!state.admin.workspaceLoadedAt) {
     state.admin.workspaceLoadedAt = {};
@@ -529,9 +546,6 @@ function applySnapshot(snapshot, options = {}) {
   renderRecentActivity();
   renderTrendChart();
   renderShiftSummary();
-  if (refs.adminModal?.classList.contains("open") && state.admin.inventoryExpanded) {
-    renderInventory();
-  }
   renderQuickImportModal();
   renderSyncStatus();
   state.performance.snapshotRenderMs = roundMetric(
@@ -1041,6 +1055,9 @@ function applyAdminSnapshot(snapshot) {
   state.admin.inventoryComparison = effectiveSnapshot?.inventoryComparison || null;
   if (effectiveSnapshot?.store?.currentBranch) {
     state.admin.branch = effectiveSnapshot.store.currentBranch;
+  }
+  if (refs.adminModal?.classList.contains("open") && state.admin.inventoryExpanded) {
+    renderInventory();
   }
   renderAdminModal();
 }

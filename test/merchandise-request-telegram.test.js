@@ -509,3 +509,163 @@ test("the same product can mix receive and return when the final balance stays n
     db.close();
   }
 });
+
+test("a cashier can create and admin can approve a corrective receive request for a product already in negative stock", async (t) => {
+  const server = await startServer(t);
+  const { adminClient, adminCsrfToken, cashierClient, cashierToken } = await setupCashierFlow(server);
+  const createProductResponse = await adminClient.json("/api/admin/products/manual", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": adminCsrfToken,
+    },
+    body: JSON.stringify({
+      branch: "carrizal",
+      name: "Jamon Correctivo",
+      price: 25,
+      stock: 0,
+      minStock: 0,
+      category: "general",
+      unit: "pza",
+    }),
+  });
+  assert.equal(createProductResponse.status, 201);
+  const productId = createProductResponse.body.product.id;
+
+  const seedDb = new Database(server.dbPath);
+  try {
+    seedDb.prepare(`
+      UPDATE products
+      SET stock = -5, stock_initialized = 1
+      WHERE id = ? AND branch = 'carrizal'
+    `).run(productId);
+  } finally {
+    seedDb.close();
+  }
+
+  const createResponse = await cashierClient.json("/api/merchandise-requests", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cashier-Token": cashierToken,
+    },
+    body: JSON.stringify({
+      supplierName: "Proveedor Correctivo",
+      notes: "Reponer parte del faltante",
+      items: [
+        {
+          productId,
+          quantity: 2,
+          totalValue: 50,
+          mode: "receive",
+        },
+      ],
+    }),
+  });
+
+  assert.equal(createResponse.status, 201);
+  assert.equal(createResponse.body.request.status, "pending");
+
+  const approveResponse = await adminClient.json(
+    `/api/merchandise-requests/${createResponse.body.request.id}/approve`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": adminCsrfToken,
+      },
+      body: JSON.stringify({}),
+    },
+  );
+
+  assert.equal(approveResponse.status, 200);
+  assert.equal(approveResponse.body.request.status, "approved");
+
+  const db = new Database(server.dbPath, { readonly: true });
+  try {
+    const productRow = db.prepare("SELECT stock FROM products WHERE id = ? AND branch = 'carrizal'").get(productId);
+    assert.equal(Number(productRow.stock || 0), -3);
+  } finally {
+    db.close();
+  }
+});
+
+test("admin approval still applies a receive request when stock drifted deeper into negative before approval", async (t) => {
+  const server = await startServer(t);
+  const { adminClient, adminCsrfToken, cashierClient, cashierToken } = await setupCashierFlow(server);
+  const createProductResponse = await adminClient.json("/api/admin/products/manual", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": adminCsrfToken,
+    },
+    body: JSON.stringify({
+      branch: "carrizal",
+      name: "Queso Reajuste",
+      price: 30,
+      stock: 0,
+      minStock: 0,
+      category: "general",
+      unit: "pza",
+    }),
+  });
+  assert.equal(createProductResponse.status, 201);
+  const productId = createProductResponse.body.product.id;
+
+  const createResponse = await cashierClient.json("/api/merchandise-requests", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cashier-Token": cashierToken,
+    },
+    body: JSON.stringify({
+      supplierName: "Proveedor Norte",
+      notes: "Entrada pendiente",
+      items: [
+        {
+          productId,
+          quantity: 4,
+          totalValue: 120,
+          mode: "receive",
+        },
+      ],
+    }),
+  });
+
+  assert.equal(createResponse.status, 201);
+  assert.equal(createResponse.body.request.status, "pending");
+
+  const driftDb = new Database(server.dbPath);
+  try {
+    driftDb.prepare(`
+      UPDATE products
+      SET stock = -6, stock_initialized = 1
+      WHERE id = ? AND branch = 'carrizal'
+    `).run(productId);
+  } finally {
+    driftDb.close();
+  }
+
+  const approveResponse = await adminClient.json(
+    `/api/merchandise-requests/${createResponse.body.request.id}/approve`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": adminCsrfToken,
+      },
+      body: JSON.stringify({}),
+    },
+  );
+
+  assert.equal(approveResponse.status, 200);
+  assert.equal(approveResponse.body.request.status, "approved");
+
+  const db = new Database(server.dbPath, { readonly: true });
+  try {
+    const productRow = db.prepare("SELECT stock FROM products WHERE id = ? AND branch = 'carrizal'").get(productId);
+    assert.equal(Number(productRow.stock || 0), -2);
+  } finally {
+    db.close();
+  }
+});
