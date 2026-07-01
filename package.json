@@ -12,8 +12,10 @@
     "build:starter-catalog": "node scripts/build-starter-catalog.js",
     "import:excel": "node scripts/import-workbook.js",
     "install:excel-export": "node scripts/install-export-workbook.js",
+    "seed:demo": "node scripts/seed-demo-instance.js",
     "seed:business": "node scripts/seed-business-template.js",
     "clone:business": "node scripts/clone-business.js",
+    "provision:client": "node scripts/provision-client.js",
     "telegram:updates": "node scripts/telegram-helper.js updates",
     "telegram:test": "node scripts/telegram-helper.js send-test",
     "test": "node --test"

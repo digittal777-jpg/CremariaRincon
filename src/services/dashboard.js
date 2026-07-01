@@ -37,14 +37,24 @@ function getSummary(branch = listConfiguredBranches({ includeInactive: true })[0
     ? db.prepare(`
       SELECT
         COUNT(*) AS catalogSize,
-        COALESCE(SUM(stock * price), 0) AS inventoryValue
+        COALESCE(SUM(stock * price), 0) AS inventoryValue,
+        COALESCE(SUM(stock * price), 0) AS inventorySaleValue,
+        COALESCE(SUM(stock * COALESCE(cost, 0)), 0) AS inventoryCostValue,
+        COALESCE(SUM(CASE WHEN COALESCE(cost, 0) <= 0 THEN 1 ELSE 0 END), 0) AS missingCostProductsCount,
+        COALESCE(SUM(CASE WHEN stock < 0 THEN 1 ELSE 0 END), 0) AS negativeStockProductsCount,
+        COALESCE(AVG(CASE WHEN price > 0 AND COALESCE(cost, 0) > 0 THEN ((price - cost) / price) * 100 ELSE NULL END), 0) AS averageMarginPercent
       FROM products
       WHERE active = 1
     `).get()
     : db.prepare(`
       SELECT
         COUNT(*) AS catalogSize,
-        COALESCE(SUM(stock * price), 0) AS inventoryValue
+        COALESCE(SUM(stock * price), 0) AS inventoryValue,
+        COALESCE(SUM(stock * price), 0) AS inventorySaleValue,
+        COALESCE(SUM(stock * COALESCE(cost, 0)), 0) AS inventoryCostValue,
+        COALESCE(SUM(CASE WHEN COALESCE(cost, 0) <= 0 THEN 1 ELSE 0 END), 0) AS missingCostProductsCount,
+        COALESCE(SUM(CASE WHEN stock < 0 THEN 1 ELSE 0 END), 0) AS negativeStockProductsCount,
+        COALESCE(AVG(CASE WHEN price > 0 AND COALESCE(cost, 0) > 0 THEN ((price - cost) / price) * 100 ELSE NULL END), 0) AS averageMarginPercent
       FROM products
       WHERE active = 1 AND branch = ?
     `).get(normalizedBranch);
@@ -88,6 +98,11 @@ function getSummary(branch = listConfiguredBranches({ includeInactive: true })[0
     unitsSoldToday,
     catalogSize: Number(inventoryTotals.catalogSize || 0),
     inventoryValue: roundMoney(inventoryTotals.inventoryValue),
+    inventorySaleValue: roundMoney(inventoryTotals.inventorySaleValue),
+    inventoryCostValue: roundMoney(inventoryTotals.inventoryCostValue),
+    missingCostProductsCount: Number(inventoryTotals.missingCostProductsCount || 0),
+    negativeStockProductsCount: Number(inventoryTotals.negativeStockProductsCount || 0),
+    averageMarginPercent: roundMoney(inventoryTotals.averageMarginPercent),
     lowStockCount: Number(lowStockCount || 0),
     topProduct: topProductEntry
       ? {

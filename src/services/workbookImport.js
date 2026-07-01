@@ -348,6 +348,9 @@ function parseInventorySheets(workbook, defaultBranch) {
         unit: normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Unidad"), 12)
           .toLowerCase(),
         price: roundMoney(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Precio"))),
+        cost: Number.isFinite(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Costo")))
+          ? roundMoney(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Costo")))
+          : 0,
         stock: roundStock(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Existencia"))),
         minStock: roundStock(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Minimo"))),
         active: cellToBoolean(getCellFromHeader(row, headerInfo.headerMap, "Activo")),
@@ -456,6 +459,16 @@ function parseSalesSheets(workbook, defaultBranch) {
         quantity: roundStock(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Cantidad"))),
         unitPrice: roundMoney(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Precio Unit"))),
         lineTotal: roundMoney(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Total Linea"))),
+        unitCost: Number.isFinite(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Costo Unit")))
+          ? roundMoney(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Costo Unit")))
+          : null,
+        lineCost: Number.isFinite(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Costo Linea")))
+          ? roundMoney(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Costo Linea")))
+          : null,
+        grossProfit: Number.isFinite(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Utilidad Bruta")))
+          ? roundMoney(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Utilidad Bruta")))
+          : null,
+        costStatus: normalizeText(getCellFromHeader(row, headerInfo.headerMap, "Estado Costo"), 48) || "unknown",
         stockBefore: roundStock(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Stock Antes"))),
         stockAfter: roundStock(cellToNumber(getCellFromHeader(row, headerInfo.headerMap, "Stock Despues"))),
       });
@@ -829,9 +842,13 @@ function installParsedWorkbookData(parsedWorkbook) {
       quantity,
       unit_price,
       line_total,
+      unit_cost,
+      line_cost,
+      gross_profit,
+      cost_status,
       stock_before,
       stock_after
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertInventoryMovement = db.prepare(`
     INSERT INTO inventory_movements (
@@ -902,6 +919,7 @@ function installParsedWorkbookData(parsedWorkbook) {
       db.prepare("SELECT ticket_number FROM sales").all().map((row) => row.ticket_number),
     );
     const productIdByKey = new Map();
+    const productCostByKey = new Map();
     const saleIdByKey = new Map();
     const productCreatedAt = nowIso();
 
@@ -943,7 +961,9 @@ function installParsedWorkbookData(parsedWorkbook) {
         );
 
         const productId = Number(insert.lastInsertRowid);
-        productIdByKey.set(buildProductLookupKey(branch, product.name), productId);
+        const productKey = buildProductLookupKey(branch, product.name);
+        productIdByKey.set(productKey, productId);
+        productCostByKey.set(productKey, roundMoney(product.cost || 0));
         counters.products += 1;
       });
     });
@@ -988,20 +1008,46 @@ function installParsedWorkbookData(parsedWorkbook) {
       counters.sales += 1;
 
       sale.items.forEach((item) => {
-        const productId = productIdByKey.get(buildProductLookupKey(sale.branch, item.productName));
+        const productKey = buildProductLookupKey(sale.branch, item.productName);
+        const productId = productIdByKey.get(productKey);
         if (!productId) {
           throw createHttpError(
             `No encontre el producto "${item.productName}" de la venta "${sale.ticketNumber}" dentro del inventario exportado.`,
           );
         }
+        const productCost = roundMoney(productCostByKey.get(productKey) || 0);
+        const quantity = roundStock(item.quantity);
+        const lineTotal = roundMoney(item.lineTotal);
+        const unitCost = item.unitCost == null
+          ? productCost
+          : roundMoney(item.unitCost);
+        const lineCost = item.lineCost == null
+          ? productCost > 0
+            ? roundMoney(quantity * productCost)
+            : null
+          : roundMoney(item.lineCost);
+        const grossProfit = item.grossProfit == null
+          ? lineCost == null
+            ? null
+            : roundMoney(lineTotal - lineCost)
+          : roundMoney(item.grossProfit);
+        const costStatus = item.costStatus && item.costStatus !== "unknown"
+          ? item.costStatus
+          : lineCost == null
+            ? "missing_cost"
+            : "estimated_current_cost";
 
         insertSaleItem.run(
           saleId,
           productId,
           item.productName,
-          roundStock(item.quantity),
+          quantity,
           roundMoney(item.unitPrice),
-          roundMoney(item.lineTotal),
+          lineTotal,
+          unitCost,
+          lineCost,
+          grossProfit,
+          costStatus,
           roundStock(item.stockBefore),
           roundStock(item.stockAfter),
         );

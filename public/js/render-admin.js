@@ -1,3 +1,77 @@
+function renderAdminPerformanceMetrics() {
+  if (!refs.adminModal?.classList.contains("open") || !refs.adminMetricsStatus) {
+    return;
+  }
+
+  const serverMetrics = state.admin.metrics;
+  const clientMetrics = getClientMetrics();
+
+  refs.adminMetricsStatus.textContent = state.admin.metricsLoading
+    ? "Actualizando..."
+    : serverMetrics
+      ? `Actualizado ${timeFormatter.format(new Date(serverMetrics.generatedAt))}`
+      : "Esperando datos";
+  refs.adminProcessCpu.textContent = serverMetrics
+    ? `${formatQuantity(serverMetrics.process.cpuPercent)}%`
+    : "0%";
+  refs.adminProcessMemory.textContent = serverMetrics
+    ? `${formatQuantity(serverMetrics.process.rssMb)} MB`
+    : "0 MB";
+  refs.adminProductsRender.textContent = `${formatQuantity(state.performance.productsRenderMs)} ms`;
+  refs.adminSnapshotRender.textContent = `${formatQuantity(state.performance.snapshotRenderMs)} ms`;
+  if (refs.adminRouteQuickAdd) {
+    refs.adminRouteQuickAdd.textContent = `${formatQuantity(state.performance.routeQuickAddMs)} ms`;
+  }
+  if (refs.adminRouteQuickAddDetail) {
+    refs.adminRouteQuickAddDetail.textContent =
+      `${formatQuantity(state.performance.routeQuickAddCount)} altas`;
+  }
+  if (refs.adminRouteEditorOpen) {
+    refs.adminRouteEditorOpen.textContent =
+      `${formatQuantity(state.performance.routeCartEditorOpenMs)} ms`;
+  }
+  if (refs.adminRouteEditorOpenDetail) {
+    refs.adminRouteEditorOpenDetail.textContent =
+      `${formatQuantity(state.performance.routeCartEditorOpenCount)} aperturas`;
+  }
+
+  const comparisonBranchOneRows = document.getElementById("inventory-body-branch-1")?.children?.length || 0;
+  const comparisonBranchTwoRows = document.getElementById("inventory-body-branch-2")?.children?.length || 0;
+  const inventoryVisibleRows = state.admin.branch === "all"
+    ? comparisonBranchOneRows + comparisonBranchTwoRows
+    : refs.inventoryBody?.children?.length || 0;
+  const comparisonInventoryTotal = Array.isArray(state.admin.inventoryComparison?.branches)
+    ? state.admin.inventoryComparison.branches.reduce(
+        (sum, branchEntry) => sum + (Array.isArray(branchEntry.products) ? branchEntry.products.length : 0),
+        0,
+      )
+    : 0;
+  const inventoryTotal = state.admin.branch === "all"
+    ? comparisonInventoryTotal
+    : Array.isArray(state.admin.inventoryProducts)
+      ? state.admin.inventoryProducts.length
+      : 0;
+  refs.adminVisibleProducts.textContent = state.admin.inventoryExpanded
+    ? `${inventoryVisibleRows}/${inventoryTotal}`
+    : `Oculto/${inventoryTotal}`;
+  refs.adminDomNodes.textContent = formatQuantity(clientMetrics.domNodes);
+  refs.adminServerRuntime.textContent = serverMetrics
+    ? `${formatQuantity(serverMetrics.process.uptimeSeconds)} s`
+    : "0 s";
+  refs.adminServerMemory.textContent = serverMetrics
+    ? `RAM sistema ${formatQuantity(serverMetrics.system.usedMemoryPercent)}% - ${serverMetrics.system.cpuCount} CPU`
+    : "RAM sistema 0%";
+  refs.adminClientMemory.textContent =
+    clientMetrics.usedHeapMb != null
+      ? `${formatQuantity(clientMetrics.usedHeapMb)} MB JS`
+      : "Sin dato";
+  refs.adminClientHardware.textContent =
+    `CPU ${formatQuantity(clientMetrics.hardwareConcurrency)} - RAM ${formatQuantity(clientMetrics.deviceMemory)} GB`;
+  refs.adminClientNetwork.textContent = clientMetrics.network
+    ? `Red ${clientMetrics.network.effectiveType} - ${formatQuantity(clientMetrics.network.downlink)} Mbps - ${formatQuantity(clientMetrics.network.rtt)} ms - pendientes ${state.pendingQueue.length}`
+    : `Red ${state.online ? "en linea" : "offline"} - pendientes ${state.pendingQueue.length}`;
+}
+
 function renderAdminModal() {
   if (!refs.adminModal) {
     return;
@@ -36,6 +110,20 @@ function renderAdminModal() {
     const topProductText = summary.topProduct
       ? `${summary.topProduct.name} lidera con ${formatCurrency(summary.topProduct.total)}`
       : "Sin ventas registradas hoy";
+    const profitTotals = state.admin.profitability?.totals || null;
+    const inventoryCostValue = summary.inventoryCostValue
+      ?? state.admin.profitability?.inventory?.costValue
+      ?? 0;
+    const inventorySaleValue = summary.inventorySaleValue
+      ?? summary.inventoryValue
+      ?? state.admin.profitability?.inventory?.saleValue
+      ?? 0;
+    const missingCostProducts = summary.missingCostProductsCount
+      ?? state.admin.profitability?.inventory?.missingCostProductsCount
+      ?? 0;
+    const negativeStockProducts = summary.negativeStockProductsCount
+      ?? state.admin.profitability?.inventory?.negativeStockProductsCount
+      ?? 0;
 
     refs.adminSummaryCards.innerHTML = `
       <article class="admin-metric-card">
@@ -44,19 +132,29 @@ function renderAdminModal() {
         <p>${formatQuantity(summary.ticketsToday || 0)} tickets</p>
       </article>
       <article class="admin-metric-card">
+        <span>Utilidad bruta</span>
+        <strong>${formatCurrency(profitTotals?.grossProfit || 0)}</strong>
+        <p>${profitTotals?.isIncomplete ? "Incompleta por costos faltantes" : `${formatQuantity(profitTotals?.marginPercent || 0)}% margen`}</p>
+      </article>
+      <article class="admin-metric-card">
         <span>Ticket promedio</span>
         <strong>${formatCurrency(summary.averageTicket || 0)}</strong>
         <p>${formatQuantity(summary.unitsSoldToday || 0)} unidades</p>
       </article>
       <article class="admin-metric-card">
-        <span>Inventario</span>
-        <strong>${formatCurrency(summary.inventoryValue || 0)}</strong>
+        <span>Inventario venta</span>
+        <strong>${formatCurrency(inventorySaleValue)}</strong>
         <p>${formatQuantity(summary.catalogSize || 0)} productos activos</p>
+      </article>
+      <article class="admin-metric-card">
+        <span>Inventario costo</span>
+        <strong>${formatCurrency(inventoryCostValue)}</strong>
+        <p>${formatQuantity(missingCostProducts)} sin costo</p>
       </article>
       <article class="admin-metric-card">
         <span>Alertas</span>
         <strong>${formatQuantity(summary.lowStockCount || 0)}</strong>
-        <p>${escapeHtml(topProductText)}</p>
+        <p>${formatQuantity(negativeStockProducts)} stock negativo - ${escapeHtml(topProductText)}</p>
       </article>
     `;
   }
@@ -430,12 +528,57 @@ function renderOfflineSalesPanel(listElement, statusElement) {
     : `<div class="empty-state">No hay tickets offline guardados en este dispositivo.</div>`;
 }
 
+const ADMIN_DEV_SNAPSHOT_BYTES_CACHE_MS = 15000;
+let adminDevSnapshotBytesCache = {
+  signature: "",
+  bytes: 0,
+  measuredAt: 0,
+};
+
+function getAdminDevSnapshotSignature() {
+  return [
+    state.store?.currentBranch || "",
+    Array.isArray(state.products) ? state.products.length : 0,
+    Array.isArray(state.lowStock) ? state.lowStock.length : 0,
+    Array.isArray(state.recentSales) ? state.recentSales.length : 0,
+    Array.isArray(state.pendingQueue) ? state.pendingQueue.length : 0,
+    Array.isArray(state.register?.events) ? state.register.events.length : 0,
+    state.summary?.ticketsToday || 0,
+    state.summary?.revenueToday || 0,
+  ].join("|");
+}
+
+function getAdminDevSnapshotBytes() {
+  const signature = getAdminDevSnapshotSignature();
+  const now = Date.now();
+  if (
+    adminDevSnapshotBytesCache.signature === signature
+    && now - adminDevSnapshotBytesCache.measuredAt < ADMIN_DEV_SNAPSHOT_BYTES_CACHE_MS
+  ) {
+    return adminDevSnapshotBytesCache.bytes;
+  }
+
+  const bytes = estimateSerializedBytes(buildPersistedSnapshot());
+  adminDevSnapshotBytesCache = {
+    signature,
+    bytes,
+    measuredAt: now,
+  };
+  return bytes;
+}
+
 function renderAdminDevPanel() {
   if (!refs.adminDevSummary) {
     return;
   }
 
   const backupStatusBundle = state.admin.backupsStatus;
+  const supportHealth = state.admin.supportHealth;
+  const subscription = state.admin.subscription;
+  const latestSale = supportHealth?.latestSale || null;
+  const recentErrors = Array.isArray(supportHealth?.recentErrors)
+    ? supportHealth.recentErrors
+    : [];
   const lastBackupRun = backupStatusBundle?.lastRun || null;
   const backupLabel = lastBackupRun
     ? lastBackupRun.status === "ok"
@@ -448,7 +591,7 @@ function renderAdminDevPanel() {
     : hasAdminCapability("backups")
       ? "Sin corridas"
       : "Bloqueado";
-  const snapshotBytes = estimateSerializedBytes(buildPersistedSnapshot());
+  const snapshotBytes = getAdminDevSnapshotBytes();
   const queueBytes = estimateSerializedBytes(state.pendingQueue);
   const registerBytes = estimateSerializedBytes(state.register.events);
   const auditBytes = estimateSerializedBytes(state.admin.auditLogs);
@@ -504,6 +647,26 @@ function renderAdminDevPanel() {
       <span>Ultimo backup</span>
       <strong>${backupLabel}</strong>
       <p>${escapeHtml(backupNote)}</p>
+    </article>
+    <article class="admin-metric-card">
+      <span>Ultima venta</span>
+      <strong>${latestSale ? formatCurrency(latestSale.total || 0) : "Sin venta"}</strong>
+      <p>${latestSale ? `${escapeHtml(latestSale.ticketNumber || "")} - ${timeFormatter.format(new Date(latestSale.createdAt))}` : "Esperando ticket"}</p>
+    </article>
+    <article class="admin-metric-card">
+      <span>Base de datos</span>
+      <strong>${formatQuantity(supportHealth?.database?.mb || 0)} MB</strong>
+      <p>${formatQuantity(supportHealth?.counts?.tickets || 0)} tickets - ${formatQuantity(supportHealth?.counts?.activeProducts || 0)} productos</p>
+    </article>
+    <article class="admin-metric-card">
+      <span>Suscripcion</span>
+      <strong>${escapeHtml(subscription?.effectiveStatus || "sin estado")}</strong>
+      <p>${subscription?.blocksOperation ? "Bloqueo activo" : "Aviso suave - caja libre"}</p>
+    </article>
+    <article class="admin-metric-card">
+      <span>Errores recientes</span>
+      <strong>${formatQuantity(recentErrors.length)}</strong>
+      <p>${recentErrors[0] ? escapeHtml(recentErrors[0].message || "") : "Sin errores capturados"}</p>
     </article>
   `);
 

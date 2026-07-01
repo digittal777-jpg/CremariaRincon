@@ -1290,6 +1290,8 @@ h3 {
 #admin-inventory-wrap {
   max-height: min(48vh, 560px);
   overscroll-behavior: contain;
+  contain: layout paint;
+  scrollbar-gutter: stable;
 }
 
 .inventory-single-wrapper {
@@ -1398,6 +1400,12 @@ h3 {
   z-index: 1;
 }
 
+.admin-card .inventory-table thead th,
+.admin-card .comparison-table thead th {
+  backdrop-filter: none;
+  box-shadow: 0 1px 0 rgba(87, 63, 46, 0.08);
+}
+
 .inventory-name {
   display: grid;
   gap: 6px;
@@ -1484,6 +1492,48 @@ h3 {
   transform: translateY(0) scale(1);
 }
 
+body.administration-page {
+  min-height: 100dvh;
+  overflow: auto;
+}
+
+body.administration-page .page-shell {
+  display: none;
+}
+
+body.administration-page .ambient {
+  opacity: 0.22;
+}
+
+body.administration-page #admin-modal.modal-shell {
+  position: static;
+  min-height: 100dvh;
+  align-items: stretch;
+  padding: 8px;
+  background: transparent;
+}
+
+body.administration-page #admin-modal.modal-shell.open {
+  display: flex;
+}
+
+body.administration-page #admin-modal .admin-card {
+  width: min(1680px, calc(100vw - 16px));
+  max-height: none;
+  min-height: calc(100dvh - 16px);
+  margin: 0 auto;
+  border-radius: 22px;
+  box-shadow: 0 18px 48px rgba(75, 48, 30, 0.12);
+}
+
+body.administration-page #admin-modal .admin-modal-head {
+  top: 0;
+}
+
+body.administration-page #admin-modal .admin-context-pill::after {
+  content: " - /administracion";
+}
+
 .route-decision-bar {
   display: none;
 }
@@ -1536,6 +1586,11 @@ h3 {
   overflow: auto;
   position: relative;
   padding: 0 24px 24px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  contain: layout paint style;
+  backdrop-filter: none;
+  box-shadow: 0 18px 46px rgba(75, 48, 30, 0.14);
   background:
     linear-gradient(180deg, rgba(255, 252, 248, 0.98), rgba(248, 241, 234, 0.94)),
     radial-gradient(circle at top right, rgba(216, 168, 63, 0.14), transparent 28%);
@@ -1557,8 +1612,9 @@ h3 {
   z-index: 6;
   padding: 24px 0 18px;
   margin-bottom: 8px;
-  background: linear-gradient(180deg, rgba(251, 245, 238, 0.98), rgba(251, 245, 238, 0.92) 75%, rgba(251, 245, 238, 0));
-  backdrop-filter: blur(18px);
+  background: linear-gradient(180deg, rgba(251, 245, 238, 1), rgba(251, 245, 238, 0.98) 82%, rgba(251, 245, 238, 0));
+  border-bottom: 1px solid rgba(87, 63, 46, 0.06);
+  backdrop-filter: none;
 }
 
 .admin-modal-intro {
@@ -1595,7 +1651,15 @@ h3 {
   padding: 22px;
   border: 1px solid rgba(87, 63, 46, 0.08);
   background: rgba(255, 252, 248, 0.92);
-  box-shadow: 0 18px 36px rgba(99, 62, 39, 0.08);
+  box-shadow: 0 12px 28px rgba(99, 62, 39, 0.06);
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-size: 420px;
+  transition:
+    transform var(--motion-fast) var(--ease-out-soft),
+    border-color var(--motion-fast) var(--ease-out-soft),
+    box-shadow var(--motion-fast) var(--ease-out-soft),
+    background-color var(--motion-fast) var(--ease-out-soft);
 }
 
 .admin-toolbar-panel {
@@ -1604,7 +1668,20 @@ h3 {
   gap: 18px 24px;
   align-items: start;
   background: rgba(255, 250, 246, 0.96);
-  backdrop-filter: blur(16px);
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+  backdrop-filter: none;
+}
+
+.modal-shell.open .admin-card .admin-toolbar-panel,
+.modal-shell.open .admin-card .admin-summary-panel,
+.modal-shell.open .admin-card .admin-metrics-panel,
+.modal-shell.open .admin-card .admin-records-panel,
+.modal-shell.open .admin-card .admin-cashiers-panel,
+.modal-shell.open .admin-card .admin-config-panel,
+.modal-shell.open .admin-card .admin-quick-edit-shell,
+.modal-shell.open .admin-card .admin-inventory-panel {
+  animation: adminPanelIn var(--motion-medium) var(--ease-out-soft) both;
 }
 
 .admin-toolbar-copy {
@@ -1647,6 +1724,11 @@ h3 {
   border-radius: 22px;
   border: 1px solid rgba(87, 63, 46, 0.08);
   background: linear-gradient(180deg, rgba(255, 252, 248, 0.98), rgba(250, 243, 236, 0.9));
+  contain: layout paint;
+  transition:
+    transform var(--motion-fast) var(--ease-out-soft),
+    border-color var(--motion-fast) var(--ease-out-soft),
+    box-shadow var(--motion-fast) var(--ease-out-soft);
 }
 
 .admin-action-group-head {
@@ -1748,6 +1830,11 @@ h3 {
   gap: 6px;
   min-height: 112px;
   align-content: start;
+  contain: layout paint;
+  transition:
+    transform var(--motion-fast) var(--ease-out-soft),
+    border-color var(--motion-fast) var(--ease-out-soft),
+    box-shadow var(--motion-fast) var(--ease-out-soft);
 }
 
 .admin-summary-grid .admin-metric-card strong {
@@ -1783,6 +1870,19 @@ h3 {
 .admin-records-panel {
   display: grid;
   gap: 16px;
+}
+
+.admin-weighted-panel,
+.period-closures-panel,
+.admin-config-panel,
+.admin-quick-edit-shell {
+  contain-intrinsic-size: 760px;
+}
+
+.admin-card .admin-record-list,
+.admin-card .inventory-table-wrap {
+  contain: layout paint;
+  scrollbar-gutter: stable;
 }
 
 .admin-record-list {
@@ -1899,6 +1999,7 @@ h3 {
   display: grid;
   gap: 10px;
   transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  contain: layout paint;
 }
 
 .offline-sale-record {
@@ -2096,8 +2197,8 @@ h3 {
 }
 
 .admin-inventory-panel {
-  content-visibility: visible;
-  contain-intrinsic-size: auto;
+  content-visibility: auto;
+  contain-intrinsic-size: 680px;
   display: grid;
   gap: 16px;
 }
@@ -3358,10 +3459,66 @@ body.approvals-mobile-view .route-cart-fab {
   max-height: 76vh;
 }
 
+.route-mode .products-grid.is-settling .product-card {
+  animation: routeProductFanIn 560ms var(--ease-out-soft) both;
+  will-change: transform, opacity;
+}
+
+.route-mode .products-grid.is-settling .product-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      115deg,
+      rgba(255, 255, 255, 0) 10%,
+      rgba(255, 255, 255, 0.5) 42%,
+      rgba(216, 168, 63, 0.16) 50%,
+      rgba(255, 255, 255, 0) 66%
+    );
+  transform: translateX(-135%);
+  animation: routeCardSheen 720ms ease both;
+  will-change: transform, opacity;
+}
+
+.route-mode .products-grid.is-settling .product-card:nth-child(2n) {
+  animation-delay: 44ms;
+}
+
+.route-mode .products-grid.is-settling .product-card:nth-child(2n)::after {
+  animation-delay: 44ms;
+}
+
+.route-mode .products-grid.is-settling .product-card:nth-child(3n) {
+  animation-delay: 76ms;
+}
+
+.route-mode .products-grid.is-settling .product-card:nth-child(3n)::after {
+  animation-delay: 76ms;
+}
+
+.route-mode .products-grid.is-settling .product-card:nth-child(4n) {
+  animation-delay: 108ms;
+}
+
+.route-mode .products-grid.is-settling .product-card:nth-child(4n)::after {
+  animation-delay: 108ms;
+}
+
 .route-mode .product-card {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
   min-height: 136px;
   padding: 13px;
   gap: 10px;
+}
+
+.route-mode .product-card > * {
+  position: relative;
+  z-index: 1;
 }
 
 .route-mode .product-card h3 {
@@ -3384,8 +3541,28 @@ body.approvals-mobile-view .route-cart-fab {
   max-height: 260px;
 }
 
+.route-mode .cart-panel.is-settling .route-cart-item,
+.route-mode .cart-panel.is-settling .cart-summary {
+  animation: routeSurfaceGlide 420ms var(--ease-out-soft) both;
+  will-change: transform, opacity;
+}
+
 .route-mode .route-cart-item {
   padding: 12px;
+  contain: layout paint;
+}
+
+.route-mode .route-cart-item.is-route-line-pop {
+  animation:
+    routeLinePop 620ms var(--ease-bounce-soft) both,
+    routeLineGlow 760ms ease both;
+  will-change: transform, box-shadow;
+}
+
+.route-mode .route-cart-item.is-route-line-pop .cart-item-price {
+  display: inline-block;
+  animation: routeValueFlash 920ms ease both;
+  will-change: transform, color, text-shadow;
 }
 
 .route-mode .route-cart-item-main {
@@ -3403,6 +3580,31 @@ body.approvals-mobile-view .route-cart-fab {
   bottom: 0;
   background: rgba(247, 239, 228, 0.95);
   backdrop-filter: blur(12px);
+}
+
+.route-mode .search-quick-results:not([hidden]) {
+  animation: routeResultPanelIn 260ms var(--ease-out-soft) both;
+}
+
+.route-mode .search-quick-results:not([hidden]) .search-quick-result {
+  animation: routeResultItemIn 260ms var(--ease-out-soft) both;
+}
+
+.route-mode .search-quick-results:not([hidden]) .search-quick-result:nth-child(2n) {
+  animation-delay: 32ms;
+}
+
+.route-mode .search-quick-results:not([hidden]) .search-quick-result:nth-child(3n) {
+  animation-delay: 56ms;
+}
+
+.route-mode .route-decision-bar {
+  animation: routeDecisionIn 320ms var(--ease-out-soft) both;
+}
+
+.route-mode .route-cart-fab.is-bumping {
+  animation: routeFabPop 520ms var(--ease-bounce-soft);
+  will-change: transform, box-shadow;
 }
 
 .route-mode .route-cart-editor-card,
@@ -3734,6 +3936,177 @@ button:active,
   }
 }
 
+@keyframes adminPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes routeProductFanIn {
+  0% {
+    opacity: 0;
+    transform: translateY(22px) scale(0.94);
+  }
+
+  58% {
+    opacity: 1;
+    transform: translateY(-3px) scale(1.014);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes routeCardSheen {
+  0% {
+    opacity: 0;
+    transform: translateX(-135%);
+  }
+
+  24% {
+    opacity: 0.92;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateX(135%);
+  }
+}
+
+@keyframes routeSurfaceGlide {
+  0% {
+    opacity: 0.74;
+    transform: translateY(14px) scale(0.985);
+  }
+
+  62% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.006);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes routeLinePop {
+  0% {
+    transform: translateY(8px) scale(0.96);
+  }
+
+  46% {
+    transform: translateY(-4px) scale(1.026);
+  }
+
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes routeLineGlow {
+  0% {
+    background: rgba(255, 252, 248, 0.86);
+    border-color: rgba(87, 63, 46, 0.1);
+    box-shadow: 0 0 0 rgba(180, 76, 89, 0);
+  }
+
+  36% {
+    background: rgba(255, 249, 238, 0.98);
+    border-color: rgba(216, 168, 63, 0.42);
+    box-shadow:
+      0 16px 32px rgba(180, 76, 89, 0.18),
+      0 0 0 4px rgba(216, 168, 63, 0.14);
+  }
+
+  100% {
+    background: rgba(255, 252, 248, 0.86);
+    border-color: rgba(87, 63, 46, 0.1);
+    box-shadow: 0 0 0 rgba(180, 76, 89, 0);
+  }
+}
+
+@keyframes routeValueFlash {
+  0% {
+    color: var(--primary-deep);
+    transform: translateY(0) scale(1);
+    text-shadow: 0 0 0 rgba(216, 168, 63, 0);
+  }
+
+  34% {
+    color: var(--primary);
+    transform: translateY(-1px) scale(1.09);
+    text-shadow: 0 0 22px rgba(216, 168, 63, 0.42);
+  }
+
+  100% {
+    color: var(--primary-deep);
+    transform: translateY(0) scale(1);
+    text-shadow: 0 0 0 rgba(216, 168, 63, 0);
+  }
+}
+
+@keyframes routeResultPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes routeResultItemIn {
+  from {
+    opacity: 0;
+    transform: translateX(-10px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes routeDecisionIn {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes routeFabPop {
+  0% {
+    transform: translateY(10px) scale(0.94);
+    box-shadow: 0 12px 22px rgba(143, 49, 66, 0.18);
+  }
+
+  46% {
+    transform: translateY(-6px) scale(1.055);
+    box-shadow: 0 24px 42px rgba(143, 49, 66, 0.34);
+  }
+
+  100% {
+    transform: translateY(0) scale(1);
+    box-shadow: 0 18px 34px rgba(143, 49, 66, 0.28);
+  }
+}
+
 @keyframes accentPulse {
   0% {
     transform: scale(1);
@@ -3816,6 +4189,14 @@ button:active,
   .admin-record-item:hover {
     transform: translateY(-1px);
     box-shadow: 0 14px 28px rgba(88, 43, 30, 0.08);
+  }
+
+  .admin-card .admin-action-group:hover,
+  .admin-card .admin-metric-card:hover,
+  .admin-card .admin-system-card:hover {
+    transform: translateY(-1px);
+    border-color: rgba(180, 76, 89, 0.16);
+    box-shadow: 0 12px 24px rgba(99, 62, 39, 0.08);
   }
 
   .quick-import-next-item:hover {

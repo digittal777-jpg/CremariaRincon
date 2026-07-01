@@ -280,6 +280,9 @@ function addSummarySheet(workbook, ctx, branchCode, suffix = "") {
   const inventoryValue = roundMoney(
     products.reduce((sum, row) => sum + roundMoney(roundStock(row.stock) * roundMoney(row.price)), 0),
   );
+  const inventoryCostValue = roundMoney(
+    products.reduce((sum, row) => sum + roundMoney(roundStock(row.stock) * roundMoney(row.cost || 0)), 0),
+  );
   const byProduct = new Map();
   salesItems.forEach((row) => {
     const current = byProduct.get(row.product_name) || 0;
@@ -307,7 +310,8 @@ function addSummarySheet(workbook, ctx, branchCode, suffix = "") {
     ["Cortes finales", registerEvents.filter((row) => row.event_type === "final_cut").length],
     ["Movimientos inventario", ctx.movements.length],
     ["Productos activos", products.length],
-    ["Inventario valorizado", inventoryValue],
+    ["Inventario valorizado venta", inventoryValue],
+    ["Inventario valorizado costo", inventoryCostValue],
     ["Producto top", topProduct ? `${topProduct[0]} (${roundMoney(topProduct[1])})` : "Sin ventas en esta vista"],
   ].forEach((entry) => sheet.addRow(entry));
 
@@ -330,7 +334,7 @@ function addSummarySheet(workbook, ctx, branchCode, suffix = "") {
 
 function addSalesDetailSheet(workbook, ctx, suffix = "") {
   const sheet = workbook.addWorksheet(`Ventas Detalle${suffix}`);
-  styleSheetHeader(sheet, `${getStoreName()} - Ventas detalle${suffix}`, `Generado: ${ctx.generatedAt}`, 19);
+  styleSheetHeader(sheet, `${getStoreName()} - Ventas detalle${suffix}`, `Generado: ${ctx.generatedAt}`, 26);
   sheet.addRow([]);
   const header = sheet.addRow([
     "Ticket",
@@ -350,6 +354,10 @@ function addSalesDetailSheet(workbook, ctx, suffix = "") {
     "Cantidad",
     "Precio Unit",
     "Total Linea",
+    "Costo Unit",
+    "Costo Linea",
+    "Utilidad Bruta",
+    "Estado Costo",
     "Stock Antes",
     "Delta",
     "Stock Despues",
@@ -384,6 +392,10 @@ function addSalesDetailSheet(workbook, ctx, suffix = "") {
       roundStock(row.quantity),
       roundMoney(row.unit_price),
       roundMoney(row.line_total),
+      row.unit_cost == null ? "" : roundMoney(row.unit_cost),
+      row.line_cost == null ? "" : roundMoney(row.line_cost),
+      row.gross_profit == null ? "" : roundMoney(row.gross_profit),
+      row.cost_status || "",
       roundStock(row.stock_before),
       declaredDelta,
       roundStock(row.stock_after),
@@ -392,7 +404,7 @@ function addSalesDetailSheet(workbook, ctx, suffix = "") {
     ]);
   });
 
-  autoFitColumns(sheet, [18, 22, 14, 12, 16, 14, 20, 12, 12, 14, 12, 12, 24, 11, 12, 12, 12, 10, 12, 11, 10]);
+  autoFitColumns(sheet, [18, 22, 14, 12, 16, 14, 20, 12, 12, 14, 12, 12, 24, 11, 12, 12, 12, 12, 12, 16, 12, 10, 12, 11, 10, 10]);
 }
 
 function addReceivablesPaymentsSheet(workbook, ctx, suffix = "") {
@@ -564,7 +576,7 @@ function addRegisterSheet(workbook, ctx, suffix = "") {
 
 function addInventorySheet(workbook, ctx, suffix = "") {
   const sheet = workbook.addWorksheet(`Inventario${suffix}`);
-  styleSheetHeader(sheet, `${getStoreName()} - Inventario${suffix}`, `Generado: ${ctx.generatedAt}`, 10);
+  styleSheetHeader(sheet, `${getStoreName()} - Inventario${suffix}`, `Generado: ${ctx.generatedAt}`, 13);
   sheet.addRow([]);
   const header = sheet.addRow([
     "ID",
@@ -572,9 +584,12 @@ function addInventorySheet(workbook, ctx, suffix = "") {
     "Categoria",
     "Unidad",
     "Precio",
+    "Costo",
     "Existencia",
     "Minimo",
-    "Importe",
+    "Importe venta",
+    "Importe costo",
+    "Margen %",
     "Activo",
     "Stock bajo",
   ]);
@@ -589,14 +604,19 @@ function addInventorySheet(workbook, ctx, suffix = "") {
       row.category,
       row.unit,
       roundMoney(row.price),
+      roundMoney(row.cost || 0),
       stock,
       min,
       roundMoney(stock * roundMoney(row.price)),
+      roundMoney(stock * roundMoney(row.cost || 0)),
+      row.price > 0 && row.cost > 0
+        ? roundMoney(((roundMoney(row.price) - roundMoney(row.cost)) / roundMoney(row.price)) * 100)
+        : "",
       row.active ? "Si" : "No",
       row.active && row.stock_initialized && stock <= min ? "SI" : "",
     ]);
   });
-  autoFitColumns(sheet, [8, 30, 14, 10, 12, 12, 12, 14, 10, 10]);
+  autoFitColumns(sheet, [8, 30, 14, 10, 12, 12, 12, 12, 14, 14, 10, 10, 10]);
 }
 
 function addMovementsSheet(workbook, ctx, suffix = "") {

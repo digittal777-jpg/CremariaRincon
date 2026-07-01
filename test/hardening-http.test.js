@@ -173,6 +173,37 @@ test("setup admin/owner stays blocked when bootstrap token is absent", async (t)
   assert.equal(ownerSetup.status, 403);
 });
 
+test("client error reports stay bounded per client window", async (t) => {
+  const server = await startServer(t);
+  const guest = createCookieClient(server.baseUrl);
+  let throttledCount = 0;
+
+  for (let index = 0; index < 65; index += 1) {
+    const result = await guest.json("/api/client-errors", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source: "frontend",
+        message: `Falla frontend controlada ${index}`,
+        url: "/preflight",
+        context: { index },
+      }),
+    });
+
+    assert.equal(result.status, 202);
+    if (result.body?.throttled) {
+      throttledCount += 1;
+    }
+  }
+
+  const db = new Database(server.dbPath, { readonly: true });
+  const { count } = db.prepare("SELECT COUNT(*) AS count FROM app_error_reports").get();
+  db.close();
+
+  assert.equal(throttledCount, 5);
+  assert.equal(count, 60);
+});
+
 test("bootstrap token gates setup and owner-only template reset rebuilds the business", async (t) => {
   const server = await startServer(t, { bootstrapToken: "bootstrap-secret-123" });
   const guest = createCookieClient(server.baseUrl);

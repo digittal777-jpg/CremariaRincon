@@ -438,8 +438,9 @@ function renderCart() {
       .map((item, index) => {
         const product = getCartLineProduct(item);
         const simpleProduct = isRouteSimpleProduct(product);
+        const shouldAnimateLine = Number(state.ui?.routeCartMotionIndex) === index;
         return `
-          <article class="cart-item route-cart-item ${simpleProduct ? "route-cart-simple" : "route-cart-weighted"}">
+          <article class="cart-item route-cart-item ${simpleProduct ? "route-cart-simple" : "route-cart-weighted"}${shouldAnimateLine ? " is-route-line-pop" : ""}">
             <div class="route-cart-item-shell">
               <button
                 class="route-cart-item-main"
@@ -509,6 +510,10 @@ function renderCart() {
         `,
       )
       .join("");
+  }
+
+  if (routeModeEnabled && state.ui) {
+    state.ui.routeCartMotionIndex = null;
   }
 
   const cartCount = getCartCount();

@@ -1,7 +1,8 @@
-const STATIC_CACHE_NAME = "retail-base-static-v14";
+const STATIC_CACHE_NAME = "retail-base-static-v15";
 const API_CACHE_NAME = "retail-base-api-v15";
 const APP_SHELL = [
   "/",
+  "/administracion",
   "/index.html",
   "/styles.css",
   "/assets/branding/retail-base-badge.svg",

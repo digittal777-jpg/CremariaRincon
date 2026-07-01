@@ -724,8 +724,8 @@ function renderReceivablesModal() {
                 <strong>${escapeHtml(customer.customerName)}</strong>
                 <span class="small-pill">${formatCurrency(customer.pendingAmount)}</span>
               </div>
-              <p>${customer.openSalesCount} ticket(s) abierto(s) Â· Pagado ${formatCurrency(customer.paidAmount || 0)}</p>
-              ${localSummary.length > 0 ? `<p>${escapeHtml(localSummary.join(" Â· "))}</p>` : ""}
+              <p>${customer.openSalesCount} ticket(s) abierto(s) - Pagado ${formatCurrency(customer.paidAmount || 0)}</p>
+              ${localSummary.length > 0 ? `<p>${escapeHtml(localSummary.join(" - "))}</p>` : ""}
               ${routeCompact ? "" : `<p>Ultima actividad ${escapeHtml(dateTimeFormatter.format(new Date(customer.latestActivityAt || customer.oldestSaleAt || Date.now())))}</p>`}
             </button>
           `;
@@ -793,7 +793,7 @@ function renderReceivablesModal() {
               <div class="admin-record-item-head">
                 <div>
                   <strong>${escapeHtml(sale.ticketNumber)}</strong>
-                  <p>${escapeHtml(sale.cashier)} Â· ${escapeHtml(sale.shift)}${routeCompact ? "" : ` Â· ${escapeHtml(dateTimeFormatter.format(new Date(sale.createdAt)))}`}</p>
+                  <p>${escapeHtml(sale.cashier)} - ${escapeHtml(sale.shift)}${routeCompact ? "" : ` - ${escapeHtml(dateTimeFormatter.format(new Date(sale.createdAt)))}`}</p>
                 </div>
                 <div class="receivable-sale-head-tags">
                   ${sale.isLocalOnly ? `<span class="small-pill">Offline</span>` : ""}
@@ -801,7 +801,7 @@ function renderReceivablesModal() {
                   <span class="small-pill">${formatCurrency(sale.pendingAmount || 0)}</span>
                 </div>
               </div>
-              <p>Total ${formatCurrency(sale.total || 0)} Â· Abono inicial ${formatCurrency(sale.receivedAmount || 0)} Â· Posteriores ${formatCurrency(sale.laterPaymentsTotal || 0)}</p>
+              <p>Total ${formatCurrency(sale.total || 0)} - Abono inicial ${formatCurrency(sale.receivedAmount || 0)} - Posteriores ${formatCurrency(sale.laterPaymentsTotal || 0)}</p>
               ${sale.notes ? `<p>${escapeHtml(sale.notes)}</p>` : ""}
               ${sale.syncNote ? `<p>${escapeHtml(sale.syncNote)}</p>` : ""}
               ${(sale.payments || []).length ? `
@@ -810,7 +810,7 @@ function renderReceivablesModal() {
                     .map((payment) => `
                       <div class="receivable-sale-payment-line ${payment.pendingSync ? "is-pending" : ""}">
                         <span>${payment.pendingSync ? "Abono offline" : escapeHtml(dateTimeFormatter.format(new Date(payment.createdAt)))}</span>
-                        <strong>${formatCurrency(payment.amount || 0)} Â· ${escapeHtml(payment.paymentMethod || "Efectivo")}${payment.pendingSync ? " Â· pendiente" : ""}</strong>
+                        <strong>${formatCurrency(payment.amount || 0)} - ${escapeHtml(payment.paymentMethod || "Efectivo")}${payment.pendingSync ? " - pendiente" : ""}</strong>
                       </div>
                     `)
                     .join("")}
@@ -863,7 +863,7 @@ function renderReceivablePaymentModal() {
 
   refs.receivablePaymentTitle.textContent = sale.ticketNumber;
   refs.receivablePaymentMeta.textContent =
-    `${sale.customerName} Â· Pendiente ${formatCurrency(sale.pendingAmount || 0)}`;
+    `${sale.customerName} - Pendiente ${formatCurrency(sale.pendingAmount || 0)}`;
   refs.receivablePaymentSummary.innerHTML = `
     <div class="detail-stat-grid">
       <article class="detail-stat-card">

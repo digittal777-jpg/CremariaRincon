@@ -142,6 +142,10 @@ function getSaleById(saleId) {
       quantity,
       unit_price,
       line_total,
+      unit_cost,
+      line_cost,
+      gross_profit,
+      cost_status,
       stock_after
     FROM sale_items
     WHERE sale_id = ?
@@ -181,6 +185,10 @@ function getSaleById(saleId) {
       quantity: roundStock(item.quantity),
       unitPrice: roundMoney(item.unit_price),
       lineTotal: roundMoney(item.line_total),
+      unitCost: roundMoney(item.unit_cost || 0),
+      lineCost: item.line_cost == null ? null : roundMoney(item.line_cost),
+      grossProfit: item.gross_profit == null ? null : roundMoney(item.gross_profit),
+      costStatus: item.cost_status || "unknown",
       stockAfter: roundStock(item.stock_after),
     })),
   };
@@ -272,7 +280,7 @@ function createSale(payload) {
         }
 
         const product = db.prepare(`
-          SELECT id, name, price, stock, stock_initialized, branch, unit
+          SELECT id, name, price, cost, stock, stock_initialized, branch, unit
           FROM products
           WHERE id = ? AND active = 1 AND branch = ?
         `).get(productId, branch);
@@ -300,6 +308,11 @@ function createSale(payload) {
           ? roundStock(runningStockByProductId.get(productId))
           : roundStock(product.stock);
         const stockAfter = roundStock(stockBefore - quantity);
+        const unitCost = roundMoney(product.cost || 0);
+        const hasCost = Number.isFinite(unitCost) && unitCost > 0;
+        const lineCost = hasCost ? roundMoney(quantity * unitCost) : null;
+        const grossProfit = hasCost ? roundMoney(lineTotal - lineCost) : null;
+        const costStatus = hasCost ? "captured" : "missing_cost";
 
         const allowNegativeStock = getSetting("sales.allow_negative_stock") === "true";
         if (product.stock_initialized && stockAfter < 0 && !allowNegativeStock) {
@@ -314,6 +327,10 @@ function createSale(payload) {
           quantity,
           unitPrice,
           lineTotal,
+          unitCost,
+          lineCost,
+          grossProfit,
+          costStatus,
           stockBefore,
           stockAfter,
         };
@@ -414,9 +431,13 @@ function createSale(payload) {
           quantity,
           unit_price,
           line_total,
+          unit_cost,
+          line_cost,
+          gross_profit,
+          cost_status,
           stock_before,
           stock_after
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const updateProductStock = db.prepare(`
         UPDATE products
@@ -446,6 +467,10 @@ function createSale(payload) {
           item.quantity,
           item.unitPrice,
           item.lineTotal,
+          item.unitCost,
+          item.lineCost,
+          item.grossProfit,
+          item.costStatus,
           item.stockBefore,
           item.stockAfter,
         );
@@ -725,6 +750,10 @@ function listSalesForExport() {
       si.quantity,
       si.unit_price,
       si.line_total,
+      si.unit_cost,
+      si.line_cost,
+      si.gross_profit,
+      si.cost_status,
       si.stock_before,
       si.stock_after
     FROM sales s

@@ -129,6 +129,15 @@ function loadAdminClientSecurityContext() {
     },
     __createClassListStub: createClassListStub,
     persistedJsonWrites,
+    __adminRouteActive: false,
+    __administrationReturnCalls: 0,
+    isAdministrationRoute() {
+      return context.__adminRouteActive;
+    },
+    returnFromAdministrationRoute() {
+      context.__administrationReturnCalls += 1;
+      return context.__adminRouteActive;
+    },
   };
   context.globalThis = context;
   context.window.document = context.document;
@@ -157,6 +166,14 @@ function loadAdminClientSecurityContext() {
       handleCashierSessionAuthFailure,
       isAdminWorkspaceBlockedByOwner,
       normalizeSnapshotForAdminAccess,
+      applySnapshot,
+      refs,
+      setAdministrationRouteActive(value) {
+        globalThis.__adminRouteActive = Boolean(value);
+      },
+      getAdministrationReturnCalls() {
+        return globalThis.__administrationReturnCalls;
+      },
       sanitizeAfterCashierSessionLoss,
       shouldInvalidateCurrentCashierSessionForAuthFailure,
       shouldRevalidateAdminCapabilities,
@@ -229,6 +246,53 @@ test("admin client normalizes blocked snapshots to public data before using them
   assert.equal(normalized.effectiveSnapshot.products[0].stock, 0);
   assert.equal(normalized.effectiveSnapshot.inventoryProducts[0].stock, 0);
   assert.equal(normalized.effectiveSnapshot.inventoryComparison.branches[0].products[0].stock, 0);
+});
+
+test("administration route stays open when public snapshot marks admin unauthenticated", () => {
+  const api = loadAdminClientSecurityContext();
+  let adminModalOpen = true;
+  api.setAdministrationRouteActive(true);
+  api.state.admin.authenticated = true;
+  api.state.admin.csrfToken = "admin-csrf";
+  api.refs.adminModal = {
+    classList: {
+      toggle(name, isOpen) {
+        if (name === "open") {
+          adminModalOpen = Boolean(isOpen);
+        }
+      },
+      contains(name) {
+        return name === "open" && adminModalOpen;
+      },
+    },
+    setAttribute() {},
+  };
+  api.refs.adminAuthModal = {
+    classList: {
+      contains(name) {
+        return name === "open";
+      },
+      toggle() {},
+    },
+    setAttribute() {},
+  };
+
+  api.applySnapshot({
+    auth: {
+      role: "guest",
+      adminAuthenticated: false,
+      ownerAuthenticated: false,
+      cashierAuthenticated: false,
+    },
+    adminCapabilities: [],
+    products: [],
+    summary: { catalogSize: 0 },
+  }, { syncAuthState: true });
+
+  assert.equal(api.state.admin.authenticated, false);
+  assert.equal(api.state.admin.csrfToken, "");
+  assert.equal(adminModalOpen, false);
+  assert.equal(api.getAdministrationReturnCalls(), 0);
 });
 
 test("cashier session loss sanitizes operational snapshot unless another privileged role stays active", () => {

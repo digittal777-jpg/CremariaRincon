@@ -210,6 +210,14 @@ function commitCartUiState() {
   }
 }
 
+function markRouteCartLineMotion(index) {
+  if (!isRouteModeEnabled() || !state.ui || !Number.isInteger(index) || index < 0) {
+    return;
+  }
+
+  state.ui.routeCartMotionIndex = index;
+}
+
 function recordRoutePerformanceMetric(avgKey, countKey, durationMs) {
   const safeDuration = roundMetric(Math.max(0, durationMs || 0));
   const nextCount = Number(state.performance[countKey] || 0) + 1;
@@ -618,7 +626,8 @@ function addCurrentProductToCart() {
   const replaceIndex = Number.isInteger(state.currentProductCartIndex)
     ? state.currentProductCartIndex
     : null;
-  upsertCartItem(cartItem, { replaceIndex });
+  const changedIndex = upsertCartItem(cartItem, { replaceIndex });
+  markRouteCartLineMotion(changedIndex);
   commitCartUiState();
 
   // Guardamos el nombre ANTES de cerrar el modal
@@ -822,10 +831,11 @@ function saveRouteCartEditor() {
     unitPrice,
     lineTotal,
   });
-  upsertCartItem(nextItem, {
+  const changedIndex = upsertCartItem(nextItem, {
     replaceIndex: index,
     mergeBaseLineProduct: product,
   });
+  markRouteCartLineMotion(changedIndex);
   commitCartUiState();
   closeRouteCartEditor();
   showToast(`${product.name} actualizado en el carrito.`, "success");
@@ -889,6 +899,7 @@ function quickAdjustCartItemQuantity(index, delta) {
     unitPrice: currentItem.unitPrice,
   });
   state.cart[index] = nextItem;
+  markRouteCartLineMotion(index);
   commitCartUiState();
 }
 
@@ -903,9 +914,10 @@ function quickAddRouteProduct(product) {
     quantity: getProductMin(product),
     unitPrice: product.price,
   });
-  upsertCartItem(cartItem, {
+  const changedIndex = upsertCartItem(cartItem, {
     mergeBaseLineProduct: product,
   });
+  markRouteCartLineMotion(changedIndex);
   commitCartUiState();
   recordRouteQuickAddDuration(
     (typeof performance !== "undefined" ? performance.now() : Date.now()) - startTime,

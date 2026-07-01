@@ -18,6 +18,11 @@ function createCacheStorage() {
         async put(key, value) {
           store.set(String(typeof key === "string" ? key : key.url), value);
         },
+        async addAll(keys) {
+          for (const key of keys) {
+            store.set(String(typeof key === "string" ? key : key.url), new Response("", { status: 200 }));
+          }
+        },
         async match(key) {
           return store.get(String(typeof key === "string" ? key : key.url)) || null;
         },
@@ -100,6 +105,21 @@ test("service worker bypasses cache for non-bootstrap API GET requests", async (
   assert.equal(caches.stores.size, 0);
 });
 
+test("service worker precaches the administration route", async () => {
+  const { listeners, caches } = loadServiceWorkerContext(async () =>
+    new Response("", { status: 200 }));
+
+  let installPromise = null;
+  listeners.get("install")({
+    waitUntil(promise) {
+      installPromise = promise;
+    },
+  });
+
+  await installPromise;
+  assert.equal(Boolean(caches.stores.get("retail-base-static-v15")?.has("/administracion")), true);
+});
+
 test("navigation caching only stores successful html responses", async () => {
   let fetchMode = "error-html";
   const { context, caches } = loadServiceWorkerContext(async () => {
@@ -117,9 +137,9 @@ test("navigation caching only stores successful html responses", async () => {
   });
 
   await context.handleNavigationRequest(new Request("https://pos.test/"));
-  assert.equal(Boolean(caches.stores.get("retail-base-static-v14")?.has("/index.html")), false);
+  assert.equal(Boolean(caches.stores.get("retail-base-static-v15")?.has("/index.html")), false);
 
   fetchMode = "ok-html";
   await context.handleNavigationRequest(new Request("https://pos.test/"));
-  assert.equal(Boolean(caches.stores.get("retail-base-static-v14")?.has("/index.html")), true);
+  assert.equal(Boolean(caches.stores.get("retail-base-static-v15")?.has("/index.html")), true);
 });

@@ -30,7 +30,15 @@ const services = require("./services");
 const adminAuth = require("./admin/auth");
 const ownerAuth = require("./owner/auth");
 const cashierAuth = require("./cashier/auth");
-const { getBusinessProfile, getStoreDateKey } = require("./utils/helpers");
+const {
+  getBusinessProfile,
+  getEnabledModules,
+  getStoreDateKey,
+  getStoreName,
+  listMeasurementUnits,
+  listProductAttributeDefinitions,
+  listProductCategories,
+} = require("./utils/helpers");
 const { getSetting, setSetting } = require("./utils/settings");
 const { getSystemMetrics } = require("./admin/metrics");
 const {
@@ -58,6 +66,37 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100
 
 let lastCpuSnapshot = { usage: process.cpuUsage(), time: process.hrtime.bigint() };
 const adminSessions = null;
+const CLIENT_ERROR_REPORT_WINDOW_MS = 60 * 1000;
+const CLIENT_ERROR_REPORT_MAX_PER_WINDOW = 60;
+const CLIENT_ERROR_REPORT_BUCKET_LIMIT = 500;
+const clientErrorReportBuckets = new Map();
+
+function pruneClientErrorReportBuckets(nowMs) {
+  for (const [key, bucket] of clientErrorReportBuckets.entries()) {
+    if (nowMs - bucket.startedAt >= CLIENT_ERROR_REPORT_WINDOW_MS) {
+      clientErrorReportBuckets.delete(key);
+    }
+  }
+}
+
+function shouldAcceptClientErrorReport(request, nowMs = Date.now()) {
+  const key = String(request.ip || request.socket?.remoteAddress || "unknown").slice(0, 120);
+  const current = clientErrorReportBuckets.get(key);
+  if (!current || nowMs - current.startedAt >= CLIENT_ERROR_REPORT_WINDOW_MS) {
+    if (clientErrorReportBuckets.size >= CLIENT_ERROR_REPORT_BUCKET_LIMIT) {
+      pruneClientErrorReportBuckets(nowMs);
+    }
+    clientErrorReportBuckets.set(key, { startedAt: nowMs, count: 1 });
+    return true;
+  }
+
+  if (current.count >= CLIENT_ERROR_REPORT_MAX_PER_WINDOW) {
+    return false;
+  }
+
+  current.count += 1;
+  return true;
+}
 
 function getAdminActorName(request) {
   return String(
@@ -192,6 +231,26 @@ function requireAuthenticatedActor(request, response, next) {
 
   request.accessContext = accessContext;
   next();
+}
+
+function requireAdminOrOwnerAuth(request, response, next) {
+  if (ownerAuth.getOwnerSession(request, { touch: false })) {
+    ownerAuth.requireOwnerAuth(request, response, next);
+    return;
+  }
+
+  adminAuth.requireAdminAuth(request, response, next);
+}
+
+function requireAdminOrOwnerCapability(capabilityCode) {
+  return (request, response, next) => {
+    if (request.ownerSession) {
+      next();
+      return;
+    }
+
+    requireAdminCapability(capabilityCode)(request, response, next);
+  };
 }
 
 function assertDetailAccessibleToRequester(detail, accessContext) {
@@ -525,6 +584,10 @@ app.get("/manifest.webmanifest", (_request, response) => {
 
 app.use(express.static(path.join(ROOT_DIR, "public")));
 
+app.get("/administracion", (_request, response) => {
+  response.sendFile(path.join(ROOT_DIR, "public", "index.html"));
+});
+
 app.get("/api/health", (_request, response) => {
   response.json({ ok: true, generatedAt: new Date().toISOString() });
 });
@@ -770,7 +833,7 @@ app.patch("/api/admin/settings", (request, response, next) => {
     : getBusinessProfile();
   const enabledModules = Array.isArray(payload.enabledModules)
     ? services.updateEnabledModules(payload.enabledModules)
-    : services.getEnabledModules();
+    : getEnabledModules();
   services.logAdminAction({
     actorName: getAdminActorName(request),
     action: "settings_update",
@@ -784,9 +847,9 @@ app.patch("/api/admin/settings", (request, response, next) => {
     businessProfile,
     enabledModules,
     adminCapabilities: services.getAdminCapabilities(),
-    categories: services.listProductCategories({ includeInactive: true }),
-    units: services.listMeasurementUnits({ includeInactive: true }),
-    productAttributeDefinitions: services.listProductAttributeDefinitions({ includeInactive: true }),
+    categories: listProductCategories({ includeInactive: true }),
+    units: listMeasurementUnits({ includeInactive: true }),
+    productAttributeDefinitions: listProductAttributeDefinitions({ includeInactive: true }),
   });
 });
 
@@ -831,7 +894,7 @@ app.get("/api/admin/categories", (request, response, next) => {
   requireAdminCapability("business_config")(request, response, next);
 }, (_request, response) => {
   response.json({
-    categories: services.listProductCategories({ includeInactive: true }),
+    categories: listProductCategories({ includeInactive: true }),
     generatedAt: nowIso(),
   });
 });
@@ -893,7 +956,7 @@ app.get("/api/admin/units", (request, response, next) => {
   requireAdminCapability("business_config")(request, response, next);
 }, (_request, response) => {
   response.json({
-    units: services.listMeasurementUnits({ includeInactive: true }),
+    units: listMeasurementUnits({ includeInactive: true }),
     generatedAt: nowIso(),
   });
 });
@@ -955,7 +1018,7 @@ app.get("/api/admin/product-attributes", (request, response, next) => {
   requireAdminCapability("business_config")(request, response, next);
 }, (_request, response) => {
   response.json({
-    productAttributeDefinitions: services.listProductAttributeDefinitions({ includeInactive: true }),
+    productAttributeDefinitions: listProductAttributeDefinitions({ includeInactive: true }),
     generatedAt: nowIso(),
   });
 });
@@ -1295,6 +1358,149 @@ app.get("/api/admin/metrics", (request, response, next) => {
   const metrics = getSystemMetrics();
   metrics.process.cpuPercent = getProcessCpuPercent();
   response.json(metrics);
+});
+
+app.get("/api/admin/profitability", requireAdminOrOwnerAuth, requireAdminOrOwnerCapability("support_tools"), (request, response, next) => {
+  try {
+    response.json({
+      report: services.getProfitabilityReport({
+        period: request.query.period,
+        anchorDateKey: request.query.anchorDateKey || request.query.dateKey,
+        from: request.query.from,
+        to: request.query.to,
+        branch: request.query.branch || "all",
+      }),
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/admin/service-subscription", requireAdminOrOwnerAuth, requireAdminOrOwnerCapability("support_tools"), (_request, response, next) => {
+  try {
+    response.json({
+      subscription: services.getServiceSubscription(),
+      payments: services.listServiceSubscriptionPayments(12),
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/admin/service-subscription", requireAdminOrOwnerAuth, requireAdminOrOwnerCapability("support_tools"), (request, response, next) => {
+  try {
+    response.json({
+      subscription: services.updateServiceSubscription(request.body || {}),
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/service-subscription/payments", requireAdminOrOwnerAuth, requireAdminOrOwnerCapability("support_tools"), (request, response, next) => {
+  try {
+    response.status(201).json({
+      ...services.recordServiceSubscriptionPayment(request.body || {}),
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/owner/service-subscription", (request, response, next) => {
+  ownerAuth.requireOwnerAuth(request, response, next);
+}, (_request, response, next) => {
+  try {
+    response.json({
+      subscription: services.getServiceSubscription(),
+      payments: services.listServiceSubscriptionPayments(12),
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/owner/service-subscription", (request, response, next) => {
+  ownerAuth.requireOwnerAuth(request, response, next);
+}, (request, response, next) => {
+  try {
+    response.json({
+      subscription: services.updateServiceSubscription(request.body || {}),
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/owner/service-subscription/payments", (request, response, next) => {
+  ownerAuth.requireOwnerAuth(request, response, next);
+}, (request, response, next) => {
+  try {
+    response.status(201).json({
+      ...services.recordServiceSubscriptionPayment(request.body || {}),
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/admin/support-health", requireAdminOrOwnerAuth, requireAdminOrOwnerCapability("support_tools"), (request, response, next) => {
+  try {
+    response.json({
+      health: services.getSupportHealthReport({
+        branch: request.query.branch || "all",
+      }),
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/admin/error-reports", requireAdminOrOwnerAuth, requireAdminOrOwnerCapability("support_tools"), (request, response, next) => {
+  try {
+    response.json({
+      errors: services.listAppErrorReports({
+        limit: request.query.limit,
+        source: request.query.source,
+      }),
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/client-errors", (request, response) => {
+  try {
+    if (!shouldAcceptClientErrorReport(request)) {
+      response.status(202).json({ ok: true, throttled: true, generatedAt: nowIso() });
+      return;
+    }
+
+    const accessContext = getRequestAccessContext(request, {
+      touchOwner: false,
+      touchAdmin: false,
+    });
+    services.recordAppErrorReport(request.body || {}, {
+      source: "frontend",
+      role: accessContext.role,
+      branch: accessContext.cashierSession?.branch || request.body?.branch || null,
+      userAgent: request.headers["user-agent"],
+      url: request.body?.url || request.originalUrl,
+      method: request.method,
+    });
+  } catch (_error) {
+    // El reporte de errores nunca debe romper la operacion principal.
+  }
+  response.status(202).json({ ok: true, generatedAt: nowIso() });
 });
 
 app.get("/api/admin/backups/status", (request, response, next) => {
@@ -2223,7 +2429,7 @@ app.get("/api/export-workbook", (request, response, next) => {
     response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     response.setHeader(
       "Content-Disposition",
-      "attachment; filename=" + `${services.getStoreName()} - Exportacion-${branch}-${exportDateSuffix}.xlsx`,
+      "attachment; filename=" + `${getStoreName()} - Exportacion-${branch}-${exportDateSuffix}.xlsx`,
     );
     await result.workbook.xlsx.write(response);
     response.end();
@@ -2236,8 +2442,32 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {});
 });
 
-app.use((error, _request, response, _next) => {
+app.use((error, request, response, _next) => {
   console.error("Error:", error.message);
+  const statusCode = error.statusCode || 500;
+  if (statusCode >= 500) {
+    try {
+      const accessContext = getRequestAccessContext(request, {
+        touchOwner: false,
+        touchAdmin: false,
+      });
+      services.recordAppErrorReport({
+        source: "backend",
+        level: "error",
+        message: error.message || "Error interno del servidor",
+        stack: process.env.NODE_ENV === "production" ? "" : error.stack,
+        url: request.originalUrl,
+        method: request.method,
+        statusCode,
+      }, {
+        role: accessContext.role,
+        branch: accessContext.cashierSession?.branch || null,
+        userAgent: request.headers["user-agent"],
+      });
+    } catch (_reportError) {
+      // El registro de soporte no debe cambiar la respuesta del error original.
+    }
+  }
   const payload = {
     message: error.message || "Error interno del servidor",
   };
@@ -2245,7 +2475,7 @@ app.use((error, _request, response, _next) => {
     Object.assign(payload, error.clientPayload);
   }
   response
-    .status(error.statusCode || 500)
+    .status(statusCode)
     .json(payload);
 });
 

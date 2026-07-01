@@ -16,6 +16,10 @@ const businessProfile = require("./businessProfile");
 const templateProvisioning = require("./templateProvisioning");
 const backups = require("./backups");
 const periodClosures = require("./periodClosures");
+const profitability = require("./profitability");
+const subscription = require("./subscription");
+const errorReports = require("./errorReports");
+const supportHealth = require("./supportHealth");
 const { assertModuleEnabled } = require("../utils/helpers");
 const ownerConsole = require("./ownerConsole");
 
@@ -38,6 +42,10 @@ module.exports = {
   ...templateProvisioning,
   ...backups,
   ...periodClosures,
+  ...profitability,
+  ...subscription,
+  ...errorReports,
+  ...supportHealth,
   ...ownerConsole,
   assertModuleEnabled,
 };

@@ -37,6 +37,11 @@ const state = {
     unitsSoldToday: 0,
     catalogSize: 0,
     inventoryValue: 0,
+    inventorySaleValue: 0,
+    inventoryCostValue: 0,
+    missingCostProductsCount: 0,
+    negativeStockProductsCount: 0,
+    averageMarginPercent: 0,
     lowStockCount: 0,
     topProduct: null,
   },
@@ -153,6 +158,9 @@ const state = {
     loading: false,
     metricsLoading: false,
     metrics: null,
+    profitability: null,
+    subscription: null,
+    supportHealth: null,
     backupsStatus: null,
     pollTimerId: null,
     username: "",
@@ -272,6 +280,7 @@ const state = {
   ui: {
     routeMode: false,
     routeRegisterCollapsed: true,
+    routeCartMotionIndex: null,
   },
 };
 

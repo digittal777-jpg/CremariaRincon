@@ -4,6 +4,8 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const CASHIER_REQUEST_TIMEOUT_MS = 6000;
 const ADMIN_REQUEST_TIMEOUT_MS = 10000;
 const AUTH_STATUS_TIMEOUT_MS = 4000;
+const CLIENT_ERROR_DUPLICATE_WINDOW_MS = 30000;
+const recentClientErrorReports = new Map();
 
 function delay(ms) {
   return new Promise((resolve) => {
@@ -17,6 +19,88 @@ function createTimeoutError(timeoutMs) {
   error.name = "AbortError";
   error.isTimeout = true;
   return error;
+}
+
+function normalizeClientErrorReason(reason) {
+  if (reason instanceof Error) {
+    return {
+      message: reason.message || reason.name || "Error frontend",
+      stack: reason.stack || "",
+    };
+  }
+
+  if (reason && typeof reason === "object") {
+    return {
+      message: String(reason.message || reason.statusText || "Error frontend"),
+      stack: String(reason.stack || ""),
+    };
+  }
+
+  return {
+    message: String(reason || "Error frontend"),
+    stack: "",
+  };
+}
+
+function reportClientError(payload = {}) {
+  if (typeof fetch !== "function") {
+    return;
+  }
+  if (String(payload.url || "").includes("/api/client-errors")) {
+    return;
+  }
+
+  const message = String(payload.message || "Error frontend").slice(0, 600);
+  const signature = [
+    message,
+    payload.url || "",
+    payload.statusCode || "",
+  ].join("|");
+  const now = Date.now();
+  const previousAt = recentClientErrorReports.get(signature) || 0;
+  if (now - previousAt < CLIENT_ERROR_DUPLICATE_WINDOW_MS) {
+    return;
+  }
+  recentClientErrorReports.set(signature, now);
+
+  const branch = typeof getActiveCashierBranch === "function"
+    ? getActiveCashierBranch()
+    : state.store?.currentBranch || "";
+  const currentUrl = typeof window !== "undefined" && window.location
+    ? window.location.href
+    : "";
+  const userAgent = typeof navigator !== "undefined"
+    ? navigator.userAgent || ""
+    : "";
+  const body = JSON.stringify({
+    source: "frontend",
+    level: payload.level || "error",
+    message,
+    stack: String(payload.stack || "").slice(0, 2000),
+    url: String(payload.url || currentUrl).slice(0, 500),
+    method: payload.method || "",
+    statusCode: payload.statusCode || null,
+    role: state.cashier?.authenticated
+      ? "cashier"
+      : state.admin?.authenticated
+        ? "admin"
+        : state.owner?.authenticated
+          ? "owner"
+          : "guest",
+    branch,
+    userAgent,
+    context: payload.context || null,
+  });
+
+  fetch("/api/client-errors", {
+    method: "POST",
+    credentials: "same-origin",
+    keepalive: true,
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body,
+  }).catch(() => {});
 }
 
 function createRequestController(externalSignal, timeoutMs) {
@@ -112,6 +196,17 @@ async function performJsonRequest(url, options = {}) {
         }
         if (Array.isArray(data.warnings)) {
           error.warnings = data.warnings;
+        }
+        if (response.status >= 500) {
+          reportClientError({
+            message: error.message,
+            url,
+            method: requestMethod,
+            statusCode: response.status,
+            context: {
+              code: error.code || "",
+            },
+          });
         }
         throw error;
       }
@@ -1561,4 +1656,31 @@ function shouldRefreshAdminWorkspaceFromDashboardSnapshotEvent(eventBranch = "")
     eventBranch,
     typeof getAdminBranch === "function" ? getAdminBranch() : "",
   );
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("error", (event) => {
+    const normalized = normalizeClientErrorReason(event.error || event.message);
+    reportClientError({
+      message: normalized.message,
+      stack: normalized.stack,
+      url: event.filename || window.location.href,
+      context: {
+        line: event.lineno || "",
+        column: event.colno || "",
+      },
+    });
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    const normalized = normalizeClientErrorReason(event.reason);
+    reportClientError({
+      message: normalized.message,
+      stack: normalized.stack,
+      url: window.location.href,
+      context: {
+        kind: "unhandledrejection",
+      },
+    });
+  });
 }

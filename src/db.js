@@ -87,6 +87,76 @@ function hasColumn(columns, columnName) {
   return columns.some((column) => column.name === columnName);
 }
 
+function migrateSaleItemProfitabilityColumns(db) {
+  const saleItemColumns = listTableColumns(db, "sale_items");
+  if (saleItemColumns.length === 0) {
+    return;
+  }
+
+  if (!hasColumn(saleItemColumns, "unit_cost")) {
+    db.exec("ALTER TABLE sale_items ADD COLUMN unit_cost REAL");
+  }
+  if (!hasColumn(saleItemColumns, "line_cost")) {
+    db.exec("ALTER TABLE sale_items ADD COLUMN line_cost REAL");
+  }
+  if (!hasColumn(saleItemColumns, "gross_profit")) {
+    db.exec("ALTER TABLE sale_items ADD COLUMN gross_profit REAL");
+  }
+  if (!hasColumn(saleItemColumns, "cost_status")) {
+    db.exec("ALTER TABLE sale_items ADD COLUMN cost_status TEXT NOT NULL DEFAULT 'unknown'");
+  }
+
+  db.exec(`
+    UPDATE sale_items
+    SET
+      unit_cost = COALESCE(
+        unit_cost,
+        (
+          SELECT ROUND(COALESCE(products.cost, 0), 2)
+          FROM products
+          WHERE products.id = sale_items.product_id
+        ),
+        0
+      ),
+      line_cost = CASE
+        WHEN COALESCE((
+          SELECT products.cost
+          FROM products
+          WHERE products.id = sale_items.product_id
+        ), 0) > 0
+          THEN ROUND(quantity * (
+            SELECT products.cost
+            FROM products
+            WHERE products.id = sale_items.product_id
+          ), 2)
+        ELSE NULL
+      END,
+      gross_profit = CASE
+        WHEN COALESCE((
+          SELECT products.cost
+          FROM products
+          WHERE products.id = sale_items.product_id
+        ), 0) > 0
+          THEN ROUND(line_total - (quantity * (
+            SELECT products.cost
+            FROM products
+            WHERE products.id = sale_items.product_id
+          )), 2)
+        ELSE NULL
+      END,
+      cost_status = CASE
+        WHEN COALESCE((
+          SELECT products.cost
+          FROM products
+          WHERE products.id = sale_items.product_id
+        ), 0) > 0
+          THEN 'estimated_current_cost'
+        ELSE 'missing_cost'
+      END
+    WHERE cost_status IS NULL OR cost_status = '' OR cost_status = 'unknown'
+  `);
+}
+
 function createMerchandiseRequestTables(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS merchandise_requests (
@@ -624,6 +694,10 @@ function initializeSchema(db) {
       quantity REAL NOT NULL,
       unit_price REAL NOT NULL,
       line_total REAL NOT NULL,
+      unit_cost REAL,
+      line_cost REAL,
+      gross_profit REAL,
+      cost_status TEXT NOT NULL DEFAULT 'unknown',
       stock_before REAL NOT NULL,
       stock_after REAL NOT NULL
     );
@@ -803,6 +877,48 @@ function initializeSchema(db) {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS service_subscription (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      plan_code TEXT NOT NULL DEFAULT 'fundadores_beta',
+      status TEXT NOT NULL DEFAULT 'trial',
+      monthly_amount REAL NOT NULL DEFAULT 200,
+      currency_code TEXT NOT NULL DEFAULT 'MXN',
+      current_period_start TEXT,
+      current_period_end TEXT,
+      grace_period_until TEXT,
+      last_payment_at TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS service_subscription_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      amount REAL NOT NULL,
+      payment_method TEXT,
+      paid_at TEXT NOT NULL,
+      period_start TEXT,
+      period_end TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS app_error_reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL DEFAULT 'frontend',
+      level TEXT NOT NULL DEFAULT 'error',
+      message TEXT NOT NULL,
+      stack TEXT,
+      url TEXT,
+      method TEXT,
+      status_code INTEGER,
+      role TEXT,
+      branch TEXT,
+      user_agent TEXT,
+      context_json TEXT,
+      created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS period_closures (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       branch TEXT NOT NULL,
@@ -818,12 +934,18 @@ function initializeSchema(db) {
 
     CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
     CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);
+    CREATE INDEX IF NOT EXISTS idx_sale_items_product_id ON sale_items(product_id);
     CREATE INDEX IF NOT EXISTS idx_inventory_movements_product_id ON inventory_movements(product_id);
     CREATE INDEX IF NOT EXISTS idx_register_events_shift_created_at ON register_events(shift, created_at);
     CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at ON admin_audit_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_backup_runs_started_at ON backup_runs(started_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_backup_runs_finished_at ON backup_runs(finished_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_client_sync_reports_reported_at ON client_sync_reports(reported_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_service_subscription_payments_paid_at
+      ON service_subscription_payments(paid_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_app_error_reports_created_at ON app_error_reports(created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_app_error_reports_source_created_at
+      ON app_error_reports(source, created_at DESC);
   `);
 
   const branchColumns = db.prepare("PRAGMA table_info(branches)").all();
@@ -1037,6 +1159,8 @@ function initializeSchema(db) {
     db.exec("ALTER TABLE sales ADD COLUMN received_payment_method TEXT");
   }
 
+  migrateSaleItemProfitabilityColumns(db);
+
   const creditPaymentsColumns = db.prepare("PRAGMA table_info(credit_payments)").all();
   if (creditPaymentsColumns.length > 0 && !creditPaymentsColumns.some((column) => column.name === "customer_key")) {
     db.exec("ALTER TABLE credit_payments ADD COLUMN customer_key TEXT");
@@ -1096,6 +1220,7 @@ function initializeSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_sales_branch_created_at ON sales(branch, created_at);
     CREATE INDEX IF NOT EXISTS idx_sales_branch_customer_key ON sales(branch, customer_key);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_client_sale_id_unique ON sales(client_sale_id);
+    CREATE INDEX IF NOT EXISTS idx_sale_items_cost_status ON sale_items(cost_status);
     CREATE INDEX IF NOT EXISTS idx_credit_payments_sale_id_created_at ON credit_payments(sale_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_credit_payments_branch_created_at ON credit_payments(branch, created_at);
     CREATE INDEX IF NOT EXISTS idx_credit_payments_branch_customer_key ON credit_payments(branch, customer_key);

@@ -118,6 +118,9 @@ function resetAdminSensitiveWorkspaceData() {
   state.admin.inventoryProducts = [];
   state.admin.inventoryComparison = null;
   state.admin.metrics = null;
+  state.admin.profitability = null;
+  state.admin.subscription = null;
+  state.admin.supportHealth = null;
   state.admin.backupsStatus = null;
   state.admin.auditLogs = [];
   state.admin.cashiers = [];
@@ -385,7 +388,16 @@ function syncAuthStateFromSnapshot(snapshotAuth) {
   if (!adminAuthenticated) {
     state.admin.csrfToken = "";
     if (typeof closeAdminModal === "function") {
-      closeAdminModal();
+      const stayOnAdministrationRoute =
+        typeof isAdministrationRoute === "function" && isAdministrationRoute();
+      closeAdminModal({ returnFromAdministration: !stayOnAdministrationRoute });
+      if (
+        stayOnAdministrationRoute
+        && typeof openAdminAuthModal === "function"
+        && !refs.adminAuthModal?.classList.contains("open")
+      ) {
+        void openAdminAuthModal();
+      }
     }
   }
 
@@ -2018,6 +2030,9 @@ async function loadAdminMetrics() {
   }
   if (!hasAdminCapability("support_tools")) {
     state.admin.metrics = null;
+    state.admin.profitability = null;
+    state.admin.subscription = null;
+    state.admin.supportHealth = null;
     state.admin.backupsStatus = null;
     state.admin.metricsLoading = false;
     renderAdminModal();
@@ -2026,11 +2041,15 @@ async function loadAdminMetrics() {
   state.admin.metricsLoading = true;
 
   try {
-    const [metricsResult, backupStatusResult] = await Promise.allSettled([
+    const branch = getAdminBranch();
+    const [metricsResult, backupStatusResult, profitabilityResult, subscriptionResult, healthResult] = await Promise.allSettled([
       requestAdminJson("/api/admin/metrics"),
       hasAdminCapability("backups")
         ? requestAdminJson("/api/admin/backups/status")
         : Promise.resolve(null),
+      requestAdminJson(`/api/admin/profitability?period=today&branch=${encodeURIComponent(branch)}`),
+      requestAdminJson("/api/admin/service-subscription"),
+      requestAdminJson(`/api/admin/support-health?branch=${encodeURIComponent(branch)}`),
     ]);
 
     if (metricsResult.status === "fulfilled") {
@@ -2039,11 +2058,24 @@ async function loadAdminMetrics() {
     if (backupStatusResult.status === "fulfilled") {
       state.admin.backupsStatus = backupStatusResult.value || null;
     }
+    if (profitabilityResult.status === "fulfilled") {
+      state.admin.profitability = profitabilityResult.value?.report || null;
+    }
+    if (subscriptionResult.status === "fulfilled") {
+      state.admin.subscription = subscriptionResult.value?.subscription || null;
+    }
+    if (healthResult.status === "fulfilled") {
+      state.admin.supportHealth = healthResult.value?.health || null;
+    }
   } catch (_error) {
     // Evita toasts repetidos si el panel admin queda abierto sin conexion.
   } finally {
     state.admin.metricsLoading = false;
-    renderAdminModal();
+    if (typeof renderAdminPerformanceMetrics === "function") {
+      renderAdminPerformanceMetrics();
+    } else {
+      renderAdminModal();
+    }
   }
 }
 
@@ -2127,7 +2159,18 @@ async function openAdminModal() {
   void refreshAdminWorkspace(getAdminWorkspaceFullOptions(getAdminBranch(), true)).catch(() => {});
 }
 
-function closeAdminModal() {
+function closeAdminModal(options = {}) {
+  const shouldReturnFromAdministration = options.returnFromAdministration !== false;
+  if (
+    shouldReturnFromAdministration
+    && typeof returnFromAdministrationRoute === "function"
+    && returnFromAdministrationRoute()
+  ) {
+    stopAdminMetricsPolling();
+    setModalOpen(refs.adminModal, false);
+    return;
+  }
+
   setModalOpen(refs.adminModal, false);
   stopAdminMetricsPolling();
 }
@@ -2189,6 +2232,12 @@ async function openAdminAuthModal() {
 
 function closeAdminAuthModal() {
   setModalOpen(refs.adminAuthModal, false);
+  if (
+    typeof returnFromAdministrationRoute === "function"
+    && !state.admin.authenticated
+  ) {
+    returnFromAdministrationRoute();
+  }
 }
 
 async function submitAdminAuth() {

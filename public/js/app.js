@@ -3,6 +3,7 @@ const ROUTE_SWIPE_TRIGGER_PX = 84;
 const ROUTE_SWIPE_LOCK_PX = 18;
 const ROUTE_PAYMENT_SWIPE_TRIGGER_PX = 56;
 const ROUTE_PAYMENT_SWIPE_LOCK_PX = 14;
+const ADMINISTRATION_PATH = "/administracion";
 const TOUCH_DOUBLE_TAP_SELECTOR = [
   "button",
   ".product-card",
@@ -17,6 +18,60 @@ const TOUCH_DOUBLE_TAP_SELECTOR = [
   ".shift-chip",
   '[data-touch-guard="true"]',
 ].join(", ");
+
+function isAdministrationRoute() {
+  const normalizedPath = String(window.location.pathname || "/").replace(/\/+$/, "") || "/";
+  return normalizedPath === ADMINISTRATION_PATH;
+}
+
+function openAdministrationRoute() {
+  if (isAdministrationRoute()) {
+    void openAdminModal();
+    return;
+  }
+
+  const opened = window.open(ADMINISTRATION_PATH, "_blank");
+  if (opened) {
+    try {
+      opened.opener = null;
+      opened.focus?.();
+    } catch (_error) {
+      // Algunos navegadores no permiten tocar la ventana nueva; la apertura ya ocurrio.
+    }
+    return;
+  }
+
+  showToast("El navegador bloqueo la pestaña nueva. Abriendo administracion aqui.", "info");
+  window.location.href = ADMINISTRATION_PATH;
+}
+
+function applyAdministrationRouteShell() {
+  if (!isAdministrationRoute()) {
+    return;
+  }
+
+  document.body.classList.add("administration-page");
+  document.title = `${getStoreName()} | Administracion`;
+}
+
+function returnFromAdministrationRoute() {
+  if (!isAdministrationRoute()) {
+    return false;
+  }
+
+  try {
+    window.close();
+  } catch (_error) {
+    // Si la pestaña no fue abierta por script, el navegador puede impedir cerrarla.
+  }
+
+  window.setTimeout(() => {
+    if (!window.closed) {
+      window.location.href = "/";
+    }
+  }, 120);
+  return true;
+}
 
 function shouldUseTouchOptimizations() {
   return Boolean(
@@ -77,7 +132,7 @@ function registerServiceWorker() {
     return;
   }
 
-  const serviceWorkerUrl = "/sw.js?v=14";
+  const serviceWorkerUrl = "/sw.js?v=15";
   let controllerRefreshScheduled = false;
 
   navigator.serviceWorker.addEventListener("controllerchange", () => {
@@ -104,8 +159,8 @@ function setRouteMode(enabled) {
   renderRouteMode();
   pulseElement(refs.toggleRouteModeButton);
   pulseElement(refs.routeModePill);
-  pulseElement(refs.productsGrid, "is-settling", { durationMs: 240 });
-  pulseElement(refs.cartPanel, "is-settling", { durationMs: 240 });
+  pulseElement(refs.productsGrid, "is-settling", { durationMs: 760 });
+  pulseElement(refs.cartPanel, "is-settling", { durationMs: 620 });
   if (state.ui.routeMode) {
     focusRouteSearchInput();
   }
@@ -127,7 +182,7 @@ function setRouteRegisterCollapsed(collapsed) {
   persistPreferences();
   renderRouteMode();
   pulseElement(refs.toggleRegisterToolbarButton);
-  pulseElement(refs.cartPanel, "is-settling", { durationMs: 240 });
+  pulseElement(refs.cartPanel, "is-settling", { durationMs: 540 });
 }
 
 function toggleRouteRegisterCollapsed() {
@@ -892,9 +947,9 @@ async function bootstrap() {
   refs.routeCartFab?.addEventListener("click", scrollToRouteCart);
 
   // Admin
-  refs.openAdminButton.addEventListener("click", openAdminModal);
+  refs.openAdminButton.addEventListener("click", openAdministrationRoute);
   if (refs.headerAdminButton) {
-    refs.headerAdminButton.addEventListener("click", openAdminModal);
+    refs.headerAdminButton.addEventListener("click", openAdministrationRoute);
   }
   refs.adminModalSecretTrigger?.addEventListener("click", registerOwnerRevealIntent);
   refs.adminBranchSelect.addEventListener("change", async () => {
@@ -1960,9 +2015,15 @@ async function bootstrap() {
     refs.openAdminButton.disabled = false;
     refs.openAdminButton.style.opacity = "1";
   }
+
+  if (isAdministrationRoute()) {
+    applyAdministrationRouteShell();
+    await openAdminModal();
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  applyAdministrationRouteShell();
   bootstrap().catch((error) => {
     console.error(error);
     showToast("No fue posible cargar el panel inicial.", "error");
