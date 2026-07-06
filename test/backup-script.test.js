@@ -29,6 +29,24 @@ function runInlineScript(source, env) {
   return runNodeProcess(["-e", source], { env });
 }
 
+function buildRuntimeEnv(tempDir, values = {}) {
+  const runtimePath = path.join(tempDir, "pos-runtime-config.json");
+  fs.writeFileSync(
+    runtimePath,
+    JSON.stringify({
+      env: Object.fromEntries(
+        Object.entries(values).map(([key, value]) => [key, String(value)]),
+      ),
+      updatedAt: new Date(0).toISOString(),
+    }, null, 2),
+  );
+  return {
+    ...process.env,
+    ...values,
+    POS_CONFIG_PATH: runtimePath,
+  };
+}
+
 function openLatestBackupRow(dbPath) {
   const db = new Database(dbPath, { readonly: true });
   try {
@@ -70,14 +88,13 @@ test("backup-nightly writes sqlite and workbook to file-backed storage and recor
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const env = {
-    ...process.env,
+  const env = buildRuntimeEnv(tempDir, {
     POS_DB_PATH: dbPath,
     BACKUP_ENABLED: "true",
     BACKUP_BUCKET_ENDPOINT: pathToFileURL(bucketRoot).href,
     BACKUP_BUCKET_NAME: "local",
     BACKUP_PREFIX: "clientes/prueba-ok",
-  };
+  });
 
   const result = runBackupScript(env);
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -109,14 +126,13 @@ test("backup-nightly records partial when a device reports pending offline work"
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const env = {
-    ...process.env,
+  const env = buildRuntimeEnv(tempDir, {
     POS_DB_PATH: dbPath,
     BACKUP_ENABLED: "true",
     BACKUP_BUCKET_ENDPOINT: pathToFileURL(bucketRoot).href,
     BACKUP_BUCKET_NAME: "local",
     BACKUP_PREFIX: "clientes/prueba-partial",
-  };
+  });
 
   const seedReport = runInlineScript(`
     const services = require("./src/services");
@@ -155,8 +171,7 @@ test("backup-nightly records failed when external storage upload breaks", (t) =>
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const env = {
-    ...process.env,
+  const env = buildRuntimeEnv(tempDir, {
     POS_DB_PATH: dbPath,
     BACKUP_ENABLED: "true",
     BACKUP_BUCKET_ENDPOINT: "http://127.0.0.1:1",
@@ -164,7 +179,7 @@ test("backup-nightly records failed when external storage upload breaks", (t) =>
     BACKUP_ACCESS_KEY_ID: "test-key",
     BACKUP_SECRET_ACCESS_KEY: "test-secret",
     AWS_MAX_ATTEMPTS: "1",
-  };
+  });
 
   const result = runBackupScript(env);
   assert.notEqual(result.status, 0);
@@ -173,6 +188,52 @@ test("backup-nightly records failed when external storage upload breaks", (t) =>
   assert.equal(latest.status, "failed");
   assert.equal(latest.sync_state, "unknown");
   assert.ok(String(latest.error_message || "").length > 0);
+});
+
+test("runNightlyBackup honors BACKUP_ENABLED runtime changes without restart", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "retail-base-backup-runtime-off-"));
+  const dbPath = path.join(tempDir, "backup.sqlite");
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const env = buildRuntimeEnv(tempDir, {
+    POS_DB_PATH: dbPath,
+    BACKUP_ENABLED: "true",
+  });
+
+  const result = runInlineScript(`
+    const fs = require("node:fs");
+    const services = require("./src/services");
+
+    fs.writeFileSync(process.env.POS_CONFIG_PATH, JSON.stringify({
+      env: {
+        POS_DB_PATH: process.env.POS_DB_PATH,
+        BACKUP_ENABLED: "false"
+      }
+    }), "utf8");
+
+    (async () => {
+      let message = "";
+      let statusCode = 0;
+      try {
+        await services.runNightlyBackup();
+      } catch (error) {
+        message = error.message || "";
+        statusCode = error.statusCode || 0;
+      }
+      console.log(JSON.stringify({ message, statusCode }));
+    })().catch((error) => {
+      console.error(error);
+      process.exit(1);
+    });
+  `, env);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const payload = JSON.parse(result.stdout.trim());
+  assert.match(payload.message, /BACKUP_ENABLED=false/);
+  assert.equal(payload.statusCode, 409);
 });
 
 test("runNightlyBackup cleans remote artifacts when an upload fails mid-flight", (t) => {
@@ -184,11 +245,10 @@ test("runNightlyBackup cleans remote artifacts when an upload fails mid-flight",
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const env = {
-    ...process.env,
+  const env = buildRuntimeEnv(tempDir, {
     POS_DB_PATH: dbPath,
     BACKUP_ENABLED: "true",
-  };
+  });
 
   const result = runInlineScript(`
     const fs = require("node:fs");
@@ -281,12 +341,11 @@ test("runNightlyBackup keeps successful backups as ok when retention pruning fai
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const env = {
-    ...process.env,
+  const env = buildRuntimeEnv(tempDir, {
     POS_DB_PATH: dbPath,
     BACKUP_ENABLED: "true",
     BACKUP_RETENTION_DAILY: "1",
-  };
+  });
 
   const result = runInlineScript(`
     const fs = require("node:fs");

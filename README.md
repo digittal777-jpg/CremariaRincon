@@ -40,6 +40,35 @@ npm.cmd start
 
 Abre `http://localhost:3100`.
 
+## HTTPS directo sin depender del host
+
+Si quieres que el mismo proceso Node termine TLS y no depender al 100% de Railway o de otro proxy, ahora puedes cargar el certificado desde variables runtime manejadas por owner:
+
+```powershell
+$env:POS_PUBLIC_ORIGIN='https://pos.tudominio.com'
+$env:POS_SECURE_COOKIES='true'
+$env:POS_FORCE_HTTPS='true'
+$env:POS_HTTPS_CERT_PATH='certs/pos-cert.pem'
+$env:POS_HTTPS_KEY_PATH='certs/pos-key.pem'
+$env:POS_HTTP_REDIRECT_PORT='80'
+npm.cmd start
+```
+
+Tambien puedes guardar el PEM en base64 desde el panel owner con:
+
+- `POS_HTTPS_CERT_B64`
+- `POS_HTTPS_KEY_B64`
+- `POS_HTTPS_CA_B64`
+
+Notas operativas:
+
+- `PORT` pasa a ser el puerto HTTPS real cuando cargas certificado y llave.
+- `POS_HTTP_REDIRECT_PORT` es opcional y solo sirve para redirigir HTTP plano hacia el puerto HTTPS del POS.
+- Si gestionas estas variables desde `owner-control`, el POS las guarda en `data/pos-runtime-config.json` y puede arrancar sin depender de Railway para leer secretos.
+- Cuando cambies certificado, llave, `POS_FORCE_HTTPS`, `POS_PUBLIC_ORIGIN` o `POS_SECURE_COOKIES`, reinicia el proceso Node.
+- Si el TLS termina en proxy, conserva `POS_FORCE_HTTPS=true` y ajusta `POS_TRUST_PROXY` a tus proxies reales para que el POS acepte `X-Forwarded-Proto` solo desde ellos.
+- `POS_TRUST_PROXY` debe ser una lista explicita de aliases, IPs o CIDRs confiables. Evita `true` o numeros de hops porque abren spoof de headers y degradan throttles/logs.
+
 ## Railway y URL publica
 
 - La app esta pensada para vivir en una sola URL publica.
@@ -62,6 +91,14 @@ Variables utiles:
 - `POS_PUBLIC_ORIGIN`
 - `POS_ALLOWED_ORIGINS`
 - `POS_SECURE_COOKIES`
+- `POS_FORCE_HTTPS`
+- `POS_TRUST_PROXY`
+- `POS_HSTS_MAX_AGE_SECONDS`
+- `POS_HTTPS_CERT_PATH`
+- `POS_HTTPS_KEY_PATH`
+- `POS_HTTPS_CERT_B64`
+- `POS_HTTPS_KEY_B64`
+- `POS_HTTP_REDIRECT_PORT`
 - `POS_BOOTSTRAP_TOKEN`
 - `POS_ADMIN_MAX_FAILED_LOGINS`
 - `POS_ADMIN_LOGIN_WINDOW_MS`

@@ -24,6 +24,14 @@ function isAdministrationRoute() {
   return normalizedPath === ADMINISTRATION_PATH;
 }
 
+function getApplicationMode() {
+  return isAdministrationRoute() ? "admin" : "cashier";
+}
+
+function shouldBootstrapCashierRuntime() {
+  return getApplicationMode() !== "admin";
+}
+
 function openAdministrationRoute() {
   if (isAdministrationRoute()) {
     void openAdminModal();
@@ -387,6 +395,7 @@ function installRouteSwipeDecisionSurface(surface, options = {}) {
 
 async function bootstrap() {
   installTouchOptimizations();
+  const isAdminRuntime = !shouldBootstrapCashierRuntime();
 
   refs.summaryCards = $("summary-cards");
   refs.productsGrid = $("products-grid");
@@ -597,6 +606,8 @@ async function bootstrap() {
   refs.detailViewerMeta = $("detail-viewer-meta");
   refs.detailViewerBody = $("detail-viewer-body");
   refs.adminModal = $("admin-modal");
+  refs.adminCard = $("admin-card");
+  refs.adminSectionNav = $("admin-section-nav");
   refs.adminBranchSelect = $("admin-branch-select");
   refs.adminBranchTitle = $("admin-branch-title");
   refs.adminBranchDescription = $("admin-branch-description");
@@ -604,6 +615,38 @@ async function bootstrap() {
   refs.adminMetricsStatus = $("admin-metrics-status");
   refs.adminSummaryCards = $("admin-summary-cards");
   refs.adminShiftSummary = $("admin-shift-summary");
+  refs.adminProfitabilityStatus = $("admin-profitability-status");
+  refs.adminProfitabilityPeriod = $("admin-profitability-period");
+  refs.adminProfitabilityDate = $("admin-profitability-date");
+  refs.refreshAdminProfitabilityButton = $("refresh-admin-profitability-button");
+  refs.adminProfitabilitySummary = $("admin-profitability-summary");
+  refs.adminProfitabilityActions = $("admin-profitability-actions");
+  refs.adminProfitabilityLowMargin = $("admin-profitability-low-margin");
+  refs.adminProfitabilityMissingCost = $("admin-profitability-missing-cost");
+  refs.adminHealthStatus = $("admin-health-status");
+  refs.adminHealthSummary = $("admin-health-summary");
+  refs.adminHealthReasons = $("admin-health-reasons");
+  refs.adminHealthActions = $("admin-health-actions");
+  refs.adminSubscriptionStatus = $("admin-subscription-status");
+  refs.adminSubscriptionSummary = $("admin-subscription-summary");
+  refs.adminSubscriptionPanel = $("admin-subscription-panel");
+  refs.adminSubscriptionPlan = $("admin-subscription-plan");
+  refs.adminSubscriptionState = $("admin-subscription-state");
+  refs.adminSubscriptionAmount = $("admin-subscription-amount");
+  refs.adminSubscriptionPeriodEnd = $("admin-subscription-period-end");
+  refs.adminSubscriptionGrace = $("admin-subscription-grace");
+  refs.adminSubscriptionNotes = $("admin-subscription-notes");
+  refs.syncAdminSubscriptionButton = $("sync-admin-subscription-button");
+  refs.syncAdminControlConfigButton = $("sync-admin-control-config-button");
+  refs.saveAdminSubscriptionButton = $("save-admin-subscription-button");
+  refs.adminSubscriptionPaymentForm = $("admin-subscription-payment-form");
+  refs.adminSubscriptionPaymentAmount = $("admin-subscription-payment-amount");
+  refs.adminSubscriptionPaymentMethod = $("admin-subscription-payment-method");
+  refs.adminSubscriptionPaymentStart = $("admin-subscription-payment-start");
+  refs.adminSubscriptionPaymentEnd = $("admin-subscription-payment-end");
+  refs.adminSubscriptionPaymentNotes = $("admin-subscription-payment-notes");
+  refs.recordAdminSubscriptionPaymentButton = $("record-admin-subscription-payment-button");
+  refs.adminSubscriptionPayments = $("admin-subscription-payments");
   refs.adminProcessCpu = $("admin-process-cpu");
   refs.adminProcessMemory = $("admin-process-memory");
   refs.adminProductsRender = $("admin-products-render");
@@ -635,6 +678,16 @@ async function bootstrap() {
   refs.inventoryBodyWrapper = $("admin-inventory-wrap");
   refs.adminInventoryStatus = $("admin-inventory-status");
   refs.toggleAdminInventoryButton = $("toggle-admin-inventory-button");
+  refs.adminInventoryModeBar = $("admin-inventory-mode-bar");
+  refs.adminInventoryMovementPanel = $("admin-inventory-movement-panel");
+  refs.openInventoryReceiveButton = $("open-inventory-receive-button");
+  refs.openInventoryReturnButton = $("open-inventory-return-button");
+  refs.openInventoryCountButton = $("open-inventory-count-button");
+  refs.adminInventoryFilterBar = $("admin-inventory-filter-bar");
+  refs.adminInventorySearch = $("admin-inventory-search");
+  refs.adminInventoryFilterChips = $("admin-inventory-filter-chips");
+  refs.adminProductCreateForm = $("admin-product-create-form");
+  refs.inventoryCardList = $("inventory-card-list");
   refs.adminNewProductName = $("admin-new-product-name");
   refs.adminNewProductCategory = $("admin-new-product-category");
   refs.adminNewProductUnit = $("admin-new-product-unit");
@@ -760,6 +813,7 @@ async function bootstrap() {
   refs.ownerTemplateCurrentSlug = $("owner-template-current-slug");
   refs.ownerTemplateStatus = $("owner-template-status");
   refs.applyOwnerTemplateButton = $("apply-owner-template-button");
+  refs.ownerOperationGuide = $("owner-operation-guide");
   refs.ownerOfflineSalesStatus = $("owner-offline-sales-status");
   refs.ownerOfflineSalesList = $("owner-offline-sales-list");
   refs.ownerRetryOfflineSalesButton = $("owner-retry-offline-sales-button");
@@ -806,42 +860,46 @@ async function bootstrap() {
 
   // Restaurar estado persistido
   await restorePreferences();
-  await restoreCart();
-  await restoreReceivablesCache();
   await restoreQueue();
   await restoreOfflineSales();
   await restoreOfflineReceivablePayments();
   syncOfflineSalesAuditWithQueue();
   syncOfflineReceivablePaymentsAuditWithQueue();
-  await restoreRegisterEvents();
-  await restoreCashierSession();
-  const cachedSnapshot = await restoreSnapshot();
-  if (cachedSnapshot) {
-    const offlineCashierBranch = state.cashier.branch || getActiveCashierBranch();
-    const preparedOfflineSnapshot =
-      !state.online
-      && state.cashier.authenticated
-      && typeof getPreparedOfflineSnapshot === "function"
-        ? await getPreparedOfflineSnapshot(offlineCashierBranch)
-        : null;
-    const initialSnapshot = resolveStartupSnapshotFromCache(cachedSnapshot, {
-      branch: offlineCashierBranch,
-      preparedSnapshot: preparedOfflineSnapshot,
-    });
-    applySnapshot(initialSnapshot, {
-      skipPersist: true,
-      persistPreparedSnapshot: false,
-    });
-  }
-  try {
-    if (state.cashier.token) {
-      await loadCashierAuthStatus();
+  let cachedSnapshot = null;
+
+  if (!isAdminRuntime) {
+    await restoreCart();
+    await restoreReceivablesCache();
+    await restoreRegisterEvents();
+    await restoreCashierSession();
+    cachedSnapshot = await restoreSnapshot();
+    if (cachedSnapshot) {
+      const offlineCashierBranch = state.cashier.branch || getActiveCashierBranch();
+      const preparedOfflineSnapshot =
+        !state.online
+        && state.cashier.authenticated
+        && typeof getPreparedOfflineSnapshot === "function"
+          ? await getPreparedOfflineSnapshot(offlineCashierBranch)
+          : null;
+      const initialSnapshot = resolveStartupSnapshotFromCache(cachedSnapshot, {
+        branch: offlineCashierBranch,
+        preparedSnapshot: preparedOfflineSnapshot,
+      });
+      applySnapshot(initialSnapshot, {
+        skipPersist: true,
+        persistPreparedSnapshot: false,
+      });
     }
-  } catch (error) {
-    if (error.statusCode === 401 || error.statusCode === 403) {
-      clearCashierSessionState();
-      if (typeof sanitizeAfterCashierSessionLoss === "function") {
-        sanitizeAfterCashierSessionLoss();
+    try {
+      if (state.cashier.token) {
+        await loadCashierAuthStatus();
+      }
+    } catch (error) {
+      if (error.statusCode === 401 || error.statusCode === 403) {
+        clearCashierSessionState();
+        if (typeof sanitizeAfterCashierSessionLoss === "function") {
+          sanitizeAfterCashierSessionLoss();
+        }
       }
     }
   }
@@ -859,7 +917,7 @@ async function bootstrap() {
     }
   }
   try {
-    if (state.online) {
+    if (state.online && !isAdminRuntime) {
       await loadOwnerAuthStatus();
     }
   } catch (error) {
@@ -876,49 +934,64 @@ async function bootstrap() {
   }
 
   // Renderizados iniciales
-  renderCart();
-  renderCashierSession();
-  renderQuickImportModal();
-  renderMyMerchandiseRequests();
-  renderMerchandiseRequestModal();
-  renderMerchandiseRequestItemModal();
-  renderMerchandiseRequestDetailModal();
-  renderApprovalsMobileView();
-  renderRegisterModal();
-  renderRegisterSummaryPill();
-  renderRecentActivity();
-  renderDetailViewer();
-  renderAdminModal();
-  renderAdminRecordLists();
-  renderAdminMerchandiseRequests();
-  renderAdminAuthModal();
-  renderAdminEditorModal();
-  renderCashierAuthModal();
+  if (isAdminRuntime) {
+    renderQuickImportModal();
+    renderMerchandiseRequestDetailModal();
+    renderDetailViewer();
+    renderAdminModal();
+    renderAdminRecordLists();
+    renderAdminMerchandiseRequests();
+    renderAdminAuthModal();
+    renderAdminEditorModal();
+  } else {
+    renderCart();
+    renderCashierSession();
+    renderQuickImportModal();
+    renderMyMerchandiseRequests();
+    renderMerchandiseRequestModal();
+    renderMerchandiseRequestItemModal();
+    renderMerchandiseRequestDetailModal();
+    renderApprovalsMobileView();
+    renderRegisterModal();
+    renderRegisterSummaryPill();
+    renderRecentActivity();
+    renderDetailViewer();
+    renderAdminModal();
+    renderAdminRecordLists();
+    renderAdminMerchandiseRequests();
+    renderAdminAuthModal();
+    renderAdminEditorModal();
+    renderCashierAuthModal();
+  }
   updateClock();
   renderSyncStatus();
-  renderRouteMode();
+  if (!isAdminRuntime) {
+    renderRouteMode();
+  }
   window.setInterval(updateClock, 1000);
-  window.addEventListener("resize", renderRouteMode);
-  installRouteSwipeDecisionSurface(refs.itemModalCard, {
-    bar: refs.itemRouteDecisionBar,
-    onLeft: closeItemModal,
-    onRight: () => {
-      if (!refs.itemRouteConfirmButton?.disabled) {
-        addCurrentProductToCart();
-      }
-    },
-  });
-  installRouteSwipeDecisionSurface(refs.paymentModalCard, {
-    bar: refs.paymentRouteDecisionBar,
-    triggerPx: ROUTE_PAYMENT_SWIPE_TRIGGER_PX,
-    lockPx: ROUTE_PAYMENT_SWIPE_LOCK_PX,
-    onLeft: closePaymentModal,
-    onRight: () => {
-      if (!refs.paymentRouteConfirmButton?.disabled) {
-        submitSale();
-      }
-    },
-  });
+  if (!isAdminRuntime) {
+    window.addEventListener("resize", renderRouteMode);
+    installRouteSwipeDecisionSurface(refs.itemModalCard, {
+      bar: refs.itemRouteDecisionBar,
+      onLeft: closeItemModal,
+      onRight: () => {
+        if (!refs.itemRouteConfirmButton?.disabled) {
+          addCurrentProductToCart();
+        }
+      },
+    });
+    installRouteSwipeDecisionSurface(refs.paymentModalCard, {
+      bar: refs.paymentRouteDecisionBar,
+      triggerPx: ROUTE_PAYMENT_SWIPE_TRIGGER_PX,
+      lockPx: ROUTE_PAYMENT_SWIPE_LOCK_PX,
+      onLeft: closePaymentModal,
+      onRight: () => {
+        if (!refs.paymentRouteConfirmButton?.disabled) {
+          submitSale();
+        }
+      },
+    });
+  }
 
   // === Registro de eventos ===
 
@@ -956,11 +1029,31 @@ async function bootstrap() {
     const branch = refs.adminBranchSelect.value;
     try {
       state.admin.branch = branch;
-      await refreshAdminWorkspace(getAdminWorkspaceBranchSwitchOptions(branch));
+      await refreshAdminWorkspace(
+        getAdminWorkspaceSectionOptions(state.admin.activeSection, branch, true),
+      );
       showToast(`Vista admin cambiada a ${getBranchLabel(branch)}`, "info");
     } catch (_error) {
       showToast("Error al cambiar sucursal", "error");
     }
+  });
+  refs.adminSectionNav?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-admin-section-tab]");
+    if (!button) {
+      return;
+    }
+    setAdminActiveSection(button.dataset.adminSectionTab, { refresh: true });
+  });
+  refs.adminProfitabilityPeriod?.addEventListener("change", () => {
+    state.admin.profitabilityPeriod = refs.adminProfitabilityPeriod.value || "today";
+    void loadAdminMetrics();
+  });
+  refs.adminProfitabilityDate?.addEventListener("change", () => {
+    state.admin.profitabilityDateKey = refs.adminProfitabilityDate.value || "";
+    void loadAdminMetrics();
+  });
+  refs.refreshAdminProfitabilityButton?.addEventListener("click", () => {
+    void loadAdminMetrics();
   });
   refs.adminLogoutButton.addEventListener("click", logoutAdmin);
   refs.loadWeightedAuditButton?.addEventListener("click", () => {
@@ -1047,6 +1140,32 @@ async function bootstrap() {
   refs.toggleAdminInventoryButton.addEventListener("click", toggleAdminInventoryPanel);
   refs.saveAdminProductButton.addEventListener("click", createAdminProduct);
   refs.adminNewProductUnit?.addEventListener("change", syncAdminProductCatalogs);
+  refs.adminInventoryModeBar?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-inventory-mode]");
+    if (!button) {
+      return;
+    }
+    setAdminInventoryMode(button.dataset.inventoryMode, {
+      expand: button.dataset.inventoryMode === "edit",
+    });
+  });
+  refs.adminInventorySearch?.addEventListener("input", () => {
+    updateAdminInventorySearch(refs.adminInventorySearch.value);
+  });
+  refs.adminInventoryFilterChips?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-inventory-filter]");
+    if (!button) {
+      return;
+    }
+    setAdminInventoryFilter(button.dataset.inventoryFilter);
+  });
+  refs.openInventoryReceiveButton?.addEventListener("click", () => {
+    void openAdminInventoryMovement("receive");
+  });
+  refs.openInventoryReturnButton?.addEventListener("click", () => {
+    void openAdminInventoryMovement("return");
+  });
+  refs.openInventoryCountButton?.addEventListener("click", openAdminInventoryCountMode);
 
   // Carrito y venta
   refs.openPaymentButton.addEventListener("click", openPaymentModal);
@@ -1106,6 +1225,7 @@ async function bootstrap() {
   refs.ownerLogoutButton.addEventListener("click", logoutOwner);
   refs.saveOwnerConsoleButton.addEventListener("click", submitOwnerConsole);
   refs.applyOwnerTemplateButton?.addEventListener("click", applyOwnerTemplateReset);
+  refs.ownerOperationGuide?.addEventListener("click", copyOwnerOperationCommand);
   refs.ownerRetryOfflineSalesButton?.addEventListener("click", retryAllOfflineSalesFromPanel);
   refs.ownerDownloadOfflineSalesButton?.addEventListener("click", downloadOfflineSalesAuditFromPanel);
 
@@ -1736,6 +1856,10 @@ async function bootstrap() {
   refs.saveConfigCategoryButton?.addEventListener("click", createAdminCategory);
   refs.saveConfigUnitButton?.addEventListener("click", createAdminUnit);
   refs.saveConfigAttributeButton?.addEventListener("click", createAdminProductAttribute);
+  refs.syncAdminSubscriptionButton?.addEventListener("click", syncAdminSubscriptionFromControlPlane);
+  refs.syncAdminControlConfigButton?.addEventListener("click", syncAdminControlConfigFromControlPlane);
+  refs.saveAdminSubscriptionButton?.addEventListener("click", saveAdminSubscriptionSettings);
+  refs.recordAdminSubscriptionPaymentButton?.addEventListener("click", recordAdminSubscriptionPayment);
   refs.devRefreshAdminButton?.addEventListener("click", refreshAdminDevPanelData);
   refs.devSyncOfflineButton?.addEventListener("click", retryOfflineSyncFromDev);
   refs.devDownloadStateButton?.addEventListener("click", downloadDebugStateFromDev);
@@ -1897,17 +2021,17 @@ async function bootstrap() {
     refs.inventoryBodyWrapper.addEventListener("click", (event) => {
       const saveButton = event.target.closest('[data-action="save-product"]');
       if (saveButton) {
-        const row = saveButton.closest("tr");
-        if (row) {
+        const record = saveButton.closest("[data-inventory-record], tr");
+        if (record) {
           // Detectar si es modo comparación (tiene data-branch)
-          const branch = row.dataset.branch;
-          saveInventoryRow(row, branch);
+          const branch = record.dataset.branch;
+          saveInventoryRow(record, branch);
         }
         return;
       }
       const removeButton = event.target.closest('[data-action="remove-product"]');
       if (removeButton) {
-        removeAdminProduct(removeButton.closest("tr"));
+        removeAdminProduct(removeButton.closest("[data-inventory-record], tr"));
       }
     });
   }
@@ -1956,59 +2080,75 @@ async function bootstrap() {
   }
 
   if (!bootstrapLoaded) {
-    try {
-      const snapshotHeaders = {
-        ...getCashierAuthHeaders(state.cashier.token || ""),
-        ...getAdminAuthHeaders(),
-        ...getOwnerAuthHeaders(),
-      };
-      const snapshot = await performJsonRequest(
-        `/api/bootstrap?branch=${encodeURIComponent(getActiveCashierBranch())}`,
-        {
-          headers: snapshotHeaders,
-          timeout: 15000,
-          retries: 2,
-        }
-      );
-      applySnapshot(snapshot, { syncAuthState: true });
+    if (isAdminRuntime && !state.admin.authenticated) {
       bootstrapLoaded = true;
-      
-      if (refs.socketStatus.textContent === "Sin conexion") {
-        refs.socketStatus.textContent = "Conectado";
-      }
-    } catch (error) {
-      // Si no hay snapshot cacheado, mostrar error
-      if (!cachedSnapshot) {
-        throw error;
-      } else {
-        // Con snapshot cacheado, apenas mostrar aviso
-        refs.socketStatus.textContent = "Sin conexion";
-        showToast("Trabajando con el ultimo estado guardado localmente.", "info");
+    } else {
+      try {
+        const snapshotHeaders = isAdminRuntime
+          ? getAdminAuthHeaders()
+          : {
+              ...getCashierAuthHeaders(state.cashier.token || ""),
+              ...getAdminAuthHeaders(),
+              ...getOwnerAuthHeaders(),
+            };
+        const snapshotUrl = isAdminRuntime
+          ? `/api/admin/bootstrap?branch=${encodeURIComponent(getAdminBranch())}&includeInactiveInventory=1`
+          : `/api/bootstrap?branch=${encodeURIComponent(getActiveCashierBranch())}`;
+        const snapshot = await performJsonRequest(
+          snapshotUrl,
+          {
+            headers: snapshotHeaders,
+            timeout: 15000,
+            retries: 2,
+          }
+        );
+        if (isAdminRuntime) {
+          applyAdminSnapshot(snapshot);
+          state.admin.capabilitiesResolved = Array.isArray(snapshot.adminCapabilities);
+        } else {
+          applySnapshot(snapshot, { syncAuthState: true });
+        }
+        bootstrapLoaded = true;
+
+        if (refs.socketStatus.textContent === "Sin conexion") {
+          refs.socketStatus.textContent = "Conectado";
+        }
+      } catch (error) {
+        // Si no hay snapshot cacheado, mostrar error
+        if (!cachedSnapshot || isAdminRuntime) {
+          throw error;
+        } else {
+          // Con snapshot cacheado, apenas mostrar aviso
+          refs.socketStatus.textContent = "Sin conexion";
+          showToast("Trabajando con el ultimo estado guardado localmente.", "info");
+        }
       }
     }
   }
 
   // Inicializar socket y sincronización
   connectSocket();
-  updatePaymentView();
-  window.addEventListener("popstate", () => {
-    void syncApprovalsMobileViewFromLocation({ autoOpenAuth: false, silent: true });
-  });
-  await syncApprovalsMobileViewFromLocation({ silent: true });
-  if (state.cashier.authenticated) {
-    void Promise.allSettled([
-      loadRegisterSummary({ silent: true }),
-      loadMyMerchandiseRequests({ silent: true }),
-    ]);
-  } else {
-    state.register.summary = getEmptyRegisterSummary();
-    renderRegisterSummaryPill();
-    renderCashierSession();
-  }
+  if (!isAdminRuntime) {
+    updatePaymentView();
+    window.addEventListener("popstate", () => {
+      void syncApprovalsMobileViewFromLocation({ autoOpenAuth: false, silent: true });
+    });
+    await syncApprovalsMobileViewFromLocation({ silent: true });
+    if (state.cashier.authenticated) {
+      void Promise.allSettled([
+        loadRegisterSummary({ silent: true }),
+        loadMyMerchandiseRequests({ silent: true }),
+      ]);
+    } else {
+      state.register.summary = getEmptyRegisterSummary();
+      renderRegisterSummaryPill();
+      renderCashierSession();
+    }
   
   // Iniciar sincronización si hay pendientes de ventas o caja
-  if (state.pendingQueue.length > 0 || state.register.events.length > 0) {
-    syncAllOfflineData().catch(() => {});
+    if (state.pendingQueue.length > 0 || state.register.events.length > 0) {
+      syncAllOfflineData().catch(() => {});
+    }
   }
   
   if (refs.openAdminButton) {

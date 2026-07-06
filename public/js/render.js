@@ -4,7 +4,7 @@ function showToast(message, type = "info") {
   }
 
   const toast = document.createElement("div");
-  toast.className = `toast ${type}`;
+  toast.className = `toast ${sanitizeClassToken(type, "info")}`;
   toast.textContent = message;
   toast.setAttribute?.("role", type === "error" ? "alert" : "status");
   refs.toastRegion.appendChild(toast);
@@ -298,7 +298,7 @@ function renderSearchQuickResults(products = getFilteredProducts()) {
     <div class="search-quick-results-list">
       ${quickResults.map((product) => `
         <button
-          class="search-quick-result ${product.status}"
+          class="search-quick-result ${sanitizeClassToken(product.status, "normal")}"
           data-action="open-search-product"
           data-product-id="${product.id}"
           type="button"
@@ -383,15 +383,15 @@ function renderProducts() {
     .map(
       (product) => `
         <button
-          class="product-card ${product.status}"
+          class="product-card ${sanitizeClassToken(product.status, "normal")}"
           data-action="open-product"
           data-product-id="${product.id}"
           type="button"
         >
           <div class="product-top">
             <span class="product-chip">${escapeHtml(product.categoryLabel)}</span>
-            <span class="status-chip ${product.status}">
-              ${getStatusLabel(product.status)}
+            <span class="status-chip ${sanitizeClassToken(product.status, "normal")}">
+              ${escapeHtml(getStatusLabel(product.status))}
             </span>
           </div>
           <h3>${escapeHtml(product.name)}</h3>
@@ -570,7 +570,7 @@ function renderRecentSales() {
           <div class="feed-meta">
             <strong>${escapeHtml(sale.ticketNumber)}</strong>
             <div class="feed-meta-side">
-              ${offlineState ? `<span class="offline-sale-status-pill ${offlineState.status}">${escapeHtml(offlineState.label)}</span>` : ""}
+              ${offlineState ? `<span class="offline-sale-status-pill ${sanitizeClassToken(offlineState.status, "unknown")}">${escapeHtml(offlineState.label)}</span>` : ""}
               <span class="feed-total">${formatCurrency(sale.total)}</span>
             </div>
           </div>
@@ -601,8 +601,8 @@ function renderLowStock() {
         <article class="alert-item">
           <div class="inventory-meta">
             <strong>${escapeHtml(product.name)}</strong>
-            <span class="status-chip ${product.status}">
-              ${getStatusLabel(product.status)}
+            <span class="status-chip ${sanitizeClassToken(product.status, "normal")}">
+              ${escapeHtml(getStatusLabel(product.status))}
             </span>
           </div>
           <p>
@@ -720,13 +720,13 @@ function renderInventorySingle() {
             </div>
           </td>
           <td>
-            <input class="inventory-input" data-field="price" type="number" min="0" step="0.01" value="${product.price}" />
+            <input class="inventory-input" data-field="price" type="number" min="0" step="0.01" value="${escapeHtml(product.price ?? 0)}" />
           </td>
           <td>
-            <input class="inventory-input" data-field="stock" type="number" step="${getProductStep(product)}" value="${product.stock}" />
+            <input class="inventory-input" data-field="stock" type="number" step="${getProductStep(product)}" value="${escapeHtml(product.stock ?? 0)}" />
           </td>
           <td>
-            <input class="inventory-input" data-field="minStock" type="number" min="0" step="${getProductStep(product)}" value="${product.minStock}" />
+            <input class="inventory-input" data-field="minStock" type="number" min="0" step="${getProductStep(product)}" value="${escapeHtml(product.minStock ?? 0)}" />
           </td>
           <td>
             <label class="inventory-toggle">
@@ -738,8 +738,8 @@ function renderInventorySingle() {
             <input class="inventory-input" data-field="note" type="text" maxlength="120" placeholder="Nota del ajuste" />
           </td>
           <td>
-            <span class="status-chip ${product.status}">
-              ${getStatusLabel(product.status)}
+            <span class="status-chip ${sanitizeClassToken(product.status, "normal")}">
+              ${escapeHtml(getStatusLabel(product.status))}
             </span>
           </td>
           <td>
@@ -784,7 +784,7 @@ function renderInventoryComparison() {
     body1.innerHTML = branch1.products
       .map(
         (product) => `
-          <tr data-product-id="${product.id}" data-branch="${branch1.value}">
+          <tr data-product-id="${product.id}" data-branch="${escapeHtml(branch1.value)}">
             <td>
               <div class="inventory-name">
                 <strong>${escapeHtml(product.name)}</strong>
@@ -792,13 +792,13 @@ function renderInventoryComparison() {
               </div>
             </td>
             <td>
-              <input class="inventory-input" data-field="price" type="number" min="0" step="0.01" value="${product.price}" />
+              <input class="inventory-input" data-field="price" type="number" min="0" step="0.01" value="${escapeHtml(product.price ?? 0)}" />
             </td>
             <td>
-              <input class="inventory-input" data-field="stock" type="number" step="${getProductStep(product)}" value="${product.stock}" />
+              <input class="inventory-input" data-field="stock" type="number" step="${getProductStep(product)}" value="${escapeHtml(product.stock ?? 0)}" />
             </td>
             <td>
-              <input class="inventory-input" data-field="minStock" type="number" min="0" step="${getProductStep(product)}" value="${product.minStock}" />
+              <input class="inventory-input" data-field="minStock" type="number" min="0" step="${getProductStep(product)}" value="${escapeHtml(product.minStock ?? 0)}" />
             </td>
             <td>
               <label class="inventory-toggle">
@@ -810,8 +810,8 @@ function renderInventoryComparison() {
               <input class="inventory-input" data-field="note" type="text" maxlength="120" placeholder="Nota del ajuste" />
             </td>
             <td>
-              <span class="status-chip ${product.status}">
-                ${getStatusLabel(product.status)}
+              <span class="status-chip ${sanitizeClassToken(product.status, "normal")}">
+                ${escapeHtml(getStatusLabel(product.status))}
               </span>
             </td>
             <td>
@@ -831,7 +831,7 @@ function renderInventoryComparison() {
     body2.innerHTML = branch2.products
       .map(
         (product) => `
-          <tr data-product-id="${product.id}" data-branch="${branch2.value}">
+          <tr data-product-id="${product.id}" data-branch="${escapeHtml(branch2.value)}">
             <td>
               <div class="inventory-name">
                 <strong>${escapeHtml(product.name)}</strong>
@@ -839,13 +839,13 @@ function renderInventoryComparison() {
               </div>
             </td>
             <td>
-              <input class="inventory-input" data-field="price" type="number" min="0" step="0.01" value="${product.price}" />
+              <input class="inventory-input" data-field="price" type="number" min="0" step="0.01" value="${escapeHtml(product.price ?? 0)}" />
             </td>
             <td>
-              <input class="inventory-input" data-field="stock" type="number" step="${getProductStep(product)}" value="${product.stock}" />
+              <input class="inventory-input" data-field="stock" type="number" step="${getProductStep(product)}" value="${escapeHtml(product.stock ?? 0)}" />
             </td>
             <td>
-              <input class="inventory-input" data-field="minStock" type="number" min="0" step="${getProductStep(product)}" value="${product.minStock}" />
+              <input class="inventory-input" data-field="minStock" type="number" min="0" step="${getProductStep(product)}" value="${escapeHtml(product.minStock ?? 0)}" />
             </td>
             <td>
               <label class="inventory-toggle">
@@ -857,8 +857,8 @@ function renderInventoryComparison() {
               <input class="inventory-input" data-field="note" type="text" maxlength="120" placeholder="Nota del ajuste" />
             </td>
             <td>
-              <span class="status-chip ${product.status}">
-                ${getStatusLabel(product.status)}
+              <span class="status-chip ${sanitizeClassToken(product.status, "normal")}">
+                ${escapeHtml(getStatusLabel(product.status))}
               </span>
             </td>
             <td>
@@ -870,6 +870,328 @@ function renderInventoryComparison() {
         `,
       )
       .join("");
+  }
+}
+
+function getInventoryProductStatus(product) {
+  return product.status || getStockStatus(product.stock, product.minStock, product.stockInitialized);
+}
+
+function getAdminInventorySearchText(product) {
+  return [
+    product.name,
+    product.categoryLabel,
+    product.unit,
+    product.sku,
+    product.barcode,
+    product.brand,
+    product.supplierName,
+    product.supplier,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function matchesAdminInventorySearch(product) {
+  const search = String(state.admin.inventorySearch || "").trim().toLowerCase();
+  return !search || getAdminInventorySearchText(product).includes(search);
+}
+
+function matchesAdminInventoryFilter(product, filterKey = state.admin.inventoryFilter) {
+  const filter = normalizeAdminInventoryFilterKey(filterKey);
+  const status = getInventoryProductStatus(product);
+  const stock = Number(product.stock || 0);
+  const active = product.active !== false;
+
+  if (filter === "low") {
+    return active && product.stockInitialized !== false && (status === "low" || status === "empty");
+  }
+  if (filter === "negative") {
+    return stock < 0;
+  }
+  if (filter === "uncounted") {
+    return product.stockInitialized === false || status === "capture";
+  }
+  if (filter === "inactive") {
+    return product.active === false;
+  }
+  return true;
+}
+
+function filterAdminInventoryProducts(products) {
+  const safeProducts = Array.isArray(products) ? products : [];
+  const filter = normalizeAdminInventoryFilterKey(state.admin.inventoryFilter);
+  return safeProducts.filter(
+    (product) => matchesAdminInventorySearch(product) && matchesAdminInventoryFilter(product, filter),
+  );
+}
+
+function getAdminInventoryFilterCounts(products) {
+  const searchedProducts = (Array.isArray(products) ? products : []).filter(matchesAdminInventorySearch);
+  return getAdminInventoryFilterDefinitions().reduce((counts, definition) => {
+    counts[definition.value] = definition.value === "all"
+      ? searchedProducts.length
+      : searchedProducts.filter((product) => matchesAdminInventoryFilter(product, definition.value)).length;
+    return counts;
+  }, {});
+}
+
+function renderAdminInventoryFilterChips(products = []) {
+  if (!refs.adminInventoryFilterChips) {
+    return;
+  }
+  const activeFilter = normalizeAdminInventoryFilterKey(state.admin.inventoryFilter);
+  const counts = getAdminInventoryFilterCounts(products);
+  refs.adminInventoryFilterChips.innerHTML = getAdminInventoryFilterDefinitions()
+    .map((definition) => {
+      const isActive = definition.value === activeFilter;
+      return `
+        <button
+          class="admin-inventory-filter-chip ${isActive ? "active" : ""}"
+          data-inventory-filter="${definition.value}"
+          type="button"
+          aria-pressed="${isActive ? "true" : "false"}"
+        >
+          ${escapeHtml(definition.label)}
+          <span>${formatQuantity(counts[definition.value] || 0)}</span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function getInventoryEmptyRow(colspan, message = "Sin productos con este filtro.") {
+  return `
+    <tr>
+      <td colspan="${colspan}">
+        <div class="inventory-empty-state">${escapeHtml(message)}</div>
+      </td>
+    </tr>
+  `;
+}
+
+function renderInventoryRow(product, options = {}) {
+  const status = getInventoryProductStatus(product);
+  const active = product.active !== false;
+  const branchAttr = options.branch ? ` data-branch="${escapeHtml(options.branch)}"` : "";
+  const removeButton = options.removable
+    ? `
+      <td>
+        <button class="ghost-button danger-button" data-action="remove-product" type="button">
+          Quitar
+        </button>
+      </td>
+    `
+    : "";
+
+  return `
+    <tr data-product-id="${product.id}" data-inventory-record${branchAttr}>
+      <td>
+        <div class="inventory-name">
+          <strong>${escapeHtml(product.name)}</strong>
+          <small>${escapeHtml(product.categoryLabel || "")} - ${escapeHtml(product.unit || "")}</small>
+        </div>
+      </td>
+      <td>
+        <input class="inventory-input" data-field="price" type="number" min="0" step="0.01" value="${escapeHtml(product.price ?? 0)}" />
+      </td>
+      <td>
+        <input class="inventory-input" data-field="stock" type="number" step="${getProductStep(product)}" value="${escapeHtml(product.stock ?? 0)}" />
+      </td>
+      <td>
+        <input class="inventory-input" data-field="minStock" type="number" min="0" step="${getProductStep(product)}" value="${escapeHtml(product.minStock ?? 0)}" />
+      </td>
+      <td>
+        <label class="inventory-toggle">
+          <input data-field="active" type="checkbox" ${active ? "checked" : ""} />
+          <span>${active ? "Activo" : "Inactivo"}</span>
+        </label>
+      </td>
+      <td>
+        <input class="inventory-input" data-field="note" type="text" maxlength="120" placeholder="Nota del ajuste" />
+      </td>
+      <td>
+        <span class="status-chip ${sanitizeClassToken(status, "normal")}">
+          ${escapeHtml(getStatusLabel(status))}
+        </span>
+      </td>
+      <td>
+        <button class="secondary-button" data-action="save-product" type="button">
+          Guardar
+        </button>
+      </td>
+      ${removeButton}
+    </tr>
+  `;
+}
+
+function renderInventoryCard(product, options = {}) {
+  const status = getInventoryProductStatus(product);
+  const active = product.active !== false;
+  const branchAttr = options.branch ? ` data-branch="${escapeHtml(options.branch)}"` : "";
+  const branchLabel = options.branchLabel
+    ? `<span class="small-pill">${escapeHtml(options.branchLabel)}</span>`
+    : "";
+  const removeButton = options.removable
+    ? `
+      <button class="ghost-button danger-button" data-action="remove-product" type="button">
+        Quitar
+      </button>
+    `
+    : "";
+
+  return `
+    <article class="inventory-product-card" data-product-id="${product.id}" data-inventory-record${branchAttr}>
+      <div class="inventory-card-head">
+        <div class="inventory-name">
+          <strong>${escapeHtml(product.name)}</strong>
+          <small>${escapeHtml(product.categoryLabel || "")} - ${escapeHtml(product.unit || "")}</small>
+        </div>
+        <div class="inventory-card-badges">
+          ${branchLabel}
+          <span class="status-chip ${sanitizeClassToken(status, "normal")}">${escapeHtml(getStatusLabel(status))}</span>
+        </div>
+      </div>
+      <div class="inventory-card-grid">
+        <label class="field">
+          <span>Precio</span>
+          <input class="inventory-input" data-field="price" type="number" min="0" step="0.01" value="${escapeHtml(product.price ?? 0)}" />
+        </label>
+        <label class="field">
+          <span>Existencia</span>
+          <input class="inventory-input" data-field="stock" type="number" step="${getProductStep(product)}" value="${escapeHtml(product.stock ?? 0)}" />
+        </label>
+        <label class="field">
+          <span>Minimo</span>
+          <input class="inventory-input" data-field="minStock" type="number" min="0" step="${getProductStep(product)}" value="${escapeHtml(product.minStock ?? 0)}" />
+        </label>
+        <label class="inventory-toggle inventory-card-toggle">
+          <input data-field="active" type="checkbox" ${active ? "checked" : ""} />
+          <span>${active ? "Activo" : "Inactivo"}</span>
+        </label>
+        <label class="field inventory-card-note">
+          <span>Nota</span>
+          <input class="inventory-input" data-field="note" type="text" maxlength="120" placeholder="Nota del ajuste" />
+        </label>
+      </div>
+      <div class="inventory-card-actions">
+        <button class="secondary-button" data-action="save-product" type="button">
+          Guardar
+        </button>
+        ${removeButton}
+      </div>
+    </article>
+  `;
+}
+
+function renderInventoryCards(groups = []) {
+  if (!refs.inventoryCardList) {
+    return;
+  }
+  const visibleGroups = groups.map((group) => ({
+    ...group,
+    products: Array.isArray(group.products) ? group.products : [],
+  }));
+  const hasMultipleGroups = visibleGroups.length > 1;
+  refs.inventoryCardList.innerHTML = visibleGroups
+    .map((group) => `
+      <section class="inventory-card-group">
+        ${hasMultipleGroups ? `<h3>${escapeHtml(group.label || "Sucursal")}</h3>` : ""}
+        ${group.products.length
+          ? group.products
+              .map((product) =>
+                renderInventoryCard(product, {
+                  branch: group.branch,
+                  branchLabel: hasMultipleGroups ? group.label : "",
+                  removable: Boolean(group.removable),
+                }),
+              )
+              .join("")
+          : `<div class="inventory-empty-card">Sin productos con este filtro.</div>`}
+      </section>
+    `)
+    .join("");
+}
+
+function renderInventorySingle() {
+  const singleWrapper = document.getElementById("inventory-single-table");
+  const comparisonWrapper = document.getElementById("inventory-comparison-wrapper");
+  const inventoryProducts = Array.isArray(state.admin.inventoryProducts)
+    ? state.admin.inventoryProducts
+    : [];
+  const filteredProducts = filterAdminInventoryProducts(inventoryProducts);
+
+  if (singleWrapper) singleWrapper.style.display = "";
+  if (comparisonWrapper) comparisonWrapper.hidden = true;
+
+  renderAdminInventoryFilterChips(inventoryProducts);
+  renderInventoryCards([
+    {
+      label: getBranchLabel(getAdminActionBranch()),
+      products: filteredProducts,
+      removable: true,
+    },
+  ]);
+
+  if (refs.inventoryBody) {
+    refs.inventoryBody.innerHTML = filteredProducts.length
+      ? filteredProducts.map((product) => renderInventoryRow(product, { removable: true })).join("")
+      : getInventoryEmptyRow(9);
+  }
+}
+
+function renderInventoryComparison() {
+  const singleWrapper = document.getElementById("inventory-single-table");
+  const comparisonWrapper = document.getElementById("inventory-comparison-wrapper");
+
+  if (singleWrapper) singleWrapper.style.display = "none";
+  if (comparisonWrapper) comparisonWrapper.hidden = false;
+
+  const comparison = state.admin.inventoryComparison;
+  if (!comparison || !comparison.branches || comparison.branches.length < 2) {
+    renderInventoryCards([]);
+    return;
+  }
+
+  const [branch1, branch2] = comparison.branches;
+  const branch1Products = filterAdminInventoryProducts(branch1.products);
+  const branch2Products = filterAdminInventoryProducts(branch2.products);
+  const allProducts = comparison.branches.flatMap((branchEntry) =>
+    Array.isArray(branchEntry.products) ? branchEntry.products : [],
+  );
+
+  const label1 = document.getElementById("comparison-branch-1-label");
+  const label2 = document.getElementById("comparison-branch-2-label");
+  if (label1) label1.textContent = `${branch1.label} (${branch1Products.length})`;
+  if (label2) label2.textContent = `${branch2.label} (${branch2Products.length})`;
+
+  renderAdminInventoryFilterChips(allProducts);
+  renderInventoryCards([
+    {
+      label: branch1.label,
+      branch: branch1.value,
+      products: branch1Products,
+    },
+    {
+      label: branch2.label,
+      branch: branch2.value,
+      products: branch2Products,
+    },
+  ]);
+
+  const body1 = document.getElementById("inventory-body-branch-1");
+  if (body1) {
+    body1.innerHTML = branch1Products.length
+      ? branch1Products.map((product) => renderInventoryRow(product, { branch: branch1.value })).join("")
+      : getInventoryEmptyRow(8);
+  }
+
+  const body2 = document.getElementById("inventory-body-branch-2");
+  if (body2) {
+    body2.innerHTML = branch2Products.length
+      ? branch2Products.map((product) => renderInventoryRow(product, { branch: branch2.value })).join("")
+      : getInventoryEmptyRow(8);
   }
 }
 
@@ -1050,7 +1372,7 @@ function updateCashierBlindAuditDifferenceDom(itemId) {
 
   const view = getCashierBlindAuditDifferenceView(item);
   label.textContent = view.text;
-  label.className = `cashier-blind-audit-difference ${view.className}`;
+  label.className = `cashier-blind-audit-difference ${sanitizeClassToken(view.className, "pending")}`;
 }
 
 function refreshCashierBlindAuditInlineState() {
@@ -1121,7 +1443,7 @@ function renderCashierBlindAuditModal() {
           ${state.cashierBlindAudit.saving ? "disabled" : ""}
         />
         <small
-          class="cashier-blind-audit-difference ${differenceView.className}"
+          class="cashier-blind-audit-difference ${sanitizeClassToken(differenceView.className, "pending")}"
           data-blind-audit-difference-for="${item.itemId}"
         >${escapeHtml(differenceView.text)}</small>
       </label>

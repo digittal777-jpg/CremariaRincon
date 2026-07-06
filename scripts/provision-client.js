@@ -27,7 +27,33 @@ function normalizeSlug(value) {
 }
 
 function normalizePublicUrl(value) {
-  return String(value || "").trim().replace(/\/+$/g, "");
+  const rawUrl = String(value || "").trim().replace(/\/+$/g, "");
+  if (!rawUrl) {
+    return "";
+  }
+
+  let parsed = null;
+  try {
+    parsed = new URL(rawUrl);
+  } catch (_error) {
+    throw new Error("La URL publica debe ser absoluta, por ejemplo https://cliente.ejemplo.com.");
+  }
+
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("La URL publica debe iniciar con http:// o https://.");
+  }
+
+  const hostname = String(parsed.hostname || "").trim().toLowerCase();
+  const isLoopback = hostname === "localhost"
+    || hostname.endsWith(".localhost")
+    || hostname === "::1"
+    || hostname === "0.0.0.0"
+    || hostname.startsWith("127.");
+  if (parsed.protocol !== "https:" && !isLoopback) {
+    throw new Error("La URL publica debe usar HTTPS fuera de localhost.");
+  }
+
+  return parsed.toString().replace(/\/+$/g, "");
 }
 
 function resolveExistingFile(filePath) {
@@ -56,7 +82,7 @@ function assertTemplateExists(templateKey) {
 function usage() {
   return [
     "Uso:",
-    "  npm.cmd run provision:client -- --slug abarrotes-lupita --name \"Abarrotes Lupita\" --template abarrotes --catalog .\\catalogos\\abarrotes-base.xlsx --public-url https://abarrotes-lupita.railway.app",
+    "  npm.cmd run provision:client -- --slug abarrotes-lupita --name \"Abarrotes Lupita\" --template abarrotes --catalog .\\catalogos\\abarrotes-base.xlsx --public-url https://abarrotes-lupita.ejemplo.com",
     "",
     "Flags:",
     "  --plan-only       Solo genera expediente privado; no crea clon.",
@@ -188,7 +214,10 @@ $env:POS_TIMEZONE='America/Mexico_City'
 $env:POS_PUBLIC_ORIGIN='http://localhost:3100'
 $env:POS_ALLOWED_ORIGINS='http://localhost:3100'
 $env:POS_SECURE_COOKIES='false'
+$env:POS_FORCE_HTTPS='false'
+$env:POS_TRUST_PROXY=''
 $env:POS_BOOTSTRAP_TOKEN='${bootstrapToken}'
+$env:CONTROL_REQUIRE_HTTPS='true'
 npm.cmd start
 \`\`\`
 
@@ -202,7 +231,10 @@ POS_TIMEZONE=America/Mexico_City
 POS_PUBLIC_ORIGIN=${safePublicUrl}
 POS_ALLOWED_ORIGINS=${safePublicUrl}
 POS_SECURE_COOKIES=true
+POS_FORCE_HTTPS=true
+POS_TRUST_PROXY=loopback,linklocal,uniquelocal
 POS_BOOTSTRAP_TOKEN=${bootstrapToken}
+CONTROL_REQUIRE_HTTPS=true
 \`\`\`
 
 ## Checklist de entrega

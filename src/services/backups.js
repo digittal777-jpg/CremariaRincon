@@ -21,6 +21,7 @@ const {
   RESEND_API_URL,
 } = require("../config");
 const { createDatabaseBackup, getDb, nowIso } = require("../db");
+const { readFreshRuntimeConfigValue } = require("../runtimeConfig");
 const {
   ALL_BRANCHES,
   createHttpError,
@@ -72,28 +73,41 @@ function sanitizeSlug(value) {
 }
 
 function getBackupStorageMode() {
-  if (!BACKUP_BUCKET_ENDPOINT || !BACKUP_BUCKET_NAME) {
+  const endpoint = getFreshBackupRuntimeValue("BACKUP_BUCKET_ENDPOINT", BACKUP_BUCKET_ENDPOINT);
+  const bucketName = getFreshBackupRuntimeValue("BACKUP_BUCKET_NAME", BACKUP_BUCKET_NAME);
+  if (!endpoint || !bucketName) {
     return "unconfigured";
   }
 
-  return BACKUP_BUCKET_ENDPOINT.startsWith("file://") ? "file" : "s3";
+  return endpoint.startsWith("file://") ? "file" : "s3";
+}
+
+function getFreshBackupRuntimeValue(key, fallback = "") {
+  return String(readFreshRuntimeConfigValue(key, fallback) || "").trim();
+}
+
+function isBackupEnabled() {
+  return getFreshBackupRuntimeValue("BACKUP_ENABLED", BACKUP_ENABLED ? "true" : "false") === "true";
 }
 
 function buildStorageSummary() {
+  const endpoint = getFreshBackupRuntimeValue("BACKUP_BUCKET_ENDPOINT", BACKUP_BUCKET_ENDPOINT);
+  const bucketName = getFreshBackupRuntimeValue("BACKUP_BUCKET_NAME", BACKUP_BUCKET_NAME);
+  const prefix = getFreshBackupRuntimeValue("BACKUP_PREFIX", BACKUP_PREFIX);
   return {
     configured: getBackupStorageMode() !== "unconfigured",
     mode: getBackupStorageMode(),
-    bucket: BACKUP_BUCKET_NAME || "",
-    endpoint: BACKUP_BUCKET_ENDPOINT || "",
-    prefix: BACKUP_PREFIX || "",
+    bucket: bucketName || "",
+    endpoint: endpoint || "",
+    prefix: prefix || "",
   };
 }
 
 function buildRetentionSummary() {
   return {
-    daily: BACKUP_RETENTION_DAILY,
-    weekly: BACKUP_RETENTION_WEEKLY,
-    monthly: BACKUP_RETENTION_MONTHLY,
+    daily: Math.max(1, Number(getFreshBackupRuntimeValue("BACKUP_RETENTION_DAILY", BACKUP_RETENTION_DAILY) || BACKUP_RETENTION_DAILY)),
+    weekly: Math.max(1, Number(getFreshBackupRuntimeValue("BACKUP_RETENTION_WEEKLY", BACKUP_RETENTION_WEEKLY) || BACKUP_RETENTION_WEEKLY)),
+    monthly: Math.max(1, Number(getFreshBackupRuntimeValue("BACKUP_RETENTION_MONTHLY", BACKUP_RETENTION_MONTHLY) || BACKUP_RETENTION_MONTHLY)),
   };
 }
 
@@ -439,8 +453,11 @@ function getClientSyncHealthSummary(optionsOrStaleHours = BACKUP_SYNC_REPORT_STA
 }
 
 function getBackupStatusBundle() {
+  const enabled = isBackupEnabled();
   return {
-    enabled: BACKUP_ENABLED,
+    enabled,
+    processEnabled: BACKUP_ENABLED,
+    restartRequired: enabled !== BACKUP_ENABLED,
     storage: buildStorageSummary(),
     retention: buildRetentionSummary(),
     syncHealth: getClientSyncHealthSummary(),
@@ -743,7 +760,7 @@ async function uploadTierArtifacts(storage, tierConfig, sqlitePath, workbookPath
 }
 
 async function runNightlyBackup(options = {}) {
-  if (!BACKUP_ENABLED && options.allowWhenDisabled !== true) {
+  if (!isBackupEnabled() && options.allowWhenDisabled !== true) {
     throw createHttpError("BACKUP_ENABLED=false. El job nocturno no esta habilitado en este despliegue.", 409);
   }
 

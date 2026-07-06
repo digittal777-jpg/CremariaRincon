@@ -109,7 +109,16 @@ function loadAdminClientSecurityContext() {
     renderRecentActivity() {},
     renderTrendChart() {},
     renderShiftSummary() {},
+    renderInventory() {
+      context.__renderInventoryCalls = (context.__renderInventoryCalls || 0) + 1;
+    },
+    renderAdminModal() {
+      context.__renderAdminModalCalls = (context.__renderAdminModalCalls || 0) + 1;
+    },
     renderQuickImportModal() {},
+    async openQuickImportModal() {
+      context.__quickImportOpenCalls = (context.__quickImportOpenCalls || 0) + 1;
+    },
     renderSyncStatus() {},
     saveSnapshot() {},
     saveCart() {},
@@ -131,6 +140,9 @@ function loadAdminClientSecurityContext() {
     persistedJsonWrites,
     __adminRouteActive: false,
     __administrationReturnCalls: 0,
+    __renderInventoryCalls: 0,
+    __renderAdminModalCalls: 0,
+    __quickImportOpenCalls: 0,
     isAdministrationRoute() {
       return context.__adminRouteActive;
     },
@@ -179,10 +191,28 @@ function loadAdminClientSecurityContext() {
       shouldRevalidateAdminCapabilities,
       clearClientBusinessResetState,
       clearAffectedBranchOperationalState,
+      getAdminWorkspaceSectionOptions,
+      normalizeAdminSectionKey,
+      normalizeAdminInventoryMode,
+      normalizeAdminInventoryFilterKey,
+      setAdminInventoryMode,
+      setAdminInventoryFilter,
+      updateAdminInventorySearch,
+      openAdminInventoryMovement,
+      openAdminInventoryCountMode,
       prepareForFullDatabaseInstallReload,
       readStorageJson,
       STORAGE_KEYS,
       persistedJsonWrites,
+      getRenderInventoryCalls() {
+        return globalThis.__renderInventoryCalls;
+      },
+      getRenderAdminModalCalls() {
+        return globalThis.__renderAdminModalCalls;
+      },
+      getQuickImportOpenCalls() {
+        return globalThis.__quickImportOpenCalls;
+      },
     };
   `).runInContext(vmContext);
 
@@ -211,6 +241,60 @@ test("admin client revalidates capability state when unresolved or explicitly em
   api.state.adminCapabilities = [];
   assert.equal(api.shouldRevalidateAdminCapabilities(), false);
   assert.equal(api.isAdminWorkspaceBlockedByOwner(), false);
+});
+
+test("admin workspace section options load only the active admin area", () => {
+  const api = loadAdminClientSecurityContext();
+
+  const overview = api.getAdminWorkspaceSectionOptions("overview", "all", true);
+  assert.equal(overview.profile, "custom");
+  assert.equal(overview.branch, "all");
+  assert.equal(overview.force, true);
+  assert.equal(overview.snapshot, true);
+  assert.equal(overview.cashiers, undefined);
+
+  const team = api.getAdminWorkspaceSectionOptions("team", "miradores", false);
+  assert.equal(team.branches, true);
+  assert.equal(team.cashiers, true);
+  assert.equal(team.snapshot, undefined);
+
+  const config = api.getAdminWorkspaceSectionOptions("config", "carrizal", false);
+  assert.equal(config.auditLogs, true);
+  assert.equal(config.config, true);
+  assert.equal(config.periodClosures, undefined);
+
+  assert.equal(api.normalizeAdminSectionKey("no-existe"), "overview");
+});
+
+test("admin inventory workspace separates quick movement from full editing state", async () => {
+  const api = loadAdminClientSecurityContext();
+
+  assert.equal(api.normalizeAdminInventoryMode("weird"), "movement");
+  assert.equal(api.normalizeAdminInventoryFilterKey("weird"), "all");
+
+  api.setAdminInventoryMode("edit", { expand: true });
+  assert.equal(api.state.admin.inventoryMode, "edit");
+  assert.equal(api.state.admin.inventoryExpanded, true);
+  assert.equal(api.getRenderInventoryCalls(), 1);
+  assert.equal(api.getRenderAdminModalCalls(), 1);
+
+  api.setAdminInventoryFilter("negative");
+  assert.equal(api.state.admin.inventoryFilter, "negative");
+  assert.equal(api.getRenderInventoryCalls(), 2);
+
+  api.updateAdminInventorySearch("panela");
+  assert.equal(api.state.admin.inventorySearch, "panela");
+  assert.equal(api.getRenderInventoryCalls(), 3);
+
+  await api.openAdminInventoryMovement("return");
+  assert.equal(api.state.admin.inventoryMode, "movement");
+  assert.equal(api.state.admin.inventoryExpanded, false);
+  assert.equal(api.state.quickImport.mode, "return");
+  assert.equal(api.getQuickImportOpenCalls(), 1);
+
+  api.openAdminInventoryCountMode();
+  assert.equal(api.state.admin.inventoryMode, "edit");
+  assert.equal(api.state.admin.inventoryExpanded, true);
 });
 
 test("admin client normalizes blocked snapshots to public data before using them", () => {

@@ -120,6 +120,12 @@ function getLineTotal(items) {
   return roundMoney(items.reduce((sum, item) => sum + roundMoney(item.lineTotal), 0));
 }
 
+function shiftDateKey(dateKey, days) {
+  const date = new Date(`${dateKey}T12:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + Number(days || 0));
+  return date.toISOString().slice(0, 10);
+}
+
 function buildCashReceived(total) {
   return Math.ceil(roundMoney(total) / 50) * 50 || total;
 }
@@ -255,10 +261,34 @@ function seedDemoActivity({ db, services, branch }) {
   };
 }
 
-function writeDemoReport({ dbPath, reportPath, businessName, slug, branch, activity }) {
+function seedDemoCommercialLayer({ services, branch }) {
+  const todayDateKey = new Date().toISOString().slice(0, 10);
+  const periodEnd = shiftDateKey(todayDateKey, 30);
+  const paymentBundle = services.recordServiceSubscriptionPayment({
+    amount: 250,
+    paymentMethod: "Transferencia demo",
+    periodStart: todayDateKey,
+    periodEnd,
+    notes: "Demo: mensualidad fundadores pagada para mostrar control cobrable.",
+  });
+  const profitability = services.getProfitabilityReport({ period: "today", branch });
+  const health = services.getSupportHealthReport({ branch });
+
+  return {
+    paymentBundle,
+    profitability,
+    health,
+  };
+}
+
+function writeDemoReport({ dbPath, reportPath, businessName, slug, branch, activity, commercial }) {
+  const totals = commercial.profitability?.totals || {};
+  const inventory = commercial.profitability?.inventory || {};
+  const subscription = commercial.paymentBundle?.subscription || {};
+  const health = commercial.health?.semaphore || {};
   const content = `# Axentra POS Demo
 
-Demo generada para mostrar caja, inventario, fiado, cortes y administracion sin datos reales.
+Demo generada para mostrar caja, inventario, fiado, cortes, rentabilidad, salud y suscripcion sin datos reales.
 
 ## Arranque local
 
@@ -290,13 +320,22 @@ URL: http://localhost:3100
 - Fiado demo: ticket ${activity.sales[2]?.ticketNumber || ""}
 - Abono demo: ${activity.creditPayment?.amount || 0}
 - Corte demo: evento ${activity.quickCut?.eventId || ""}
+- Suscripcion demo: ${subscription.effectiveStatus || "sin estado"} / ${subscription.planCode || ""}
+- Pago mensual demo: ${commercial.paymentBundle?.payment?.amount || 0}
+- Utilidad bruta demo: ${totals.grossProfit || 0}
+- Margen demo: ${totals.marginPercent || 0}%
+- Productos sin costo: ${inventory.missingCostProductsCount || 0}
+- Salud demo: ${health.status || "sin lectura"}
 
 ## Uso recomendado
 
 1. Entrar como cajero y hacer una venta rapida.
 2. Entrar a admin y mostrar ventas, inventario y fiado.
-3. Mostrar el corte parcial ya sembrado.
-4. Reiniciar la demo con \`npm.cmd run seed:demo -- --reset\` cuando quieras limpiarla.
+3. Abrir Resumen admin y mostrar utilidad accionable.
+4. Mostrar el semaforo de salud y la suscripcion pagada.
+5. Mostrar el corte parcial ya sembrado.
+6. Cerrar con instalacion + mensualidad + soporte limitado.
+7. Reiniciar la demo con \`npm.cmd run seed:demo -- --reset\` cuando quieras limpiarla.
 `;
 
   fs.writeFileSync(reportPath, content, "utf8");
@@ -345,7 +384,8 @@ async function main() {
 
   setDemoCredentials({ ownerAuth, adminAuth, services, branch });
   const activity = seedDemoActivity({ db, services, branch });
-  writeDemoReport({ dbPath, reportPath, businessName, slug, branch, activity });
+  const commercial = seedDemoCommercialLayer({ services, branch });
+  writeDemoReport({ dbPath, reportPath, businessName, slug, branch, activity, commercial });
 
   console.log("Demo Axentra POS lista.");
   console.log(`DB: ${dbPath}`);

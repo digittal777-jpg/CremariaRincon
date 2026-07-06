@@ -77,6 +77,30 @@ function isRouteSimpleProduct(product) {
     && safeProduct.allowDecimals === false;
 }
 
+function parseItemModalDecimal(value, fallback = 0) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : fallback;
+  }
+
+  const normalized = String(value ?? "")
+    .trim()
+    .replace(",", ".");
+  if (!normalized) {
+    return fallback;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function roundItemModalMoney(value, fallback = 0) {
+  return roundMoney(parseItemModalDecimal(value, fallback));
+}
+
+function roundItemModalStock(value, fallback = 0) {
+  return roundStock(parseItemModalDecimal(value, fallback));
+}
+
 function normalizeUnitPriceValue(value, fallback = 0) {
   const normalized = roundMoney(value || fallback);
   if (normalized > 0) {
@@ -88,8 +112,20 @@ function normalizeUnitPriceValue(value, fallback = 0) {
 
 function buildCartItem(product, values = {}) {
   const safeProduct = getEditableProductContext(product);
-  const quantity = normalizeQuantityToStep(values.quantity, safeProduct);
   const unitPrice = normalizeUnitPriceValue(values.unitPrice, safeProduct.price);
+  const hasExplicitLineTotal = values.lineTotal !== undefined && values.lineTotal !== null;
+  const lineTotal = hasExplicitLineTotal
+    ? roundMoney(values.lineTotal)
+    : null;
+  const quantity = hasExplicitLineTotal && safeProduct.allowDecimals !== false
+    ? roundStock(Math.max(
+        parseItemModalDecimal(
+          values.quantity ?? (unitPrice > 0 ? lineTotal / unitPrice : getProductMin(safeProduct)),
+          0,
+        ),
+        0.001,
+      ))
+    : normalizeQuantityToStep(values.quantity, safeProduct);
   return {
     productId: safeProduct.id,
     name: safeProduct.name,
@@ -98,7 +134,7 @@ function buildCartItem(product, values = {}) {
     unit: safeProduct.unit,
     quantity,
     unitPrice,
-    lineTotal: roundMoney(values.lineTotal ?? quantity * unitPrice),
+    lineTotal: hasExplicitLineTotal ? lineTotal : roundMoney(quantity * unitPrice),
     allowDecimals: safeProduct.allowDecimals,
     unitStep: getProductStep(safeProduct),
     baseUnitPrice: roundMoney(safeProduct.price),
@@ -148,9 +184,9 @@ function syncLineDraftFromUnitPrice(product, draft = {}, editSource = ITEM_MODAL
 
 function readItemModalDraft() {
   return {
-    quantity: refs.itemQuantity?.value || 0,
-    unitPrice: refs.itemUnitPrice?.value || 0,
-    lineTotal: refs.itemTotal?.value || 0,
+    quantity: parseItemModalDecimal(refs.itemQuantity?.value, 0),
+    unitPrice: parseItemModalDecimal(refs.itemUnitPrice?.value, 0),
+    lineTotal: parseItemModalDecimal(refs.itemTotal?.value, 0),
   };
 }
 
@@ -335,8 +371,11 @@ function openItemModal(product, options = {}) {
 
   const safeProduct = getEditableProductContext(product);
   const cartIndex = Number.isInteger(options.cartIndex) ? options.cartIndex : null;
+  const defaultEditSource = safeProduct.allowDecimals === false
+    ? ITEM_MODAL_EDIT_SOURCE.QUANTITY
+    : ITEM_MODAL_EDIT_SOURCE.TOTAL;
   const editSource = options.editSource || (
-    cartIndex !== null ? ITEM_MODAL_EDIT_SOURCE.TOTAL : ITEM_MODAL_EDIT_SOURCE.QUANTITY
+    cartIndex !== null ? ITEM_MODAL_EDIT_SOURCE.TOTAL : defaultEditSource
   );
   const quantity = options.quantity ?? getProductMin(safeProduct);
   const unitPrice = options.unitPrice ?? safeProduct.price;
@@ -412,9 +451,9 @@ function updateItemRouteDecisionState() {
   }
 
   const product = state.currentProduct;
-  const quantity = roundStock(refs.itemQuantity?.value || 0);
-  const lineTotal = roundMoney(refs.itemTotal?.value || 0);
-  const unitPrice = roundMoney(refs.itemUnitPrice?.value || product?.price || 0);
+  const quantity = roundItemModalStock(refs.itemQuantity?.value, 0);
+  const lineTotal = roundItemModalMoney(refs.itemTotal?.value, 0);
+  const unitPrice = roundItemModalMoney(refs.itemUnitPrice?.value, product?.price || 0);
   refs.itemRouteConfirmButton.disabled = !(
     product
     && quantity > 0
@@ -486,7 +525,7 @@ function syncItemQuantityFromTotal() {
 
   setItemModalEditSource(ITEM_MODAL_EDIT_SOURCE.TOTAL);
   const rawValue = String(refs.itemTotal.value || "").trim();
-  const parsedValue = Number(rawValue);
+  const parsedValue = parseItemModalDecimal(rawValue, NaN);
   if (!Number.isFinite(parsedValue)) {
     return;
   }
@@ -520,7 +559,7 @@ function finalizeItemTotalInput() {
     return;
   }
 
-  const lineTotal = roundMoney(refs.itemTotal.value);
+  const lineTotal = roundItemModalMoney(refs.itemTotal.value);
   if (lineTotal <= 0) {
     applyItemModalDraft(
       syncLineDraftFromTotal(state.currentProduct, {
@@ -604,9 +643,9 @@ function addCurrentProductToCart() {
     return;
   }
 
-  const quantity = roundStock(refs.itemQuantity.value);
-  const lineTotal = roundMoney(refs.itemTotal.value);
-  const unitPrice = roundMoney(refs.itemUnitPrice.value || product.price);
+  const quantity = roundItemModalStock(refs.itemQuantity.value);
+  const lineTotal = roundItemModalMoney(refs.itemTotal.value);
+  const unitPrice = roundItemModalMoney(refs.itemUnitPrice.value, product.price);
 
   if (quantity <= 0 || lineTotal <= 0 || unitPrice <= 0) {
     showToast("Captura una cantidad y un monto validos.", "error");
@@ -1782,7 +1821,6 @@ async function saveRegisterAction() {
   } catch (error) {
     if (isNetworkError(error)) {
       const offlineEvent = addOfflineRegisterEvent({
-        cashierToken: state.cashier.token,
         clientEventId: payload.clientEventId,
         eventType: state.register.mode,
         shift: payload.shift,

@@ -293,24 +293,24 @@
         </div>
 
         <div class="modal-body">
-          <label class="field">
+          <label class="field item-total-field">
+            <span>Total de la linea</span>
+            <input id="item-total" class="item-total-input" type="text" inputmode="decimal" enterkeyhint="done" pattern="[0-9]*[.,]?[0-9]*" autocomplete="off" spellcheck="false" data-touch-guard="true" />
+          </label>
+
+          <label class="field item-unit-price-field">
+            <span>Precio por unidad/kg (manual o mayoreo)</span>
+            <input id="item-unit-price" type="text" inputmode="decimal" enterkeyhint="done" pattern="[0-9]*[.,]?[0-9]*" autocomplete="off" spellcheck="false" data-touch-guard="true" />
+          </label>
+
+          <label class="field item-quantity-field">
             <span>Cantidad</span>
             <div class="stepper-wrap">
               <button class="stepper-button" data-step="-1" type="button">-</button>
-              <input id="item-quantity" type="number" min="0.001" step="0.25" inputmode="decimal" data-touch-guard="true" />
+              <input id="item-quantity" type="text" min="0.001" step="0.25" inputmode="decimal" enterkeyhint="done" pattern="[0-9]*[.,]?[0-9]*" autocomplete="off" spellcheck="false" data-touch-guard="true" />
               <button class="stepper-button" data-step="1" type="button">+</button>
             </div>
             <div class="quick-quantity-row" id="item-quick-quantities"></div>
-          </label>
-
-          <label class="field">
-            <span>Total de la linea</span>
-            <input id="item-total" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-touch-guard="true" />
-          </label>
-
-          <label class="field">
-            <span>Precio por unidad/kg (manual o mayoreo)</span>
-            <input id="item-unit-price" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-touch-guard="true" />
           </label>
           <p class="modal-note" id="item-pricing-hint">
             Si capturas el total primero, luego puedes ajustar el precio/kg y se recalculara la cantidad sin mover el total.
@@ -987,7 +987,7 @@
     </div>
 
     <div class="modal-shell" id="admin-modal">
-      <div class="modal-card admin-card">
+      <div class="modal-card admin-card" id="admin-card">
         <div class="modal-head admin-modal-head">
           <div class="admin-modal-intro">
             <p class="eyebrow">Administracion</p>
@@ -1089,9 +1089,18 @@
             </div>
           </section>
 
+          <nav class="admin-section-nav" id="admin-section-nav" aria-label="Secciones admin">
+            <button class="admin-section-tab is-active" data-admin-section-tab="overview" type="button">Resumen</button>
+            <button class="admin-section-tab" data-admin-section-tab="inventory" type="button">Inventario</button>
+            <button class="admin-section-tab" data-admin-section-tab="operations" type="button">Operacion</button>
+            <button class="admin-section-tab" data-admin-section-tab="closures" type="button">Cortes</button>
+            <button class="admin-section-tab" data-admin-section-tab="team" type="button">Equipo</button>
+            <button class="admin-section-tab" data-admin-section-tab="config" type="button">Config</button>
+          </nav>
+
           <div class="admin-layout">
             <div class="admin-primary-column">
-              <section class="admin-records-panel admin-merchandise-panel" data-module="merchandise_requests" data-admin-capability="merchandise_requests">
+              <section class="admin-records-panel admin-merchandise-panel" data-admin-section="operations" data-module="merchandise_requests" data-admin-capability="merchandise_requests">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Solicitudes</p>
@@ -1102,7 +1111,7 @@
                 <div class="admin-record-list" id="admin-merchandise-requests-list"></div>
               </section>
 
-              <section class="admin-records-panel admin-weighted-panel" data-module="weighted_audit" data-admin-capability="weighted_audit">
+              <section class="admin-records-panel admin-weighted-panel" data-admin-section="closures" data-module="weighted_audit" data-admin-capability="weighted_audit">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Pesado</p>
@@ -1164,7 +1173,7 @@
                 </div>
               </section>
 
-              <section class="admin-records-panel period-closures-panel" data-admin-capability="backups">
+              <section class="admin-records-panel period-closures-panel" data-admin-section="closures" data-admin-capability="backups">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Cierre oficial</p>
@@ -1218,7 +1227,7 @@
                 </div>
               </section>
 
-              <section class="panel inventory-panel admin-inventory-panel" data-admin-capability="inventory">
+              <section class="panel inventory-panel admin-inventory-panel" data-admin-section="inventory" data-admin-capability="inventory">
                 <div class="panel-head">
                   <div>
                     <p class="eyebrow">Inventario</p>
@@ -1234,7 +1243,44 @@
                   </div>
                 </div>
 
-                <div class="admin-product-create-form">
+                <div class="admin-inventory-control-bar">
+                  <div class="admin-inventory-mode-bar" id="admin-inventory-mode-bar" role="group" aria-label="Modo de inventario">
+                    <button class="admin-inventory-mode-button active" data-inventory-mode="movement" type="button">
+                      Movimientos
+                    </button>
+                    <button class="admin-inventory-mode-button" data-inventory-mode="edit" type="button">
+                      Editar productos
+                    </button>
+                  </div>
+
+                  <div class="admin-inventory-movement-panel" id="admin-inventory-movement-panel">
+                    <button class="primary-button" id="open-inventory-receive-button" type="button">
+                      Entrada
+                    </button>
+                    <button class="secondary-button" id="open-inventory-return-button" type="button">
+                      Salida
+                    </button>
+                    <button class="ghost-button" id="open-inventory-count-button" type="button">
+                      Conteo / correccion
+                    </button>
+                  </div>
+
+                  <div class="admin-inventory-filter-bar" id="admin-inventory-filter-bar" hidden>
+                    <label class="field admin-inventory-search-field">
+                      <span>Buscar producto</span>
+                      <input id="admin-inventory-search" type="search" placeholder="Nombre, SKU, marca, proveedor..." autocomplete="off" />
+                    </label>
+                    <div class="admin-inventory-filter-chips" id="admin-inventory-filter-chips" role="group" aria-label="Filtros de inventario">
+                      <button class="admin-inventory-filter-chip active" data-inventory-filter="all" type="button">Todos</button>
+                      <button class="admin-inventory-filter-chip" data-inventory-filter="low" type="button">Bajos</button>
+                      <button class="admin-inventory-filter-chip" data-inventory-filter="negative" type="button">Negativos</button>
+                      <button class="admin-inventory-filter-chip" data-inventory-filter="uncounted" type="button">Sin conteo</button>
+                      <button class="admin-inventory-filter-chip" data-inventory-filter="inactive" type="button">Inactivos</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="admin-product-create-form" id="admin-product-create-form">
                   <label class="field">
                     <span>Nombre</span>
                     <input id="admin-new-product-name" type="text" maxlength="80" placeholder="Ej. Jamon de puerco" />
@@ -1294,7 +1340,7 @@
                 </div>
 
                 <p class="admin-table-hint">
-                  Desplaza horizontalmente si necesitas ver todos los campos o comparar sucursales completas.
+                  En computadora puedes revisar tabla completa; en celular se muestra como tarjetas editables.
                 </p>
 
                 <div class="inventory-table-wrap" id="admin-inventory-wrap" hidden>
@@ -1364,12 +1410,13 @@
                       </div>
                     </div>
                   </div>
+                  <div class="inventory-card-list" id="inventory-card-list"></div>
                 </div>
               </section>
             </div>
 
             <aside class="admin-secondary-column">
-              <section class="admin-summary-panel admin-overview-panel">
+              <section class="admin-summary-panel admin-overview-panel" data-admin-section="overview">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Resumen</p>
@@ -1382,7 +1429,137 @@
                 <div class="shift-chips admin-shift-chips" id="admin-shift-summary"></div>
               </section>
 
-              <section class="admin-metrics-panel admin-performance-panel">
+              <section class="admin-summary-panel admin-profitability-panel" data-admin-section="overview" data-admin-capability="support_tools">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Rentabilidad</p>
+                    <h2>Utilidad accionable</h2>
+                  </div>
+                  <span class="small-pill" id="admin-profitability-status">Sin reporte</span>
+                </div>
+
+                <div class="admin-cashier-form admin-profitability-toolbar">
+                  <label class="field">
+                    <span>Periodo</span>
+                    <select id="admin-profitability-period">
+                      <option value="today">Dia</option>
+                      <option value="week">Semana</option>
+                      <option value="month">Mes</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Fecha ancla</span>
+                    <input id="admin-profitability-date" type="date" />
+                  </label>
+                  <button class="secondary-button compact-button" id="refresh-admin-profitability-button" type="button">
+                    Actualizar
+                  </button>
+                </div>
+
+                <div class="admin-summary-grid" id="admin-profitability-summary"></div>
+                <div class="admin-action-list" id="admin-profitability-actions"></div>
+                <div class="admin-profitability-lists">
+                  <div class="admin-record-list" id="admin-profitability-low-margin"></div>
+                  <div class="admin-record-list" id="admin-profitability-missing-cost"></div>
+                </div>
+              </section>
+
+              <section class="admin-summary-panel admin-health-panel" data-admin-section="overview" data-admin-capability="support_tools">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Salud</p>
+                    <h2>Semaforo cliente</h2>
+                  </div>
+                  <span class="small-pill" id="admin-health-status">Sin lectura</span>
+                </div>
+                <div class="admin-health-banner" id="admin-health-summary"></div>
+                <div class="admin-action-list" id="admin-health-reasons"></div>
+                <div class="admin-action-list" id="admin-health-actions"></div>
+              </section>
+
+              <section class="admin-config-panel admin-subscription-panel" data-admin-section="overview" data-admin-capability="support_tools">
+                <div class="panel-head admin-subhead">
+                  <div>
+                    <p class="eyebrow">Suscripcion</p>
+                    <h2>Mensualidad y pagos</h2>
+                  </div>
+                  <span class="small-pill" id="admin-subscription-status">Sin estado</span>
+                </div>
+
+                <div class="admin-summary-grid" id="admin-subscription-summary"></div>
+
+                <div class="admin-subscription-form" id="admin-subscription-panel">
+                  <label class="field">
+                    <span>Plan</span>
+                    <input id="admin-subscription-plan" type="text" maxlength="48" />
+                  </label>
+                  <label class="field">
+                    <span>Estado</span>
+                    <select id="admin-subscription-state">
+                      <option value="trial">trial</option>
+                      <option value="active">active</option>
+                      <option value="overdue">overdue</option>
+                      <option value="suspended">suspended</option>
+                      <option value="cancelled">cancelled</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Mensualidad</span>
+                    <input id="admin-subscription-amount" type="number" min="0" step="0.01" />
+                  </label>
+                  <label class="field">
+                    <span>Fecha corte</span>
+                    <input id="admin-subscription-period-end" type="date" />
+                  </label>
+                  <label class="field">
+                    <span>Gracia hasta</span>
+                    <input id="admin-subscription-grace" type="date" />
+                  </label>
+                  <label class="field admin-subscription-notes">
+                    <span>Nota comercial</span>
+                    <textarea id="admin-subscription-notes" rows="2"></textarea>
+                  </label>
+                  <button class="secondary-button compact-button" id="sync-admin-subscription-button" type="button">
+                    Sincronizar central
+                  </button>
+                  <button class="secondary-button compact-button" id="sync-admin-control-config-button" type="button">
+                    Sincronizar configuracion
+                  </button>
+                  <button class="secondary-button compact-button" id="save-admin-subscription-button" type="button">
+                    Guardar estado
+                  </button>
+                </div>
+
+                <div class="admin-subscription-form admin-subscription-payment-form" id="admin-subscription-payment-form">
+                  <label class="field">
+                    <span>Pago</span>
+                    <input id="admin-subscription-payment-amount" type="number" min="0.01" step="0.01" />
+                  </label>
+                  <label class="field">
+                    <span>Metodo</span>
+                    <input id="admin-subscription-payment-method" type="text" maxlength="60" placeholder="Transferencia" />
+                  </label>
+                  <label class="field">
+                    <span>Desde</span>
+                    <input id="admin-subscription-payment-start" type="date" />
+                  </label>
+                  <label class="field">
+                    <span>Hasta</span>
+                    <input id="admin-subscription-payment-end" type="date" />
+                  </label>
+                  <label class="field admin-subscription-notes">
+                    <span>Nota pago</span>
+                    <textarea id="admin-subscription-payment-notes" rows="2"></textarea>
+                  </label>
+                  <button class="primary-button compact-button" id="record-admin-subscription-payment-button" type="button">
+                    Registrar pago
+                  </button>
+                </div>
+
+                <div class="admin-record-list admin-subscription-history" id="admin-subscription-payments"></div>
+              </section>
+
+              <section class="admin-metrics-panel admin-performance-panel" data-admin-section="overview">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Metricas</p>
@@ -1442,7 +1619,7 @@
                 </div>
               </section>
 
-              <section class="admin-cashiers-panel admin-side-panel" data-admin-capability="branches">
+              <section class="admin-cashiers-panel admin-side-panel" data-admin-section="team" data-admin-capability="branches">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Sucursales</p>
@@ -1488,7 +1665,7 @@
                 <div class="admin-record-list cashier-record-list" id="admin-branches-list"></div>
               </section>
 
-              <section class="admin-cashiers-panel admin-side-panel" data-admin-capability="cashiers">
+              <section class="admin-cashiers-panel admin-side-panel" data-admin-section="team" data-admin-capability="cashiers">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Accesos</p>
@@ -1523,7 +1700,7 @@
                 <div class="admin-record-list cashier-record-list" id="admin-cashiers-list"></div>
               </section>
 
-              <section class="admin-config-panel admin-side-panel" data-admin-capability="business_config">
+              <section class="admin-config-panel admin-side-panel" data-admin-section="config" data-admin-capability="business_config">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Configuraciones</p>
@@ -1634,7 +1811,7 @@
                 </div>
               </section>
 
-              <section class="admin-records-panel admin-audit-log-panel" data-admin-capability="audit_log">
+              <section class="admin-records-panel admin-audit-log-panel" data-admin-section="config" data-admin-capability="audit_log">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Bitacora</p>
@@ -1644,7 +1821,7 @@
                 <div class="admin-record-list" id="admin-audit-log-list"></div>
               </section>
 
-              <section class="admin-metrics-panel admin-dev-panel" data-admin-capability="support_tools">
+              <section class="admin-metrics-panel admin-dev-panel" data-admin-section="config" data-admin-capability="support_tools">
                 <div class="panel-head admin-subhead">
                   <div>
                     <p class="eyebrow">Dev</p>
@@ -1690,7 +1867,7 @@
             </aside>
           </div>
 
-          <section class="admin-quick-edit-shell" data-admin-capability="quick_edit">
+          <section class="admin-quick-edit-shell" data-admin-section="operations" data-admin-capability="quick_edit">
             <div class="panel-head admin-subhead admin-quick-edit-head">
               <div>
                 <p class="eyebrow">Edicion rapida</p>
@@ -1911,6 +2088,13 @@
             <button class="secondary-button" id="apply-owner-template-button" type="button">
               Aplicar plantilla completa
             </button>
+          </div>
+
+          <div class="admin-config-list-block owner-operation-block">
+            <h3>Comandos owner del POS</h3>
+            <div id="owner-operation-guide" class="owner-operation-guide">
+              <div class="empty-state">Cargando comandos owner...</div>
+            </div>
           </div>
         </div>
 

@@ -58,6 +58,22 @@ async function writeOfflineRecord(key, value) {
   });
 }
 
+async function deleteOfflineRecord(key) {
+  const db = await openOfflineDb();
+  if (!db) {
+    return false;
+  }
+
+  return new Promise((resolve) => {
+    const transaction = db.transaction(OFFLINE_DB_STORE, "readwrite");
+    transaction.objectStore(OFFLINE_DB_STORE).delete(key);
+
+    transaction.oncomplete = () => resolve(true);
+    transaction.onerror = () => resolve(false);
+    transaction.onabort = () => resolve(false);
+  });
+}
+
 function readStorageJson(key, fallbackValue = null) {
   try {
     const rawValue = localStorage.getItem(key);
@@ -90,6 +106,55 @@ function writeStorageText(key, value) {
   } catch (_error) {
     // Ignora errores de almacenamiento local para no bloquear la caja.
   }
+}
+
+function deleteStorageText(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch (_error) {
+    // Ignora errores de almacenamiento local para no bloquear la caja.
+  }
+}
+
+function readSessionStorageText(key, fallbackValue = "") {
+  try {
+    if (typeof sessionStorage === "undefined") {
+      return fallbackValue;
+    }
+    const rawValue = sessionStorage.getItem(key);
+    return rawValue ?? fallbackValue;
+  } catch (_error) {
+    return fallbackValue;
+  }
+}
+
+function writeSessionStorageText(key, value) {
+  try {
+    if (typeof sessionStorage === "undefined") {
+      return false;
+    }
+    sessionStorage.setItem(key, String(value));
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function deleteSessionStorageText(key) {
+  try {
+    if (typeof sessionStorage === "undefined") {
+      return false;
+    }
+    sessionStorage.removeItem(key);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function clearPersistedText(key) {
+  deleteStorageText(key);
+  void deleteOfflineRecord(key);
 }
 
 async function readPersistedJson(key, fallbackValue = null) {
@@ -248,8 +313,18 @@ function canPersistPreparedSnapshot(snapshot) {
   return isCashierPreparedSnapshot(snapshot);
 }
 
+function buildSnapshotCacheViewForStorage(snapshot) {
+  return canPersistPreparedSnapshot(snapshot)
+    ? snapshot
+    : buildPublicSnapshotCacheView(snapshot);
+}
+
 function saveSnapshot(snapshot, options = {}) {
-  persistJsonDeferred(STORAGE_KEYS.snapshot, snapshot, 350);
+  persistJsonDeferred(
+    STORAGE_KEYS.snapshot,
+    buildSnapshotCacheViewForStorage(snapshot),
+    350,
+  );
 
   const snapshotBranch = String(snapshot?.store?.currentBranch || "");
   if (
@@ -277,7 +352,17 @@ function saveSnapshot(snapshot, options = {}) {
 }
 
 async function restoreSnapshot() {
-  return readPersistedJson(STORAGE_KEYS.snapshot, null);
+  const restoredSnapshot = await readPersistedJson(STORAGE_KEYS.snapshot, null);
+  if (!restoredSnapshot || typeof restoredSnapshot !== "object") {
+    return null;
+  }
+
+  const sanitizedSnapshot = buildSnapshotCacheViewForStorage(restoredSnapshot);
+  if (!canPersistPreparedSnapshot(restoredSnapshot)) {
+    persistJson(STORAGE_KEYS.snapshot, sanitizedSnapshot);
+  }
+
+  return sanitizedSnapshot;
 }
 
 async function restorePreparedSnapshot(branch) {
@@ -490,6 +575,10 @@ function upsertReceivablesCacheCustomerDetail(branch = "", customer = null) {
 }
 
 function saveQueue() {
+  state.pendingQueue = (Array.isArray(state.pendingQueue) ? state.pendingQueue : []).map((operation) =>
+    typeof normalizeQueuedOperation === "function"
+      ? normalizeQueuedOperation(operation)
+      : operation);
   persistJson(STORAGE_KEYS.queue, state.pendingQueue);
   if (typeof syncOfflineSalesAuditWithQueue === "function") {
     syncOfflineSalesAuditWithQueue();
@@ -1231,20 +1320,41 @@ async function restorePreferences() {
 }
 
 function persistCashierSession() {
-  persistText(
-    STORAGE_KEYS.cashierSession,
-    JSON.stringify({
-      id: state.cashier.id,
-      token: state.cashier.token,
-      name: state.cashier.name,
-      branch: state.cashier.branch,
-      authenticated: state.cashier.authenticated,
-    }),
+  const hasActiveSession = Boolean(
+    state.cashier.authenticated
+    && state.cashier.token
+    && state.cashier.name
+    && state.cashier.branch,
   );
+
+  if (hasActiveSession) {
+    writeSessionStorageText(
+      STORAGE_KEYS.cashierSession,
+      JSON.stringify({
+        id: state.cashier.id,
+        token: state.cashier.token,
+        name: state.cashier.name,
+        branch: state.cashier.branch,
+        authenticated: state.cashier.authenticated,
+      }),
+    );
+  } else {
+    deleteSessionStorageText(STORAGE_KEYS.cashierSession);
+  }
+
+  clearPersistedText(STORAGE_KEYS.cashierSession);
 }
 
 async function restoreCashierSession() {
-  const rawValue = await readPersistedText(STORAGE_KEYS.cashierSession, "");
+  let rawValue = readSessionStorageText(STORAGE_KEYS.cashierSession, "");
+  if (!rawValue) {
+    const legacyValue = await readPersistedText(STORAGE_KEYS.cashierSession, "");
+    if (legacyValue) {
+      rawValue = legacyValue;
+      writeSessionStorageText(STORAGE_KEYS.cashierSession, legacyValue);
+    }
+  }
+  clearPersistedText(STORAGE_KEYS.cashierSession);
   if (!rawValue) {
     return;
   }
@@ -1261,18 +1371,36 @@ async function restoreCashierSession() {
       && parsed.name
       && parsed.branch,
     );
+    if (!state.cashier.authenticated) {
+      deleteSessionStorageText(STORAGE_KEYS.cashierSession);
+    }
   } catch (_error) {
     state.cashier.id = null;
     state.cashier.token = "";
     state.cashier.name = "";
     state.cashier.branch = "";
     state.cashier.authenticated = false;
+    deleteSessionStorageText(STORAGE_KEYS.cashierSession);
   }
 }
 
 // === Persistencia de eventos de caja (cortes) ===
 
+function sanitizeOfflineRegisterEvent(event = {}) {
+  const sanitizedEvent =
+    event && typeof event === "object" && !Array.isArray(event)
+      ? { ...event }
+      : {};
+  delete sanitizedEvent.cashierToken;
+  return sanitizedEvent;
+}
+
 function saveRegisterEvents() {
+  state.register.events = (Array.isArray(state.register.events) ? state.register.events : [])
+    .map((event) =>
+      typeof sanitizeOfflineRegisterEvent === "function"
+        ? sanitizeOfflineRegisterEvent(event)
+        : event);
   persistJson(STORAGE_KEYS.registerEvents, state.register.events);
   if (typeof scheduleClientSyncHealthReport === "function" && state.online) {
     scheduleClientSyncHealthReport();
@@ -1280,7 +1408,13 @@ function saveRegisterEvents() {
 }
 
 async function restoreRegisterEvents() {
-  state.register.events = await readPersistedJson(STORAGE_KEYS.registerEvents, []);
+  const restoredEvents = await readPersistedJson(STORAGE_KEYS.registerEvents, []);
+  state.register.events = Array.isArray(restoredEvents)
+    ? restoredEvents.map((event) =>
+        typeof sanitizeOfflineRegisterEvent === "function"
+          ? sanitizeOfflineRegisterEvent(event)
+          : event)
+    : [];
 }
 
 // Agregar un evento de caja offline

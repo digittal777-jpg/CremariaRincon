@@ -1,9 +1,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 
 const Database = require("better-sqlite3");
 
@@ -11,6 +12,8 @@ const ROOT_DIR = path.resolve(__dirname, "..");
 const SEED_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "seed-business-template.js");
 const CLONE_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "clone-business.js");
 const DEMO_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "seed-demo-instance.js");
+const PROVISION_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "provision-client.js");
+const VALIDATE_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "validate-client.js");
 const WORKBOOK_PATH = path.join(ROOT_DIR, "Queseria El rincon V1.5.xlsx");
 const ABARROTES_WORKBOOK_PATH = path.join(ROOT_DIR, "catalogos", "abarrotes-base.xlsx");
 
@@ -20,6 +23,32 @@ function runNodeScript(scriptPath, args = [], options = {}) {
     env: options.env || process.env,
     encoding: "utf8",
     timeout: options.timeout || 120000,
+  });
+}
+
+function runNodeScriptAsync(scriptPath, args = [], options = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [scriptPath, ...args], {
+      cwd: ROOT_DIR,
+      env: options.env || process.env,
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill();
+    }, options.timeout || 120000);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (status) => {
+      clearTimeout(timeout);
+      resolve({ status, stdout, stderr });
+    });
   });
 }
 
@@ -218,6 +247,104 @@ test("clone-business rejects a missing workbook before creating the target folde
   }
 });
 
+test("validate-client rejects invalid public URLs", () => {
+  const result = runNodeScript(VALIDATE_SCRIPT_PATH, [
+    "--slug",
+    "cliente-demo",
+    "--url",
+    "no-es-url",
+  ]);
+
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stdout}\n${result.stderr}`, /URL debe ser absoluta/i);
+});
+
+test("validate-client rejects insecure remote HTTP URLs", () => {
+  const result = runNodeScript(VALIDATE_SCRIPT_PATH, [
+    "--slug",
+    "cliente-demo",
+    "--url",
+    "http://cliente-remoto.example",
+  ]);
+
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stdout}\n${result.stderr}`, /HTTPS fuera de localhost/i);
+});
+
+test("provision-client rejects insecure remote public URLs", () => {
+  const result = runNodeScript(PROVISION_SCRIPT_PATH, [
+    "--slug",
+    "cliente-demo",
+    "--name",
+    "Cliente Demo",
+    "--template",
+    "abarrotes",
+    "--catalog",
+    ABARROTES_WORKBOOK_PATH,
+    "--public-url",
+    "http://cliente-remoto.example",
+    "--plan-only",
+  ]);
+
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stdout}\n${result.stderr}`, /HTTPS fuera de localhost/i);
+});
+
+test("validate-client writes a private validation report for healthy endpoints", async (t) => {
+  let reportPath = "";
+  const server = http.createServer((request, response) => {
+    if (request.url === "/api/health") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (request.url === "/api/bootstrap") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ configured: true }));
+      return;
+    }
+    if (request.url === "/manifest.webmanifest") {
+      response.writeHead(200, { "Content-Type": "application/manifest+json" });
+      response.end(JSON.stringify({ name: "Demo" }));
+      return;
+    }
+    if (request.url === "/administracion") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      response.end("<html><body>Administracion admin</body></html>");
+      return;
+    }
+    response.writeHead(404, { "Content-Type": "text/plain" });
+    response.end("not found");
+  });
+
+  t.after(() => {
+    server.close();
+    if (reportPath) {
+      fs.rmSync(reportPath, { force: true });
+    }
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const result = await runNodeScriptAsync(VALIDATE_SCRIPT_PATH, [
+    "--slug",
+    "cliente-demo",
+    "--url",
+    `http://127.0.0.1:${port}`,
+  ]);
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Validacion aprobada/i);
+  const reportLine = result.stdout.split(/\r?\n/).find((line) => line.startsWith("Reporte:"));
+  assert.ok(reportLine);
+  reportPath = reportLine.replace("Reporte:", "").trim();
+  assert.equal(fs.existsSync(reportPath), true);
+  const report = fs.readFileSync(reportPath, "utf8");
+  assert.match(report, /estado: aprobada/i);
+  assert.match(report, /\| Health \| OK \| 200 \|/i);
+  assert.match(report, /\| Administracion \| OK \| 200 \|/i);
+});
+
 test("seed-business-template imports a non-empty catalog into a fresh database", (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "retail-base-seed-"));
   const dbPath = path.join(tempDir, "seed.sqlite");
@@ -320,6 +447,7 @@ test("seed-demo-instance creates a commercial demo with users and sample activit
     const creditSalesCount = Number(db.prepare("SELECT COUNT(*) AS count FROM sales WHERE payment_method = 'Fiado'").get()?.count || 0);
     const creditPaymentsCount = Number(db.prepare("SELECT COUNT(*) AS count FROM credit_payments").get()?.count || 0);
     const registerEventsCount = Number(db.prepare("SELECT COUNT(*) AS count FROM register_events").get()?.count || 0);
+    const servicePaymentCount = Number(db.prepare("SELECT COUNT(*) AS count FROM service_subscription_payments").get()?.count || 0);
     const ownerCount = Number(db.prepare("SELECT COUNT(*) AS count FROM app_settings WHERE key LIKE 'owner.%'").get()?.count || 0);
     const adminCount = Number(db.prepare("SELECT COUNT(*) AS count FROM app_settings WHERE key LIKE 'admin.%'").get()?.count || 0);
 
@@ -329,6 +457,7 @@ test("seed-demo-instance creates a commercial demo with users and sample activit
     assert.equal(creditSalesCount, 1);
     assert.equal(creditPaymentsCount, 1);
     assert.ok(registerEventsCount >= 2);
+    assert.equal(servicePaymentCount, 1);
     assert.ok(ownerCount >= 2);
     assert.ok(adminCount >= 2);
   } finally {

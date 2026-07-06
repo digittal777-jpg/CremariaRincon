@@ -5,6 +5,7 @@ const fs = require("node:fs");
 
 const express = require("express");
 const multer = require("multer");
+const proxyaddr = require("proxy-addr");
 const { Server } = require("socket.io");
 
 const {
@@ -12,10 +13,22 @@ const {
   ADMIN_SESSION_TTL_MS,
   ALLOWED_ORIGINS,
   BOOTSTRAP_TOKEN_HEADER_NAME,
+  CONTROL_CONFIG_POLL_MS,
   OWNER_SESSION_COOKIE_NAME,
   OWNER_SESSION_TTL_MS,
   PORT,
   POS_BOOTSTRAP_TOKEN,
+  POS_FORCE_HTTPS,
+  POS_HTTPS_CA_B64,
+  POS_HTTPS_CA_PATH,
+  POS_HTTPS_CERT_B64,
+  POS_HTTPS_CERT_PATH,
+  POS_HTTPS_KEY_B64,
+  POS_HTTPS_KEY_PATH,
+  POS_HSTS_MAX_AGE_SECONDS,
+  POS_HTTP_REDIRECT_PORT,
+  POS_PUBLIC_ORIGIN,
+  POS_TRUST_PROXY,
   ROOT_DIR,
   SESSION_COOKIE_SECURE,
 } = require("./config");
@@ -42,12 +55,46 @@ const {
 const { getSetting, setSetting } = require("./utils/settings");
 const { getSystemMetrics } = require("./admin/metrics");
 const {
+  createPrimaryServer,
+  createRedirectServer,
+  loadHttpsCredentials,
+} = require("./utils/httpsServer");
+const {
   notifyMerchandiseRequestCreated,
 } = require("./services/merchandiseRequestNotifications");
 
 const app = express();
-const server = http.createServer(app);
+const httpsCredentials = loadHttpsCredentials({
+  label: "POS HTTPS",
+  baseDir: ROOT_DIR,
+  certBase64: POS_HTTPS_CERT_B64,
+  certPath: POS_HTTPS_CERT_PATH,
+  keyBase64: POS_HTTPS_KEY_B64,
+  keyPath: POS_HTTPS_KEY_PATH,
+  caBase64: POS_HTTPS_CA_B64,
+  caPath: POS_HTTPS_CA_PATH,
+});
+if (POS_HTTP_REDIRECT_PORT > 0 && !httpsCredentials.enabled) {
+  throw new Error("POS_HTTP_REDIRECT_PORT requiere configurar certificado y llave HTTPS del POS.");
+}
+if (POS_HTTP_REDIRECT_PORT > 0 && POS_HTTP_REDIRECT_PORT === PORT) {
+  throw new Error("POS_HTTP_REDIRECT_PORT no puede usar el mismo puerto que PORT.");
+}
+const server = createPrimaryServer(app, httpsCredentials);
+const redirectServer = httpsCredentials.enabled && POS_HTTP_REDIRECT_PORT > 0
+  ? createRedirectServer({
+    publicOrigin: POS_PUBLIC_ORIGIN,
+    httpsPort: PORT,
+  })
+  : null;
 const io = new Server(server, {
+  allowRequest(request, callback) {
+    if (shouldRejectInsecureRequest(request)) {
+      callback("HTTPS requerido para Socket.IO.", false);
+      return;
+    }
+    callback(null, true);
+  },
   cors: {
     origin(origin, callback) {
       if (!origin || ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) {
@@ -70,6 +117,32 @@ const CLIENT_ERROR_REPORT_WINDOW_MS = 60 * 1000;
 const CLIENT_ERROR_REPORT_MAX_PER_WINDOW = 60;
 const CLIENT_ERROR_REPORT_BUCKET_LIMIT = 500;
 const clientErrorReportBuckets = new Map();
+function buildPosContentSecurityPolicy() {
+  const connectSources = POS_FORCE_HTTPS
+    ? ["'self'", "wss:", "https://fonts.googleapis.com", "https://fonts.gstatic.com"]
+    : ["'self'", "ws:", "wss:", "https://fonts.googleapis.com", "https://fonts.gstatic.com"];
+  const directives = [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'self'",
+    "object-src 'none'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: blob:",
+    `connect-src ${[...new Set(connectSources)].join(" ")}`,
+    "manifest-src 'self'",
+    "worker-src 'self' blob:",
+  ];
+  if (POS_FORCE_HTTPS) {
+    directives.push("upgrade-insecure-requests");
+    directives.push("block-all-mixed-content");
+  }
+  return directives.join("; ");
+}
+
+const POS_CONTENT_SECURITY_POLICY = buildPosContentSecurityPolicy();
 
 function pruneClientErrorReportBuckets(nowMs) {
   for (const [key, bucket] of clientErrorReportBuckets.entries()) {
@@ -471,11 +544,161 @@ function buildBusinessTemplateSummaries() {
   });
 }
 
+function getFirstForwardedProto(request) {
+  return String(request.headers["x-forwarded-proto"] || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .find(Boolean) || "";
+}
+
+function parseTrustProxySetting(value) {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return false;
+  }
+
+  const lowerText = text.toLowerCase();
+  if (["false", "no", "off"].includes(lowerText)) {
+    return false;
+  }
+  if (lowerText === "true") {
+    return true;
+  }
+  if (/^\d+$/.test(text)) {
+    return Number(text);
+  }
+
+  return text
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function createTrustProxyMatcher(setting) {
+  if (setting === false || setting === 0) {
+    return () => false;
+  }
+  if (setting === true || typeof setting === "number") {
+    throw new Error("usa true o hops numericos; captura proxies o CIDRs explicitos.");
+  }
+  const compiled = proxyaddr.compile(setting);
+  return (address) => {
+    if (!address) {
+      return false;
+    }
+    return compiled(address, 0);
+  };
+}
+
+function resolveTrustProxyConfiguration(rawValue, label) {
+  const setting = parseTrustProxySetting(rawValue);
+  try {
+    return {
+      trustProxySetting: setting,
+      isTrustedProxyAddress: createTrustProxyMatcher(setting),
+    };
+  } catch (error) {
+    console.warn(`${label} invalido; se desactiva trust proxy. ${error.message}`);
+    return {
+      trustProxySetting: false,
+      isTrustedProxyAddress: () => false,
+    };
+  }
+}
+
+const {
+  trustProxySetting: TRUST_PROXY_SETTING,
+  isTrustedProxyAddress,
+} = resolveTrustProxyConfiguration(POS_TRUST_PROXY, "POS_TRUST_PROXY");
+
+function normalizeNetworkValue(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .replace(/^::ffff:/, "");
+}
+
+function isLoopbackAddress(address) {
+  const normalizedAddress = normalizeNetworkValue(address);
+  return normalizedAddress === "::1"
+    || normalizedAddress === "localhost"
+    || normalizedAddress.startsWith("127.");
+}
+
+function isLoopbackRequest(request) {
+  return isLoopbackAddress(request.socket?.remoteAddress)
+    || isLoopbackAddress(request.socket?.localAddress);
+}
+
+function isTrustedProxyRequest(request) {
+  const remoteAddress = String(request.socket?.remoteAddress || request.connection?.remoteAddress || "").trim();
+  return Boolean(remoteAddress) && isTrustedProxyAddress(remoteAddress);
+}
+
+function isHttpsRequest(request) {
+  if (request.secure || request.socket?.encrypted) {
+    return true;
+  }
+  return isTrustedProxyRequest(request) && getFirstForwardedProto(request) === "https";
+}
+
+function getConfiguredHttpsOrigin(originValue) {
+  const value = String(originValue || "").trim();
+  if (!value) {
+    return "";
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" ? parsed.origin : "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function buildHttpsRedirectUrl(request) {
+  const publicOrigin = getConfiguredHttpsOrigin(POS_PUBLIC_ORIGIN);
+  if (!publicOrigin) {
+    return "";
+  }
+  return new URL(request.originalUrl || request.url || "/", publicOrigin).toString();
+}
+
+function shouldRejectInsecureRequest(request) {
+  return POS_FORCE_HTTPS
+    && !isHttpsRequest(request)
+    && !isLoopbackRequest(request);
+}
+
 function applySecurityHeaders(request, response, next) {
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("X-Frame-Options", "SAMEORIGIN");
   response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  response.setHeader("Content-Security-Policy", POS_CONTENT_SECURITY_POLICY);
+  response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  response.setHeader("Origin-Agent-Cluster", "?1");
+  response.setHeader("X-Permitted-Cross-Domain-Policies", "none");
+  if (isHttpsRequest(request) && POS_HSTS_MAX_AGE_SECONDS > 0) {
+    response.setHeader("Strict-Transport-Security", `max-age=${POS_HSTS_MAX_AGE_SECONDS}`);
+  }
+
+  if (shouldRejectInsecureRequest(request)) {
+    response.setHeader("Cache-Control", "no-store");
+    const redirectUrl = ["GET", "HEAD"].includes(String(request.method || "GET").toUpperCase()) && !request.path.startsWith("/api/")
+      ? buildHttpsRedirectUrl(request)
+      : "";
+    if (redirectUrl) {
+      response.redirect(308, redirectUrl);
+      return;
+    }
+    response.status(426).json({
+      message: "HTTPS requerido. Esta API no acepta HTTP fuera de localhost.",
+    });
+    return;
+  }
 
   const origin = String(request.headers.origin || "").trim();
   if (origin && ALLOWED_ORIGINS.length > 0) {
@@ -513,6 +736,83 @@ function broadcastSnapshot(snapshot = services.getDashboardSnapshot()) {
   io.emit("dashboard:snapshot", {
     branch: snapshot?.store?.currentBranch || null,
     generatedAt: snapshot?.generatedAt || nowIso(),
+  });
+}
+
+let controlPlaneConfigPollTimer = null;
+
+async function syncControlPlaneRuntimeConfig(reason = "poll") {
+  const status = services.getControlPlaneStatus();
+  if (!status.usable) {
+    return {
+      skipped: true,
+      reason: status.configured ? "invalid_config" : "not_configured",
+      message: status.error || "",
+    };
+  }
+
+  const result = await services.syncRuntimeConfigFromControlPlane();
+  const updatedKeys = Array.isArray(result?.runtimeConfig?.updatedKeys) ? result.runtimeConfig.updatedKeys : [];
+  const clearedKeys = Array.isArray(result?.runtimeConfig?.clearedKeys) ? result.runtimeConfig.clearedKeys : [];
+  if (updatedKeys.length || clearedKeys.length) {
+    console.warn(
+      `[control-plane] Variables runtime sincronizadas (${reason}). Reinicia el POS para aplicar: ${[...updatedKeys, ...clearedKeys].join(", ")}`,
+    );
+    services.reportSupportHealthToControlPlane({ branch: "all" }).catch((error) => {
+      console.warn(`[control-plane] No pude reportar salud despues de aplicar variables runtime (${reason}): ${error.message}`);
+    });
+  }
+  return result;
+}
+
+async function syncControlPlaneConfigAndBroadcast(reason = "poll") {
+  const status = services.getControlPlaneStatus();
+  if (!status.usable) {
+    return {
+      skipped: true,
+      reason: status.configured ? "invalid_config" : "not_configured",
+      message: status.error || "",
+    };
+  }
+
+  const result = await services.refreshControlPlaneConfigIfStale({
+    force: true,
+    silent: true,
+  });
+  if (result?.ownerConsole && result.changed) {
+    const snapshot = services.getDashboardSnapshot("all");
+    broadcastSnapshot(snapshot);
+    services.reportSupportHealthToControlPlane({ branch: "all" }).catch((error) => {
+      console.warn(`[control-plane] No pude reportar salud despues de aplicar config (${reason}): ${error.message}`);
+    });
+  }
+  return result;
+}
+
+function startControlPlanePolling() {
+  if (CONTROL_CONFIG_POLL_MS <= 0 || !services.getControlPlaneStatus().usable) {
+    return;
+  }
+  if (controlPlaneConfigPollTimer) {
+    return;
+  }
+
+  controlPlaneConfigPollTimer = setInterval(() => {
+    syncControlPlaneRuntimeConfig("poll").catch((error) => {
+      console.warn(`[control-plane] No pude sincronizar variables runtime: ${error.message}`);
+    });
+    syncControlPlaneConfigAndBroadcast("poll").catch((error) => {
+      console.warn(`[control-plane] No pude sincronizar configuracion central: ${error.message}`);
+    });
+  }, CONTROL_CONFIG_POLL_MS);
+  if (typeof controlPlaneConfigPollTimer.unref === "function") {
+    controlPlaneConfigPollTimer.unref();
+  }
+  syncControlPlaneRuntimeConfig("startup").catch((error) => {
+    console.warn(`[control-plane] No pude sincronizar variables runtime iniciales: ${error.message}`);
+  });
+  syncControlPlaneConfigAndBroadcast("startup").catch((error) => {
+    console.warn(`[control-plane] No pude sincronizar configuracion inicial: ${error.message}`);
   });
 }
 
@@ -572,7 +872,7 @@ function requireAdminCapability(capabilityCode) {
 }
 
 app.disable("x-powered-by");
-app.set("trust proxy", 1);
+app.set("trust proxy", TRUST_PROXY_SETTING);
 app.use(applySecurityHeaders);
 app.use(express.json({ limit: "1mb" }));
 
@@ -582,17 +882,30 @@ app.get("/manifest.webmanifest", (_request, response) => {
   response.send(JSON.stringify(buildManifestPayload()));
 });
 
-app.use(express.static(path.join(ROOT_DIR, "public")));
+app.use(express.static(path.join(ROOT_DIR, "public"), {
+  index: false,
+  setHeaders(response, filePath) {
+    if (path.basename(filePath).toLowerCase() === "index.html") {
+      response.setHeader("Cache-Control", "no-store");
+    }
+  },
+}));
 
-app.get("/administracion", (_request, response) => {
+function sendPosShell(_request, response) {
+  response.setHeader("Cache-Control", "no-store");
   response.sendFile(path.join(ROOT_DIR, "public", "index.html"));
-});
+}
+
+app.get("/", sendPosShell);
+
+app.get("/administracion", sendPosShell);
 
 app.get("/api/health", (_request, response) => {
   response.json({ ok: true, generatedAt: new Date().toISOString() });
 });
 
-app.get("/api/dashboard", requireAuthenticatedActor, (request, response) => {
+app.get("/api/dashboard", requireAuthenticatedActor, async (request, response) => {
+  await services.refreshControlPlaneConfigIfStale({ silent: true });
   const adminCapabilities = getAccessContextAdminCapabilities(request.accessContext);
   const branch = resolveRequestedBranch(request, request.accessContext, {
     allowAll: canAccessAdminWorkspace(request.accessContext, adminCapabilities),
@@ -604,39 +917,71 @@ app.get("/api/dashboard", requireAuthenticatedActor, (request, response) => {
   );
 });
 
-app.get("/api/bootstrap", (request, response) => {
-  const accessContext = getRequestAccessContext(request);
-  const adminCapabilities = getAccessContextAdminCapabilities(accessContext);
-  const branch = resolveRequestedBranch(request, accessContext, {
-    allowAll: canAccessAdminWorkspace(accessContext, adminCapabilities),
-  });
-  const includeInactiveInventory =
-    canAccessAdminWorkspace(accessContext, adminCapabilities)
-    && ["1", "true"].includes(String(request.query.includeInactiveInventory || "").toLowerCase());
+function attachBootstrapMetadata(snapshot, accessContext, adminCapabilities) {
+  snapshot.auth = buildBootstrapAuthState(accessContext, adminCapabilities);
+  snapshot.profile = snapshot.profile || snapshot.store || {};
+  snapshot.enabledModules = Array.isArray(snapshot.enabledModules) ? snapshot.enabledModules : [];
+  snapshot.categories = Array.isArray(snapshot.categories) ? snapshot.categories : [];
+  snapshot.units = Array.isArray(snapshot.units) ? snapshot.units : [];
+  snapshot.productAttributeDefinitions = Array.isArray(snapshot.productAttributeDefinitions)
+    ? snapshot.productAttributeDefinitions
+    : [];
+  snapshot.branding = snapshot.branding || snapshot.profile?.branding || snapshot.store?.branding || {};
+  snapshot.adminCapabilities = adminCapabilities;
+  return snapshot;
+}
 
+app.get("/api/bootstrap", async (request, response) => {
   try {
+    await services.refreshControlPlaneConfigIfStale({ silent: true });
+    const accessContext = getRequestAccessContext(request);
+    const adminCapabilities = getAccessContextAdminCapabilities(accessContext);
+    const branch = resolveRequestedBranch(request, accessContext, {
+      allowAll: canAccessAdminWorkspace(accessContext, adminCapabilities),
+    });
+    const includeInactiveInventory =
+      canAccessAdminWorkspace(accessContext, adminCapabilities)
+      && ["1", "true"].includes(String(request.query.includeInactiveInventory || "").toLowerCase());
     const snapshot = canReadPrivateDashboard(accessContext, adminCapabilities)
       ? services.getDashboardSnapshot(branch, {
           includeInventoryInactive: includeInactiveInventory,
         })
       : services.getPublicDashboardSnapshot(branch);
-    snapshot.auth = buildBootstrapAuthState(accessContext, adminCapabilities);
-    snapshot.profile = snapshot.profile || snapshot.store || {};
-    snapshot.enabledModules = Array.isArray(snapshot.enabledModules) ? snapshot.enabledModules : [];
-    snapshot.categories = Array.isArray(snapshot.categories) ? snapshot.categories : [];
-    snapshot.units = Array.isArray(snapshot.units) ? snapshot.units : [];
-    snapshot.productAttributeDefinitions = Array.isArray(snapshot.productAttributeDefinitions)
-      ? snapshot.productAttributeDefinitions
-      : [];
-    snapshot.branding = snapshot.branding || snapshot.profile?.branding || snapshot.store?.branding || {};
-    snapshot.adminCapabilities = adminCapabilities;
-
-    response.json(snapshot);
+    response.json(attachBootstrapMetadata(snapshot, accessContext, adminCapabilities));
   } catch (err) {
     console.error("Error en /api/bootstrap:", err);
     response.status(500).json({
       message: "Error interno al generar bootstrap",
       detail: err.message
+    });
+  }
+});
+
+app.get("/api/admin/bootstrap", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, async (request, response) => {
+  try {
+    await services.refreshControlPlaneConfigIfStale({ silent: true });
+    const accessContext = getRequestAccessContext(request);
+    const adminCapabilities = getAccessContextAdminCapabilities(accessContext);
+    if (!canAccessAdminWorkspace(accessContext, adminCapabilities)) {
+      response.status(403).json({ message: "Esta seccion del admin esta bloqueada por el owner." });
+      return;
+    }
+
+    const branch = resolveRequestedBranch(request, accessContext, { allowAll: true });
+    const includeInactiveInventory = ["1", "true"].includes(
+      String(request.query.includeInactiveInventory || "").toLowerCase(),
+    );
+    const snapshot = services.getDashboardSnapshot(branch, {
+      includeInventoryInactive: includeInactiveInventory,
+    });
+    response.json(attachBootstrapMetadata(snapshot, accessContext, adminCapabilities));
+  } catch (err) {
+    console.error("Error en /api/admin/bootstrap:", err);
+    response.status(500).json({
+      message: "Error interno al generar bootstrap admin",
+      detail: err.message,
     });
   }
 });
@@ -1300,6 +1645,68 @@ app.patch("/api/owner/config", (request, response, next) => {
   response.json(result);
 });
 
+app.patch("/api/owner/runtime-config", (request, response, next) => {
+  ownerAuth.requireOwnerAuth(request, response, next);
+}, (request, response, next) => {
+  try {
+    const result = services.saveOwnerRuntimeConfig(request.body || {});
+    services.logAdminAction({
+      actorType: "owner",
+      actorName: request.ownerSession?.username || ownerAuth.getStoredOwnerUsername(),
+      action: "owner_runtime_config_update",
+      entityType: "runtime_config",
+      entityId: result.sourcePathRelative || "pos-runtime-config",
+      payload: {
+        updatedKeys: result.updatedKeys,
+        clearedKeys: result.clearedKeys,
+        requiresRestart: result.requiresRestart,
+      },
+    });
+    response.json({
+      ...result,
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/owner/runtime-config/sync", (request, response, next) => {
+  ownerAuth.requireOwnerAuth(request, response, next);
+}, async (request, response, next) => {
+  try {
+    const result = await services.syncRuntimeConfigFromControlPlane();
+    let healthReport = null;
+    let healthReportError = null;
+    try {
+      healthReport = await services.reportSupportHealthToControlPlane({ branch: "all" });
+    } catch (error) {
+      healthReportError = error.message || "No pude reportar salud al owner-control.";
+    }
+    services.logAdminAction({
+      actorType: "owner",
+      actorName: request.ownerSession?.username || ownerAuth.getStoredOwnerUsername(),
+      action: "owner_runtime_config_sync",
+      entityType: "runtime_config",
+      entityId: result.runtimeConfig?.sourcePathRelative || "pos-runtime-config",
+      payload: {
+        updatedKeys: result.runtimeConfig?.updatedKeys || [],
+        clearedKeys: result.runtimeConfig?.clearedKeys || [],
+        requiresRestart: result.requiresRestart,
+      },
+    });
+    response.json({
+      ...result,
+      healthReport,
+      healthReportError,
+      operationGuide: services.getOwnerOperationGuide(),
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/owner/templates/:key/apply", (request, response, next) => {
   ownerAuth.requireOwnerAuth(request, response, next);
 }, async (request, response) => {
@@ -1382,6 +1789,7 @@ app.get("/api/admin/service-subscription", requireAdminOrOwnerAuth, requireAdmin
     response.json({
       subscription: services.getServiceSubscription(),
       payments: services.listServiceSubscriptionPayments(12),
+      controlPlane: services.getControlPlaneStatus(),
       generatedAt: nowIso(),
     });
   } catch (error) {
@@ -1389,7 +1797,81 @@ app.get("/api/admin/service-subscription", requireAdminOrOwnerAuth, requireAdmin
   }
 });
 
-app.patch("/api/admin/service-subscription", requireAdminOrOwnerAuth, requireAdminOrOwnerCapability("support_tools"), (request, response, next) => {
+app.post("/api/admin/service-subscription/sync", requireAdminOrOwnerAuth, requireAdminOrOwnerCapability("support_tools"), async (_request, response, next) => {
+  try {
+    response.json({
+      ...await services.syncServiceSubscriptionFromControlPlane(),
+      payments: services.listServiceSubscriptionPayments(12),
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/control-plane/config/sync", requireAdminOrOwnerAuth, requireAdminOrOwnerCapability("support_tools"), async (_request, response, next) => {
+  try {
+    const syncResult = await services.syncOwnerConsoleConfigFromControlPlane();
+    let healthReport = null;
+    let healthReportError = null;
+    try {
+      healthReport = await services.reportSupportHealthToControlPlane({ branch: "all" });
+    } catch (error) {
+      healthReportError = error.message || "No pude reportar salud al owner-control.";
+    }
+    const snapshot = services.getDashboardSnapshot("all");
+    broadcastSnapshot(snapshot);
+    response.json({
+      ...syncResult,
+      businessProfile: syncResult.ownerConsole.businessProfile,
+      enabledModules: syncResult.ownerConsole.enabledModules,
+      adminCapabilities: syncResult.ownerConsole.adminCapabilities,
+      healthReport,
+      healthReportError,
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/control-plane/runtime-config/sync", requireAdminOrOwnerAuth, requireAdminOrOwnerCapability("support_tools"), async (_request, response, next) => {
+  try {
+    const syncResult = await services.syncRuntimeConfigFromControlPlane();
+    let healthReport = null;
+    let healthReportError = null;
+    try {
+      healthReport = await services.reportSupportHealthToControlPlane({ branch: "all" });
+    } catch (error) {
+      healthReportError = error.message || "No pude reportar salud al owner-control.";
+    }
+    response.json({
+      ...syncResult,
+      healthReport,
+      healthReportError,
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/control-plane/health/report", requireAdminOrOwnerAuth, requireAdminOrOwnerCapability("support_tools"), async (request, response, next) => {
+  try {
+    response.json({
+      ...await services.reportSupportHealthToControlPlane({
+        branch: request.body?.branch || request.query.branch || "all",
+      }),
+      generatedAt: nowIso(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/admin/service-subscription", (request, response, next) => {
+  ownerAuth.requireOwnerAuth(request, response, next);
+}, (request, response, next) => {
   try {
     response.json({
       subscription: services.updateServiceSubscription(request.body || {}),
@@ -1400,7 +1882,9 @@ app.patch("/api/admin/service-subscription", requireAdminOrOwnerAuth, requireAdm
   }
 });
 
-app.post("/api/admin/service-subscription/payments", requireAdminOrOwnerAuth, requireAdminOrOwnerCapability("support_tools"), (request, response, next) => {
+app.post("/api/admin/service-subscription/payments", (request, response, next) => {
+  ownerAuth.requireOwnerAuth(request, response, next);
+}, (request, response, next) => {
   try {
     response.status(201).json({
       ...services.recordServiceSubscriptionPayment(request.body || {}),
@@ -1935,8 +2419,16 @@ app.post("/api/admin/cashiers/init-test", (request, response, next) => {
 
 app.post("/api/cashier/auth", (request, response) => {
   const { name, branch, password } = request.body || {};
+  try {
+    cashierAuth.assertCashierLoginAllowed(request, name, branch);
+  } catch (error) {
+    response.status(error.statusCode || 429).json({ message: error.message, authenticated: false });
+    return;
+  }
+
   const cashier = services.authenticateCashier(name, branch, password);
   if (cashier) {
+    cashierAuth.clearFailedCashierLogin(request, name, branch);
     const session = cashierAuth.createCashierSession(cashier);
     response.json({
       authenticated: true,
@@ -1945,6 +2437,7 @@ app.post("/api/cashier/auth", (request, response) => {
       expiresAt: session.expiresAt,
     });
   } else {
+    cashierAuth.recordFailedCashierLogin(request, name, branch);
     response.status(401).json({
       authenticated: false,
       message: "Credenciales incorrectas.",
@@ -2484,6 +2977,27 @@ services.ensureCatalogSeeded().catch((error) => {
   console.error("No pude preparar el catalogo inicial:", error.message);
 });
 
-server.listen(PORT, () => { console.log("Servidor corriendo en http://localhost:" + PORT); });
+server.listen(PORT, () => {
+  const protocol = httpsCredentials.enabled ? "https" : "http";
+  console.log(`Servidor corriendo en ${protocol}://localhost:${PORT}`);
+  if (httpsCredentials.enabled && httpsCredentials.sources.length > 0) {
+    console.log(`HTTPS directo activo con ${httpsCredentials.sources.join(", ")}`);
+  }
+  if (redirectServer) {
+    redirectServer.listen(POS_HTTP_REDIRECT_PORT, () => {
+      console.log(`Redireccion HTTP activa en http://localhost:${POS_HTTP_REDIRECT_PORT}`);
+    });
+  }
+  if (POS_FORCE_HTTPS && !httpsCredentials.enabled && !String(POS_TRUST_PROXY || "").trim()) {
+    console.warn("POS_FORCE_HTTPS esta activo pero este proceso no termina TLS ni confia en un proxy HTTPS.");
+  }
+  startControlPlanePolling();
+});
 
-module.exports = { app, server, io };
+module.exports = {
+  app,
+  server,
+  io,
+  redirectServer,
+  httpsEnabled: httpsCredentials.enabled,
+};

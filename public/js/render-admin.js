@@ -1,3 +1,67 @@
+function getAdminInventoryChromeProducts() {
+  if (state.admin.branch === "all" && Array.isArray(state.admin.inventoryComparison?.branches)) {
+    return state.admin.inventoryComparison.branches.flatMap((branchEntry) =>
+      Array.isArray(branchEntry.products) ? branchEntry.products : [],
+    );
+  }
+  return Array.isArray(state.admin.inventoryProducts) ? state.admin.inventoryProducts : [];
+}
+
+function updateAdminInventoryChrome(inventoryVisibleRows, inventoryTotal) {
+  const inventoryMode = normalizeAdminInventoryMode(state.admin.inventoryMode);
+  const isEditMode = inventoryMode === "edit";
+  const isExpanded = isEditMode && Boolean(state.admin.inventoryExpanded);
+
+  if (refs.adminVisibleProducts) {
+    refs.adminVisibleProducts.textContent = isEditMode
+      ? isExpanded
+        ? `${inventoryVisibleRows}/${inventoryTotal}`
+        : `Oculto/${inventoryTotal}`
+      : `Rapido/${inventoryTotal}`;
+  }
+
+  if (refs.adminInventoryModeBar) {
+    refs.adminInventoryModeBar.querySelectorAll("[data-inventory-mode]").forEach((button) => {
+      const isActive = button.dataset.inventoryMode === inventoryMode;
+      button.classList.toggle("active", isActive);
+      button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+  }
+
+  if (refs.adminInventoryMovementPanel) {
+    refs.adminInventoryMovementPanel.hidden = isEditMode;
+  }
+  if (refs.adminInventoryFilterBar) {
+    refs.adminInventoryFilterBar.hidden = !isEditMode;
+  }
+  if (refs.adminProductCreateForm) {
+    refs.adminProductCreateForm.hidden = !isEditMode;
+  }
+  if (refs.adminInventorySearch && refs.adminInventorySearch.value !== state.admin.inventorySearch) {
+    refs.adminInventorySearch.value = state.admin.inventorySearch || "";
+  }
+  if (isEditMode && typeof renderAdminInventoryFilterChips === "function") {
+    renderAdminInventoryFilterChips(getAdminInventoryChromeProducts());
+  }
+  if (refs.adminInventoryWrap) {
+    refs.adminInventoryWrap.hidden = !isExpanded;
+  }
+  if (refs.toggleAdminInventoryButton) {
+    refs.toggleAdminInventoryButton.textContent = isEditMode
+      ? isExpanded
+        ? "Ocultar edicion"
+        : "Mostrar edicion"
+      : "Editar productos";
+  }
+  if (refs.adminInventoryStatus) {
+    refs.adminInventoryStatus.textContent = isEditMode
+      ? isExpanded
+        ? "Edicion completa: precio, existencia, minimo, estado y nota."
+        : "Modo edicion listo. Abre la lista solo cuando necesites corregir productos."
+      : "Operacion rapida: registra entradas o salidas sin abrir la tabla completa.";
+  }
+}
+
 function renderAdminPerformanceMetrics() {
   if (!refs.adminModal?.classList.contains("open") || !refs.adminMetricsStatus) {
     return;
@@ -51,9 +115,7 @@ function renderAdminPerformanceMetrics() {
     : Array.isArray(state.admin.inventoryProducts)
       ? state.admin.inventoryProducts.length
       : 0;
-  refs.adminVisibleProducts.textContent = state.admin.inventoryExpanded
-    ? `${inventoryVisibleRows}/${inventoryTotal}`
-    : `Oculto/${inventoryTotal}`;
+  updateAdminInventoryChrome(inventoryVisibleRows, inventoryTotal);
   refs.adminDomNodes.textContent = formatQuantity(clientMetrics.domNodes);
   refs.adminServerRuntime.textContent = serverMetrics
     ? `${formatQuantity(serverMetrics.process.uptimeSeconds)} s`
@@ -72,6 +134,405 @@ function renderAdminPerformanceMetrics() {
     : `Red ${state.online ? "en linea" : "offline"} - pendientes ${state.pendingQueue.length}`;
 }
 
+function formatAdminDateKey(value) {
+  return value ? String(value) : "sin fecha";
+}
+
+function formatAdminTimestamp(value) {
+  if (!value) {
+    return "sin registro";
+  }
+  try {
+    return dateTimeFormatter.format(new Date(value));
+  } catch (_error) {
+    return String(value);
+  }
+}
+
+function getAdminSeverityLabel(severity) {
+  if (severity === "critical") return "Critico";
+  if (severity === "risk") return "Riesgo";
+  if (severity === "ok") return "OK";
+  return "Info";
+}
+
+function getAdminHealthLabel(status) {
+  if (status === "critical") return "Critico";
+  if (status === "risk") return "Riesgo";
+  if (status === "ok") return "Sano";
+  return "Sin lectura";
+}
+
+function renderAdminActionList(container, items, emptyMessage) {
+  if (!container) {
+    return;
+  }
+
+  const safeItems = Array.isArray(items) ? items : [];
+  container.innerHTML = safeItems.length
+    ? safeItems.map((item) => `
+        <article class="admin-action-item ${sanitizeClassToken(item.severity, "info")}">
+          <div class="admin-record-item-head">
+            <strong>${escapeHtml(item.title || item.code || item.message || "Accion")}</strong>
+            <span class="small-pill">${escapeHtml(getAdminSeverityLabel(item.severity || "info"))}</span>
+          </div>
+          <p>${escapeHtml(item.detail || item.message || "")}</p>
+        </article>
+      `).join("")
+    : `<div class="empty-state">${escapeHtml(emptyMessage)}</div>`;
+}
+
+function renderAdminProfitabilityPanel() {
+  if (!refs.adminProfitabilitySummary) {
+    return;
+  }
+
+  const report = state.admin.profitability;
+  if (refs.adminProfitabilityPeriod && refs.adminProfitabilityPeriod.value !== state.admin.profitabilityPeriod) {
+    refs.adminProfitabilityPeriod.value = state.admin.profitabilityPeriod || "today";
+  }
+  if (refs.adminProfitabilityDate && refs.adminProfitabilityDate.value !== state.admin.profitabilityDateKey) {
+    refs.adminProfitabilityDate.value = state.admin.profitabilityDateKey || "";
+  }
+
+  if (!report) {
+    if (refs.adminProfitabilityStatus) refs.adminProfitabilityStatus.textContent = "Sin reporte";
+    refs.adminProfitabilitySummary.innerHTML = `<div class="empty-state">Esperando rentabilidad.</div>`;
+    renderAdminActionList(refs.adminProfitabilityActions, [], "Sin acciones de rentabilidad.");
+    if (refs.adminProfitabilityLowMargin) refs.adminProfitabilityLowMargin.innerHTML = "";
+    if (refs.adminProfitabilityMissingCost) refs.adminProfitabilityMissingCost.innerHTML = "";
+    return;
+  }
+
+  const totals = report.totals || {};
+  const inventory = report.inventory || {};
+  if (refs.adminProfitabilityStatus) {
+    refs.adminProfitabilityStatus.textContent =
+      `${formatAdminDateKey(report.startDateKey)} a ${formatAdminDateKey(report.endDateKey)}`;
+  }
+
+  refs.adminProfitabilitySummary.innerHTML = `
+    <article class="admin-metric-card">
+      <span>Ventas periodo</span>
+      <strong>${formatCurrency(totals.salesTotal || 0)}</strong>
+      <p>${formatQuantity(totals.tickets || 0)} tickets - ${formatQuantity(totals.itemCount || 0)} piezas/kg</p>
+    </article>
+    <article class="admin-metric-card">
+      <span>Utilidad bruta</span>
+      <strong>${formatCurrency(totals.grossProfit || 0)}</strong>
+      <p>${totals.isIncomplete ? "Incompleta por costos faltantes" : `${formatQuantity(totals.marginPercent || 0)}% margen`}</p>
+    </article>
+    <article class="admin-metric-card">
+      <span>Inventario costo</span>
+      <strong>${formatCurrency(inventory.costValue || 0)}</strong>
+      <p>${formatQuantity(inventory.missingCostProductsCount || 0)} producto(s) sin costo</p>
+    </article>
+    <article class="admin-metric-card">
+      <span>Inventario venta</span>
+      <strong>${formatCurrency(inventory.saleValue || 0)}</strong>
+      <p>${formatQuantity(inventory.negativeStockProductsCount || 0)} con stock negativo</p>
+    </article>
+  `;
+
+  renderAdminActionList(refs.adminProfitabilityActions, report.actions, "Sin acciones de rentabilidad.");
+
+  const lowMarginProducts = Array.isArray(report.lowMarginProducts) ? report.lowMarginProducts.slice(0, 5) : [];
+  if (refs.adminProfitabilityLowMargin) {
+    refs.adminProfitabilityLowMargin.innerHTML = lowMarginProducts.length
+      ? lowMarginProducts.map((product) => `
+          <article class="admin-record-item">
+            <div class="admin-record-item-head">
+              <strong>${escapeHtml(product.productName || "Producto")}</strong>
+              <span class="small-pill">${formatQuantity(product.marginPercent || 0)}%</span>
+            </div>
+            <p>${formatCurrency(product.salesTotal || 0)} vendido - utilidad ${formatCurrency(product.grossProfit || 0)}</p>
+          </article>
+        `).join("")
+      : `<div class="empty-state">Sin productos de margen bajo en esta lectura.</div>`;
+  }
+
+  const missingCostProducts = Array.isArray(report.missingCostProducts) ? report.missingCostProducts.slice(0, 5) : [];
+  if (refs.adminProfitabilityMissingCost) {
+    refs.adminProfitabilityMissingCost.innerHTML = missingCostProducts.length
+      ? missingCostProducts.map((product) => `
+          <article class="admin-record-item">
+            <div class="admin-record-item-head">
+              <strong>${escapeHtml(product.name || "Producto")}</strong>
+              <span class="small-pill">${escapeHtml(getBranchLabel(product.branch))}</span>
+            </div>
+            <p>Precio ${formatCurrency(product.price || 0)} - stock ${formatQuantity(product.stock || 0)}</p>
+          </article>
+        `).join("")
+      : `<div class="empty-state">Sin productos pendientes de costo.</div>`;
+  }
+}
+
+function renderAdminHealthPanel() {
+  if (!refs.adminHealthSummary) {
+    return;
+  }
+
+  const health = state.admin.supportHealth;
+  const semaphore = health?.semaphore || null;
+  const status = semaphore?.status || "";
+  const backups = health?.backups || null;
+  const runtimeConfig = health?.runtimeConfig || null;
+  const security = health?.security || null;
+  const backupsEnabled = typeof backups?.enabled === "boolean" ? backups.enabled : true;
+  const backupBaseStatus = backupsEnabled
+    ? (backups?.lastRun?.status || "sin corrida")
+    : "desactivado";
+  const backupStatus = backups?.restartRequired
+    ? `${backupBaseStatus} (reinicio pendiente)`
+    : backupBaseStatus;
+  const runtimeStatus = runtimeConfig?.error
+    ? "error"
+    : runtimeConfig?.restartRequired
+      ? "reinicio pendiente"
+      : runtimeConfig?.loaded
+        ? "activo"
+        : "sin archivo";
+  const securityStatus = security?.status || "";
+  const securitySummary = !security
+    ? "sin lectura"
+    : securityStatus === "critical"
+      ? "critica"
+      : securityStatus === "risk"
+        ? "en riesgo"
+        : "cuidada";
+  const controlSecurityLabel = security?.controlApiInvalid
+    ? "URL invalida"
+    : !security?.controlApiUrl
+    ? "sin URL"
+    : security.controlApiHttps
+      ? "HTTPS"
+      : "HTTP";
+  const latestSale = health?.latestSale || null;
+  const runtimeDetail = runtimeConfig?.error
+    ? runtimeConfig.error
+    : runtimeConfig?.restartRequired
+      ? Array.isArray(runtimeConfig.pendingRestartKeys) && runtimeConfig.pendingRestartKeys.length
+        ? `Pendientes: ${runtimeConfig.pendingRestartKeys.join(", ")}`
+        : "Hay variables runtime pendientes de reinicio."
+      : latestSale
+        ? `Ultima venta ${latestSale.ticketNumber || ""} por ${formatCurrency(latestSale.total || 0)}`
+        : "Sin venta registrada";
+
+  if (refs.adminHealthStatus) {
+    refs.adminHealthStatus.textContent = getAdminHealthLabel(status);
+    refs.adminHealthStatus.dataset.status = sanitizeClassToken(status, "unknown");
+  }
+
+  refs.adminHealthSummary.className = `admin-health-banner ${sanitizeClassToken(status, "unknown")}`;
+  refs.adminHealthSummary.innerHTML = health
+    ? `
+        <strong>${escapeHtml(getAdminHealthLabel(status))}</strong>
+        <p>Backup ${escapeHtml(backupStatus)} - runtime ${escapeHtml(runtimeStatus)} - sync ${health.syncHealth?.hasPending ? "pendiente" : "limpio"} - seguridad ${escapeHtml(securitySummary)}</p>
+        <p>Errores ${formatQuantity(health.recentErrors?.length || 0)} - cookies ${security?.secureCookies ? "seguras" : "abiertas"} - owner ${escapeHtml(controlSecurityLabel)}</p>
+        <p>${escapeHtml(runtimeDetail)}</p>
+      `
+    : `<div class="empty-state">Esperando salud del cliente.</div>`;
+
+  renderAdminActionList(
+    refs.adminHealthReasons,
+    semaphore?.reasons,
+    "Sin razones de riesgo.",
+  );
+  renderAdminActionList(
+    refs.adminHealthActions,
+    semaphore?.actions,
+    "Sin acciones pendientes.",
+  );
+}
+
+function shouldHydrateAdminSubscriptionForm() {
+  const activeElement = document.activeElement;
+  const fields = [
+    refs.adminSubscriptionPlan,
+    refs.adminSubscriptionState,
+    refs.adminSubscriptionAmount,
+    refs.adminSubscriptionPeriodEnd,
+    refs.adminSubscriptionGrace,
+    refs.adminSubscriptionNotes,
+    refs.adminSubscriptionPaymentAmount,
+    refs.adminSubscriptionPaymentMethod,
+    refs.adminSubscriptionPaymentStart,
+    refs.adminSubscriptionPaymentEnd,
+    refs.adminSubscriptionPaymentNotes,
+  ].filter(Boolean);
+
+  return !fields.includes(activeElement);
+}
+
+function renderAdminSubscriptionPanel() {
+  if (!refs.adminSubscriptionSummary) {
+    return;
+  }
+
+  const subscription = state.admin.subscription;
+  const payments = Array.isArray(state.admin.subscriptionPayments) ? state.admin.subscriptionPayments : [];
+  const controlPlane = state.admin.subscriptionControl || {};
+  const controlConfigured = Boolean(controlPlane.configured);
+  const controlUsable = Boolean(controlPlane.usable);
+  const controlDegraded = Boolean(controlPlane.degraded);
+  const missing = Array.isArray(controlPlane.missing) ? controlPlane.missing.join(", ") : "";
+  const controlStatusLabel = !controlConfigured
+    ? "Sin configurar"
+    : !controlUsable
+      ? "Corregir config"
+      : controlDegraded
+        ? controlPlane.authFailed
+          ? "Auth fallida"
+          : "Con error"
+        : controlPlane.lastSuccessAt
+          ? "Conectado"
+          : "Sin prueba";
+  const controlStatusDetail = !controlConfigured
+    ? `Configura ${missing || "CONTROL_*"} para enlazar owner-control.`
+    : !controlUsable
+      ? (controlPlane.error || "La configuracion central no es usable todavia.")
+      : controlDegraded
+        ? `${controlPlane.lastError || "Owner-control fallo recientemente."} (${formatAdminTimestamp(controlPlane.lastErrorAt)})`
+        : controlPlane.lastSuccessAt
+          ? `Ultimo OK ${formatAdminTimestamp(controlPlane.lastSuccessAt)}`
+          : "Sin intentos recientes desde este proceso.";
+  const canManageLocalSubscription = Boolean(state.owner.authenticated && !controlConfigured);
+  const localSubscriptionFields = [
+    refs.adminSubscriptionPlan,
+    refs.adminSubscriptionState,
+    refs.adminSubscriptionAmount,
+    refs.adminSubscriptionPeriodEnd,
+    refs.adminSubscriptionGrace,
+    refs.adminSubscriptionNotes,
+  ].filter(Boolean);
+  const localPaymentFields = [
+    refs.adminSubscriptionPaymentAmount,
+    refs.adminSubscriptionPaymentMethod,
+    refs.adminSubscriptionPaymentStart,
+    refs.adminSubscriptionPaymentEnd,
+    refs.adminSubscriptionPaymentNotes,
+  ].filter(Boolean);
+  localSubscriptionFields.forEach((field) => {
+    const shell = typeof field.closest === "function" ? field.closest(".field") : null;
+    if (shell) {
+      shell.hidden = !canManageLocalSubscription;
+    }
+    field.disabled = !canManageLocalSubscription;
+    field.title = canManageLocalSubscription ? "" : "La suscripcion se controla desde owner-control.";
+  });
+  localPaymentFields.forEach((field) => {
+    field.disabled = !canManageLocalSubscription;
+  });
+  if (refs.saveAdminSubscriptionButton) {
+    refs.saveAdminSubscriptionButton.hidden = !canManageLocalSubscription;
+    refs.saveAdminSubscriptionButton.disabled = !canManageLocalSubscription;
+    refs.saveAdminSubscriptionButton.textContent = "Guardar estado";
+    refs.saveAdminSubscriptionButton.title = canManageLocalSubscription ? "" : "La suscripcion se controla desde owner-control.";
+  }
+  if (refs.syncAdminSubscriptionButton) {
+    refs.syncAdminSubscriptionButton.disabled = !controlUsable;
+    refs.syncAdminSubscriptionButton.textContent = controlUsable
+      ? controlDegraded
+        ? "Reintentar central"
+        : "Sincronizar central"
+      : "Sin control central";
+    refs.syncAdminSubscriptionButton.title = controlUsable
+      ? controlDegraded
+        ? `Fallo reciente: ${controlPlane.lastError || "Sin detalle"}`
+        : `Owner-control: ${controlPlane.clientSlug || ""}`
+      : controlConfigured
+        ? (controlPlane.error || "La configuracion central no es usable todavia.")
+        : `Configura ${missing || "CONTROL_*"} para sincronizar owner-control.`;
+  }
+  if (refs.syncAdminControlConfigButton) {
+    refs.syncAdminControlConfigButton.disabled = !controlUsable;
+    refs.syncAdminControlConfigButton.textContent = controlUsable
+      ? controlDegraded
+        ? "Reintentar configuracion"
+        : "Sincronizar configuracion"
+      : "Sin control central";
+    refs.syncAdminControlConfigButton.title = controlUsable
+      ? controlDegraded
+        ? `Fallo reciente: ${controlPlane.lastError || "Sin detalle"}`
+        : `Aplicar configuracion POS desde owner-control (${controlPlane.clientSlug || ""}).`
+      : controlConfigured
+        ? (controlPlane.error || "La configuracion central no es usable todavia.")
+        : `Configura ${missing || "CONTROL_*"} para sincronizar la configuracion POS.`;
+  }
+  if (refs.adminSubscriptionPaymentForm) {
+    refs.adminSubscriptionPaymentForm.hidden = !canManageLocalSubscription;
+  }
+  if (refs.recordAdminSubscriptionPaymentButton) {
+    refs.recordAdminSubscriptionPaymentButton.disabled = !canManageLocalSubscription;
+    refs.recordAdminSubscriptionPaymentButton.textContent = "Registrar pago";
+    refs.recordAdminSubscriptionPaymentButton.title = canManageLocalSubscription ? "" : "Los pagos se registran desde owner-control.";
+  }
+
+  if (refs.adminSubscriptionStatus) {
+    refs.adminSubscriptionStatus.textContent = subscription?.effectiveStatus || "Sin estado";
+  }
+
+  refs.adminSubscriptionSummary.innerHTML = subscription
+    ? `
+        <article class="admin-metric-card">
+          <span>Plan</span>
+          <strong>${escapeHtml(subscription.planCode || "sin plan")}</strong>
+          <p>${escapeHtml(subscription.effectiveStatus || subscription.status || "sin estado")}</p>
+        </article>
+        <article class="admin-metric-card">
+          <span>Mensualidad</span>
+          <strong>${formatCurrency(subscription.monthlyAmount || 0)}</strong>
+          <p>${escapeHtml(subscription.currencyCode || "MXN")}</p>
+        </article>
+        <article class="admin-metric-card">
+          <span>Fecha corte</span>
+          <strong>${escapeHtml(formatAdminDateKey(subscription.currentPeriodEnd))}</strong>
+          <p>Gracia ${escapeHtml(formatAdminDateKey(subscription.gracePeriodUntil))}</p>
+        </article>
+        <article class="admin-metric-card">
+          <span>Ultimo pago</span>
+          <strong>${escapeHtml(formatAdminDateKey(subscription.lastPaymentAt?.slice(0, 10)))}</strong>
+          <p>${subscription.blocksOperation ? "Bloqueo activo" : "Aviso suave - caja libre"}</p>
+        </article>
+        <article class="admin-metric-card">
+          <span>Owner-control</span>
+          <strong>${escapeHtml(controlStatusLabel)}</strong>
+          <p>${escapeHtml(controlStatusDetail)}</p>
+        </article>
+      `
+    : `<div class="empty-state">Esperando estado de suscripcion.</div>`;
+
+  if (subscription && shouldHydrateAdminSubscriptionForm()) {
+    if (refs.adminSubscriptionPlan) refs.adminSubscriptionPlan.value = subscription.planCode || "";
+    if (refs.adminSubscriptionState) refs.adminSubscriptionState.value = subscription.status || "trial";
+    if (refs.adminSubscriptionAmount) refs.adminSubscriptionAmount.value = String(subscription.monthlyAmount || 0);
+    if (refs.adminSubscriptionPeriodEnd) refs.adminSubscriptionPeriodEnd.value = subscription.currentPeriodEnd || "";
+    if (refs.adminSubscriptionGrace) refs.adminSubscriptionGrace.value = subscription.gracePeriodUntil || "";
+    if (refs.adminSubscriptionNotes) refs.adminSubscriptionNotes.value = subscription.notes || "";
+    if (refs.adminSubscriptionPaymentAmount && !refs.adminSubscriptionPaymentAmount.value) {
+      refs.adminSubscriptionPaymentAmount.value = String(subscription.monthlyAmount || "");
+    }
+    if (refs.adminSubscriptionPaymentMethod && !refs.adminSubscriptionPaymentMethod.value) {
+      refs.adminSubscriptionPaymentMethod.value = "Transferencia";
+    }
+  }
+
+  if (refs.adminSubscriptionPayments) {
+    refs.adminSubscriptionPayments.innerHTML = payments.length
+      ? payments.slice(0, 8).map((payment) => `
+          <article class="admin-record-item">
+            <div class="admin-record-item-head">
+              <strong>${formatCurrency(payment.amount || 0)}</strong>
+              <span class="small-pill">${escapeHtml(payment.paymentMethod || "Pago")}</span>
+            </div>
+            <p>${escapeHtml(formatAdminDateKey(payment.periodStart))} a ${escapeHtml(formatAdminDateKey(payment.periodEnd))}</p>
+            <p>${escapeHtml(payment.notes || payment.paidAt || "")}</p>
+          </article>
+        `).join("")
+      : `<div class="empty-state">Sin pagos registrados todavia.</div>`;
+  }
+}
+
 function renderAdminModal() {
   if (!refs.adminModal) {
     return;
@@ -79,6 +540,10 @@ function renderAdminModal() {
 
   if (!refs.adminModal.classList.contains("open")) {
     return;
+  }
+
+  if (typeof renderAdminSectionNavigation === "function") {
+    renderAdminSectionNavigation();
   }
 
   const adminSnapshot = state.admin.snapshot;
@@ -217,9 +682,7 @@ function renderAdminModal() {
     : Array.isArray(state.admin.inventoryProducts)
       ? state.admin.inventoryProducts.length
       : 0;
-  refs.adminVisibleProducts.textContent = state.admin.inventoryExpanded
-    ? `${inventoryVisibleRows}/${inventoryTotal}`
-    : `Oculto/${inventoryTotal}`;
+  updateAdminInventoryChrome(inventoryVisibleRows, inventoryTotal);
   refs.adminDomNodes.textContent = formatQuantity(clientMetrics.domNodes);
   refs.adminServerRuntime.textContent = serverMetrics
     ? `${formatQuantity(serverMetrics.process.uptimeSeconds)} s`
@@ -237,17 +700,10 @@ function renderAdminModal() {
     ? `Red ${clientMetrics.network.effectiveType} · ${formatQuantity(clientMetrics.network.downlink)} Mbps · ${formatQuantity(clientMetrics.network.rtt)} ms · pendientes ${state.pendingQueue.length}`
     : `Red ${state.online ? "en linea" : "offline"} · pendientes ${state.pendingQueue.length}`;
 
-  if (refs.adminInventoryWrap && refs.toggleAdminInventoryButton && refs.adminInventoryStatus) {
-    refs.adminInventoryWrap.hidden = !state.admin.inventoryExpanded;
-    refs.toggleAdminInventoryButton.textContent = state.admin.inventoryExpanded
-      ? "Ocultar inventario"
-      : "Mostrar inventario";
-    refs.adminInventoryStatus.textContent = state.admin.inventoryExpanded
-      ? "Vista expandida. Aqui ves activos e inactivos para reactivar rapido."
-      : "Vista compacta. Abre inventario solo cuando lo necesites.";
-  }
-
   updateModuleVisibility();
+  renderAdminProfitabilityPanel();
+  renderAdminHealthPanel();
+  renderAdminSubscriptionPanel();
   renderAdminDevPanel();
   renderAdminBranches();
   renderAdminPeriodClosuresPanel();
@@ -484,7 +940,7 @@ function buildOfflineSaleRecordMarkup(record) {
     <article class="admin-record-item offline-sale-record">
       <div class="admin-record-item-head">
         <strong>${escapeHtml(record.localTicketNumber || record.syncedTicketNumber || "Venta offline")}</strong>
-        <span class="offline-sale-status-pill ${displayState.status}">${escapeHtml(displayState.label)}</span>
+        <span class="offline-sale-status-pill ${sanitizeClassToken(displayState.status, "unknown")}">${escapeHtml(displayState.label)}</span>
       </div>
       <p>${escapeHtml(getBranchLabel(record.branch))} · ${escapeHtml(record.cashier || "Cajero")} · ${escapeHtml(record.shift || "Tarde")} · ${formatCurrency(record.total || 0)}</p>
       <p>${escapeHtml(stateSummary)} · ${escapeHtml(displayState.note)}</p>
@@ -579,8 +1035,16 @@ function renderAdminDevPanel() {
   const recentErrors = Array.isArray(supportHealth?.recentErrors)
     ? supportHealth.recentErrors
     : [];
-  const lastBackupRun = backupStatusBundle?.lastRun || null;
-  const backupLabel = lastBackupRun
+  const backupRuntime = backupStatusBundle || supportHealth?.backups || null;
+  const backupCapabilityEnabled = hasAdminCapability("backups");
+  const backupEnabled = typeof backupRuntime?.enabled === "boolean"
+    ? backupRuntime.enabled
+    : backupCapabilityEnabled;
+  const backupRestartRequired = Boolean(backupRuntime?.restartRequired || supportHealth?.backups?.restartRequired);
+  const lastBackupRun = backupEnabled
+    ? (backupStatusBundle?.lastRun || supportHealth?.backups?.lastRun || null)
+    : null;
+  const lastBackupLabel = lastBackupRun
     ? lastBackupRun.status === "ok"
       ? "OK"
       : lastBackupRun.status === "partial"
@@ -588,9 +1052,14 @@ function renderAdminDevPanel() {
         : lastBackupRun.status === "failed"
           ? "Fallido"
           : "Corriendo"
-    : hasAdminCapability("backups")
-      ? "Sin corridas"
-      : "Bloqueado";
+    : "Sin corridas";
+  const backupLabel = !backupCapabilityEnabled
+    ? "Bloqueado"
+    : backupRestartRequired
+      ? "Reinicio pendiente"
+      : backupEnabled
+        ? lastBackupLabel
+        : "Desactivado";
   const snapshotBytes = getAdminDevSnapshotBytes();
   const queueBytes = estimateSerializedBytes(state.pendingQueue);
   const registerBytes = estimateSerializedBytes(state.register.events);
@@ -613,11 +1082,17 @@ function renderAdminDevPanel() {
     ? escapeHtml(blockedOperation.lastSyncError)
     : `Cola ${formatBytes(queueBytes)} · cortes ${formatBytes(registerBytes)}`;
 
-  const backupNote = lastBackupRun
-    ? `${lastBackupRun.backupDateKey} - SQLite ${formatBytes(lastBackupRun.sqliteBytes || 0)} - Excel ${formatBytes(lastBackupRun.workbookBytes || 0)}`
-    : hasAdminCapability("backups")
-      ? "Activa el job nocturno para ver respaldos."
-      : "El owner bloqueo respaldos.";
+  const backupNote = !backupCapabilityEnabled
+    ? "El owner bloqueo respaldos."
+    : backupRestartRequired
+      ? backupEnabled
+        ? "Runtime cambiado; reinicia POS para encender el job con la configuracion nueva."
+        : "Runtime desactivado; reinicia POS para apagar el job cargado en el proceso."
+      : !backupEnabled
+        ? "Backups apagados por owner-control; fallos historicos no cuentan como riesgo."
+        : lastBackupRun
+          ? `${lastBackupRun.backupDateKey} - SQLite ${formatBytes(lastBackupRun.sqliteBytes || 0)} - Excel ${formatBytes(lastBackupRun.workbookBytes || 0)}`
+          : "Activa el job nocturno para ver respaldos.";
 
   refs.adminDevSummary.innerHTML = `
     <article class="admin-metric-card">
@@ -680,9 +1155,9 @@ function renderAdminDevPanel() {
       : `Cola ${formatBytes(queueBytes)} · cortes ${formatBytes(registerBytes)}`;
   }
   if (devSummaryNotes[4]) {
-    devSummaryNotes[4].textContent = lastBackupRun?.errorMessage
+    devSummaryNotes[4].textContent = backupEnabled && lastBackupRun?.errorMessage
       ? lastBackupRun.errorMessage
-      : lastBackupRun?.syncState === "partial"
+      : backupEnabled && lastBackupRun?.syncState === "partial"
         ? `${backupStatusBundle?.syncHealth?.pendingReportCount || 0} equipos con cola pendiente`
         : backupNote;
   }
@@ -935,6 +1410,198 @@ function renderOwnerAuthModal() {
   }
 }
 
+function renderOwnerOperationGuide() {
+  if (!refs.ownerOperationGuide) {
+    return;
+  }
+
+  const guide = state.owner.operationGuide;
+  if (!guide) {
+    refs.ownerOperationGuide.innerHTML = `<div class="empty-state">Cargando comandos owner...</div>`;
+    return;
+  }
+
+  const current = guide.current || {};
+  const controlPlane = current.controlPlane || {};
+  const runtimeConfig = current.runtimeConfig || {};
+  const commands = Array.isArray(guide.commands) ? guide.commands : [];
+  const runtimeVariables = Array.isArray(guide.runtimeVariables) ? guide.runtimeVariables : [];
+  const configExample = JSON.stringify(guide.localRuntimeConfigExample || {}, null, 2);
+  const runtimeStatus = runtimeConfig.error
+    ? `Error: ${runtimeConfig.error}`
+    : runtimeConfig.loaded
+      ? `Archivo: ${runtimeConfig.sourcePath || "config local"}`
+      : "Sin archivo local detectado";
+  const runtimeRestartRequired = Boolean(runtimeConfig.restartRequired);
+  const runtimePendingKeys = Array.isArray(runtimeConfig.pendingRestartKeys) && runtimeConfig.pendingRestartKeys.length
+    ? runtimeConfig.pendingRestartKeys.join(", ")
+    : "sin cambios pendientes";
+  const runtimeKeys = Array.isArray(runtimeConfig.keys) && runtimeConfig.keys.length
+    ? runtimeConfig.keys.join(", ")
+    : "sin llaves";
+  const secretKeys = Array.isArray(runtimeConfig.secretKeys) && runtimeConfig.secretKeys.length
+    ? runtimeConfig.secretKeys.join(", ")
+    : "sin secretos detectados";
+  const missingControl = controlPlane.error
+    ? controlPlane.error
+    : Array.isArray(controlPlane.missing) && controlPlane.missing.length
+      ? controlPlane.missing.join(", ")
+      : "completo";
+  const controlUsable = Boolean(controlPlane.usable);
+  const controlDegraded = Boolean(controlPlane.degraded);
+  const controlLabel = controlUsable
+    ? controlDegraded
+      ? controlPlane.authFailed
+        ? "Owner-control con auth fallida"
+        : "Owner-control con fallo reciente"
+      : controlPlane.lastSuccessAt
+        ? "Owner-control conectado"
+        : "Owner-control listo sin prueba reciente"
+    : controlPlane.configured
+      ? "Owner-control requiere correccion"
+      : "Owner-control pendiente";
+  const controlRuntimeDetail = !controlUsable
+    ? missingControl
+    : controlDegraded
+      ? `${controlPlane.lastError || "Owner-control fallo recientemente."} (${formatAdminTimestamp(controlPlane.lastErrorAt)})`
+      : controlPlane.lastSuccessAt
+        ? `Ultimo OK ${formatAdminTimestamp(controlPlane.lastSuccessAt)}`
+        : "Sin intentos recientes desde este proceso.";
+  const runtimeGroups = runtimeVariables.reduce((groups, variable) => {
+    const groupName = variable.group || "General";
+    groups[groupName] = groups[groupName] || [];
+    groups[groupName].push(variable);
+    return groups;
+  }, {});
+  const runtimeSaving = Boolean(state.owner.runtimeConfigSaving);
+  const runtimeSyncing = Boolean(state.owner.runtimeConfigSyncing);
+  const runtimeBusy = runtimeSaving || runtimeSyncing;
+  const renderRuntimeField = (variable) => {
+    const isSecret = Boolean(variable.secret);
+    const options = Array.isArray(variable.options) ? variable.options : [];
+    const value = variable.value || "";
+    const sourceLabel = variable.source === "owner"
+      ? "owner"
+      : variable.source === "service"
+        ? "servicio"
+        : "vacio";
+    const restartLabel = variable.pendingRestart ? " - reinicio pendiente" : variable.restartRequired ? " - reinicio" : "";
+    const helper = isSecret && variable.hasStoredValue
+      ? "Guardado. Escribe un valor nuevo solo si quieres reemplazarlo."
+      : variable.description || "";
+    const fieldControl = variable.type === "select"
+      ? `<select data-owner-runtime-key="${escapeHtml(variable.key)}" data-owner-runtime-secret="${isSecret ? "true" : "false"}" ${runtimeBusy ? "disabled" : ""}>
+          ${options.map((option) => `<option value="${escapeHtml(option)}" ${String(option) === String(value) ? "selected" : ""}>${escapeHtml(option || "sin valor")}</option>`).join("")}
+        </select>`
+      : `<input
+          data-owner-runtime-key="${escapeHtml(variable.key)}"
+          data-owner-runtime-secret="${isSecret ? "true" : "false"}"
+          type="${isSecret ? "password" : "text"}"
+          value="${isSecret ? "" : escapeHtml(value)}"
+          placeholder="${escapeHtml(isSecret && variable.maskedValue ? variable.maskedValue : variable.placeholder || "")}"
+          autocomplete="off"
+          spellcheck="false"
+          ${runtimeBusy ? "disabled" : ""}
+        />`;
+
+    return `
+      <label class="field owner-runtime-field">
+        <span>${escapeHtml(variable.label || variable.key)}</span>
+        ${fieldControl}
+        <small>${escapeHtml(variable.key)} - ${escapeHtml(sourceLabel)}${escapeHtml(restartLabel)}</small>
+        <small>${escapeHtml(helper)}</small>
+        <span class="owner-runtime-clear-row">
+          <input data-owner-runtime-clear="${escapeHtml(variable.key)}" type="checkbox" ${runtimeBusy ? "disabled" : ""} />
+          <small>Limpiar esta variable del archivo owner</small>
+        </span>
+      </label>
+    `;
+  };
+
+  refs.ownerOperationGuide.innerHTML = `
+    <div class="owner-operation-status-grid">
+      <article class="admin-record-item">
+        <div class="admin-record-item-head">
+          <strong>${escapeHtml(current.slug || state.profile?.slug || "sin-slug")}</strong>
+          <span class="small-pill">${escapeHtml(current.templateKey || "base")}</span>
+        </div>
+        <p>${escapeHtml(current.businessName || state.profile?.businessName || "Negocio")}</p>
+        <p>DB ${escapeHtml(current.dbPath || "data/retail-base-pos.sqlite")}</p>
+      </article>
+      <article class="admin-record-item">
+        <div class="admin-record-item-head">
+          <strong>${escapeHtml(controlLabel)}</strong>
+          <span class="small-pill">${escapeHtml(controlPlane.clientSlug || "sin slug")}</span>
+        </div>
+        <p>${escapeHtml(controlPlane.apiUrl || "sin CONTROL_API_URL")}</p>
+        <p>${escapeHtml(controlRuntimeDetail)}</p>
+      </article>
+      <article class="admin-record-item">
+        <div class="admin-record-item-head">
+          <strong>Config local</strong>
+          <span class="small-pill">${runtimeRestartRequired ? "reinicio pendiente" : runtimeConfig.loaded ? "activa" : "opcional"}</span>
+        </div>
+        <p>${escapeHtml(runtimeStatus)}</p>
+        <p>${escapeHtml(runtimeKeys)} - ${escapeHtml(secretKeys)}</p>
+        <p>${escapeHtml(runtimePendingKeys)}</p>
+      </article>
+    </div>
+
+    <div class="owner-runtime-editor">
+      <div class="admin-record-item-head">
+        <div>
+          <strong>Variables dentro del panel owner</strong>
+          <p>Fuente central: owner-control. Este POS aplica una copia en ${escapeHtml(runtimeConfig.sourcePath || "data/pos-runtime-config.json")} para arrancar sin depender de Railway.</p>
+        </div>
+        <span class="small-pill">${runtimeSyncing ? "sincronizando" : runtimeSaving ? "guardando" : "owner-control"}</span>
+      </div>
+      <div class="admin-record-actions owner-runtime-actions">
+        <button class="primary-button compact-button" data-owner-runtime-sync type="button" ${runtimeBusy || !controlUsable ? "disabled" : ""}>
+          ${runtimeSyncing ? "Sincronizando..." : "Sincronizar desde owner-control"}
+        </button>
+        <button class="ghost-button compact-button" data-owner-runtime-save type="button" ${runtimeBusy ? "disabled" : ""}>
+          ${runtimeSaving ? "Guardando..." : "Guardar cache local"}
+        </button>
+      </div>
+      <div class="owner-runtime-groups">
+        ${Object.entries(runtimeGroups).map(([groupName, variables]) => `
+          <section class="owner-runtime-group">
+            <h4>${escapeHtml(groupName)}</h4>
+            <div class="owner-runtime-grid">
+              ${variables.map(renderRuntimeField).join("")}
+            </div>
+          </section>
+        `).join("")}
+      </div>
+    </div>
+
+    <div class="owner-command-list">
+      ${commands.length ? commands.map((item) => `
+        <article class="owner-command-item">
+          <div class="admin-record-item-head">
+            <div>
+              <strong>${escapeHtml(item.label || item.id || "Comando")}</strong>
+              <p>${escapeHtml(item.description || "")}</p>
+            </div>
+            <button class="ghost-button compact-button" data-owner-copy-command="${escapeHtml(item.id || "")}" type="button">
+              Copiar
+            </button>
+          </div>
+          <pre><code>${escapeHtml(item.command || "")}</code></pre>
+        </article>
+      `).join("") : `<div class="empty-state">Sin comandos owner disponibles.</div>`}
+    </div>
+
+    <div class="owner-runtime-example">
+      <div class="admin-record-item-head">
+        <strong>data/pos-runtime-config.json</strong>
+        <span class="small-pill">plantilla</span>
+      </div>
+      <pre><code>${escapeHtml(configExample)}</code></pre>
+    </div>
+  `;
+}
+
 function renderOwnerConsoleModal() {
   if (!refs.ownerConsoleModal || !refs.ownerModulesWrap || !refs.ownerAdminSectionsWrap) {
     return;
@@ -1030,6 +1697,7 @@ function renderOwnerConsoleModal() {
     refs.applyOwnerTemplateButton.textContent = applyingTemplate ? "Reiniciando..." : "Aplicar plantilla completa";
   }
 
+  renderOwnerOperationGuide();
   renderOfflineSalesPanel(refs.ownerOfflineSalesList, refs.ownerOfflineSalesStatus);
   refs.saveOwnerConsoleButton.disabled = loading || saving || applyingTemplate || !state.owner.authenticated;
   refs.saveOwnerConsoleButton.textContent = saving ? "Guardando..." : "Guardar cambios";
@@ -1072,7 +1740,7 @@ function renderAdminEditorModal() {
       <label class="field">
         <span>Sucursal</span>
         <select data-editor-field="branch">
-          ${getBranchOptions().filter((option) => option.value !== "all").map((option) => `<option value="${option.value}" ${detail.branch === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+          ${getBranchOptions().filter((option) => option.value !== "all").map((option) => `<option value="${escapeHtml(option.value)}" ${detail.branch === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
         </select>
       </label>
       <label class="field">
@@ -1107,7 +1775,7 @@ function renderAdminEditorModal() {
       <label class="field">
         <span>Metodo de pago</span>
         <select data-editor-field="paymentMethod">
-          ${PAYMENT_METHOD_OPTIONS.map((method) => `<option value="${method.value}" ${detail.paymentMethod === method.value ? "selected" : ""}>${method.label}</option>`).join("")}
+          ${PAYMENT_METHOD_OPTIONS.map((method) => `<option value="${escapeHtml(method.value)}" ${detail.paymentMethod === method.value ? "selected" : ""}>${escapeHtml(method.label)}</option>`).join("")}
         </select>
       </label>
       <label class="field">
@@ -1116,7 +1784,7 @@ function renderAdminEditorModal() {
       </label>
       <label class="field">
         <span>Cobrado hoy / recibido</span>
-        <input data-editor-field="receivedAmount" type="number" min="0" step="0.01" value="${detail.receivedAmount}" />
+        <input data-editor-field="receivedAmount" type="number" min="0" step="0.01" value="${escapeHtml(detail.receivedAmount ?? 0)}" />
       </label>
       <label class="field">
         <span>Cobrado por</span>
@@ -1128,7 +1796,7 @@ function renderAdminEditorModal() {
               detail.receivedPaymentMethod || "",
               detail.receivedAmount,
             );
-            return `<option value="${method.value}" ${selectedValue === method.value ? "selected" : ""}>${method.label}</option>`;
+            return `<option value="${escapeHtml(method.value)}" ${selectedValue === method.value ? "selected" : ""}>${escapeHtml(method.label)}</option>`;
           }).join("")}
         </select>
       </label>
@@ -1156,19 +1824,19 @@ function renderAdminEditorModal() {
       </label>
       <label class="field">
         <span>Caja inicial</span>
-        <input data-editor-field="openingAmount" type="number" min="0" step="0.01" value="${detail.openingAmount}" />
+        <input data-editor-field="openingAmount" type="number" min="0" step="0.01" value="${escapeHtml(detail.openingAmount ?? 0)}" />
       </label>
       <label class="field">
         <span>Efectivo contado</span>
-        <input data-editor-field="countedAmount" type="number" min="0" step="0.01" value="${detail.countedAmount}" />
+        <input data-editor-field="countedAmount" type="number" min="0" step="0.01" value="${escapeHtml(detail.countedAmount ?? 0)}" />
       </label>
       <label class="field">
         <span>Efectivo esperado</span>
-        <input data-editor-field="expectedCash" type="number" min="0" step="0.01" value="${detail.expectedCash}" />
+        <input data-editor-field="expectedCash" type="number" min="0" step="0.01" value="${escapeHtml(detail.expectedCash ?? 0)}" />
       </label>
       <label class="field">
         <span>Se retira</span>
-        <input data-editor-field="withdrawalsAmount" type="number" min="0" step="0.01" value="${detail.withdrawalsAmount || 0}" />
+        <input data-editor-field="withdrawalsAmount" type="number" min="0" step="0.01" value="${escapeHtml(detail.withdrawalsAmount ?? 0)}" />
       </label>
       <label class="field">
         <span>Nota</span>
@@ -1190,7 +1858,7 @@ function renderAdminEditorModal() {
     </label>
     <label class="field">
       <span>Cantidad delta</span>
-      <input data-editor-field="quantityDelta" type="number" step="0.25" value="${detail.quantityDelta}" ${detail.movementType === "sale" ? "disabled" : ""} />
+      <input data-editor-field="quantityDelta" type="number" step="0.25" value="${escapeHtml(detail.quantityDelta ?? 0)}" ${detail.movementType === "sale" ? "disabled" : ""} />
     </label>
     <label class="field">
       <span>Nota</span>
@@ -1256,7 +1924,7 @@ function buildPeriodClosureSummaryCards(summary = {}) {
 function buildPeriodClosureWarningMarkup(warning = {}) {
   const severity = String(warning.severity || "info").toLowerCase();
   return `
-    <article class="period-closure-warning ${severity}">
+    <article class="period-closure-warning ${sanitizeClassToken(severity, "info")}">
       <strong>${escapeHtml(String(warning.code || "warning").replaceAll("_", " "))}</strong>
       <p>${escapeHtml(warning.message || "Advertencia sin detalle.")}</p>
     </article>
@@ -1764,7 +2432,7 @@ function renderAdminWeightedAuditPanel() {
             >
               <td>
                 <div class="weighted-audit-status-stack">
-                  <span class="small-pill weighted-audit-pill ${item.statusKey}${item.missingReason ? " needs-reason" : ""}" data-role="weighted-status">${item.statusLabel}</span>
+                  <span class="small-pill weighted-audit-pill ${sanitizeClassToken(item.statusKey, "pending")}${item.missingReason ? " needs-reason" : ""}" data-role="weighted-status">${escapeHtml(item.statusLabel)}</span>
                   <small data-role="weighted-helper">${item.statusKey === "pending" ? "Aun sin conteo." : item.missingReason ? "Falta motivo para guardar la diferencia." : item.incident ? item.difference < 0 ? `Faltan ${formatQuantity(Math.abs(item.difference))} kg.` : `Sobran ${formatQuantity(item.difference)} kg.` : item.statusKey === "invalid" ? "Captura un numero valido mayor o igual a 0." : "Cuadra con el stock del POS."}</small>
                 </div>
               </td>
@@ -1778,7 +2446,7 @@ function renderAdminWeightedAuditPanel() {
               <td>
                 <input class="inventory-input" data-weighted-draft-field="countedStock" type="number" min="0" step="0.001" value="${escapeHtml(item.rawCountedStock)}" ${isCompleted ? "disabled" : ""} />
               </td>
-              <td class="weighted-audit-difference ${item.statusKey}" data-role="weighted-difference">${item.statusKey === "pending" ? "-" : item.statusKey === "invalid" ? "Invalido" : `${item.difference > 0 ? "+" : ""}${escapeHtml(formatQuantity(item.difference))}`}</td>
+              <td class="weighted-audit-difference ${sanitizeClassToken(item.statusKey, "pending")}" data-role="weighted-difference">${item.statusKey === "pending" ? "-" : item.statusKey === "invalid" ? "Invalido" : `${item.difference > 0 ? "+" : ""}${escapeHtml(formatQuantity(item.difference))}`}</td>
               <td>
                 <input class="inventory-input" data-weighted-draft-field="reason" type="text" maxlength="240" value="${escapeHtml(item.reason || "")}" placeholder="${item.reasonRequired ? "Motivo obligatorio si hay diferencia" : "Sin diferencia o nota opcional"}" ${isCompleted ? "disabled" : ""} />
               </td>

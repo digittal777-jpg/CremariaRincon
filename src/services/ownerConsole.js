@@ -1,6 +1,7 @@
 const { createHttpError, getBusinessProfile, getEnabledModules, normalizeConfigCode } = require("../utils/helpers");
 const { getSetting, setSetting } = require("../utils/settings");
 const businessProfileService = require("./businessProfile");
+const { getOwnerOperationGuide } = require("./ownerOperations");
 
 const OWNER_AVAILABLE_MODULES = [
   {
@@ -142,6 +143,7 @@ function getOwnerConsoleBundle() {
     availableModules: listOwnerAvailableModules(),
     adminCapabilities: getAdminCapabilities(),
     adminSections: listOwnerAdminSectionDefinitions(),
+    operationGuide: getOwnerOperationGuide(),
   };
 }
 
@@ -159,6 +161,7 @@ function updateOwnerConsoleAccess(payload = {}) {
     availableModules: listOwnerAvailableModules(),
     adminCapabilities,
     adminSections: listOwnerAdminSectionDefinitions(),
+    operationGuide: getOwnerOperationGuide(),
   };
 }
 

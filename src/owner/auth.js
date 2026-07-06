@@ -90,21 +90,22 @@ function parseCookiesFromRequest(request) {
       return cookies;
     }
 
-    cookies[key] = decodeURIComponent(value);
+    try {
+      cookies[key] = decodeURIComponent(value);
+    } catch (_error) {
+      cookies[key] = value;
+    }
     return cookies;
   }, {});
 }
 
 function getOwnerClientAddress(request) {
-  const forwardedFor = String(request?.headers?.["x-forwarded-for"] || "")
-    .split(",")
-    .map((fragment) => fragment.trim())
-    .find(Boolean);
-
-  return forwardedFor
+  return String(
+    request?.ip
     || request?.socket?.remoteAddress
-    || request?.ip
-    || "unknown";
+    || request?.connection?.remoteAddress
+    || "unknown",
+  ).trim() || "unknown";
 }
 
 function getOwnerSessionIdFromRequest(request) {
@@ -176,6 +177,13 @@ function getOwnerSession(request, options = {}) {
 
   const row = getOwnerSessionRow(sessionId);
   if (!row) {
+    destroyOwnerSession(sessionId);
+    request.ownerSession = null;
+    return null;
+  }
+
+  const expiresAtMs = Date.parse(row.expires_at);
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
     destroyOwnerSession(sessionId);
     request.ownerSession = null;
     return null;

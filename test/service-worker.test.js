@@ -130,6 +130,16 @@ test("navigation caching only stores successful html responses", async () => {
       });
     }
 
+    if (fetchMode === "ok-html-no-store") {
+      return new Response("<html>OK</html>", {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store",
+        },
+      });
+    }
+
     return new Response("<html>OK</html>", {
       status: 200,
       headers: { "content-type": "text/html; charset=utf-8" },
@@ -139,7 +149,25 @@ test("navigation caching only stores successful html responses", async () => {
   await context.handleNavigationRequest(new Request("https://pos.test/"));
   assert.equal(Boolean(caches.stores.get("retail-base-static-v15")?.has("/index.html")), false);
 
+  fetchMode = "ok-html-no-store";
+  await context.handleNavigationRequest(new Request("https://pos.test/"));
+  assert.equal(Boolean(caches.stores.get("retail-base-static-v15")?.has("/index.html")), false);
+
   fetchMode = "ok-html";
   await context.handleNavigationRequest(new Request("https://pos.test/"));
   assert.equal(Boolean(caches.stores.get("retail-base-static-v15")?.has("/index.html")), true);
+});
+
+test("static caching skips no-store responses", async () => {
+  const { context, caches } = loadServiceWorkerContext(async () =>
+    new Response("body", {
+      status: 200,
+      headers: {
+        "content-type": "text/css; charset=utf-8",
+        "cache-control": "no-store",
+      },
+    }));
+
+  await context.handleStaticRequest(new Request("https://pos.test/index.html"));
+  assert.equal(Boolean(caches.stores.get("retail-base-static-v15")?.has("https://pos.test/index.html")), false);
 });

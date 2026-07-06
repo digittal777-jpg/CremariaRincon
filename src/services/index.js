@@ -18,10 +18,12 @@ const backups = require("./backups");
 const periodClosures = require("./periodClosures");
 const profitability = require("./profitability");
 const subscription = require("./subscription");
+const controlPlane = require("./controlPlane");
 const errorReports = require("./errorReports");
 const supportHealth = require("./supportHealth");
 const { assertModuleEnabled } = require("../utils/helpers");
 const ownerConsole = require("./ownerConsole");
+const ownerOperations = require("./ownerOperations");
 
 module.exports = {
   ...products,
@@ -44,8 +46,10 @@ module.exports = {
   ...periodClosures,
   ...profitability,
   ...subscription,
+  ...controlPlane,
   ...errorReports,
   ...supportHealth,
   ...ownerConsole,
+  ...ownerOperations,
   assertModuleEnabled,
 };

@@ -180,6 +180,85 @@ function updateServiceSubscription(payload = {}) {
   return getServiceSubscription();
 }
 
+function normalizeOptionalIso(value, message) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return null;
+  }
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime())) {
+    throw createHttpError(message, 400);
+  }
+  return date.toISOString();
+}
+
+function syncServiceSubscriptionSnapshot(payload = {}) {
+  ensureServiceSubscription();
+  const status = normalizeText(payload.status || "trial", 24).toLowerCase();
+  if (!SERVICE_STATUS_VALUES.has(status)) {
+    throw createHttpError("El estado de suscripcion central no es valido.", 400);
+  }
+
+  const planCode = normalizeText(payload.planCode ?? payload.plan_code ?? "central", 48) || "central";
+  const currencyCode = normalizeText(payload.currencyCode ?? payload.currency_code ?? "MXN", 8).toUpperCase() || "MXN";
+  const monthlyAmount = roundMoney(payload.monthlyAmount ?? payload.monthly_amount ?? 0);
+  if (!Number.isFinite(monthlyAmount) || monthlyAmount < 0) {
+    throw createHttpError("El monto de suscripcion central no es valido.", 400);
+  }
+
+  const currentPeriodStart = normalizeOptionalDateKey(
+    payload.currentPeriodStart ?? payload.current_period_start,
+    "La fecha inicial central debe tener formato YYYY-MM-DD.",
+  );
+  const currentPeriodEnd = normalizeOptionalDateKey(
+    payload.currentPeriodEnd ?? payload.current_period_end,
+    "La fecha final central debe tener formato YYYY-MM-DD.",
+  );
+  const gracePeriodUntil = normalizeOptionalDateKey(
+    payload.gracePeriodUntil ?? payload.grace_period_until,
+    "La fecha de gracia central debe tener formato YYYY-MM-DD.",
+  );
+  if (currentPeriodStart && currentPeriodEnd && currentPeriodStart > currentPeriodEnd) {
+    throw createHttpError("El periodo central no es valido.", 400);
+  }
+
+  const lastPaymentAt = normalizeOptionalIso(
+    payload.lastPaymentAt ?? payload.last_payment_at,
+    "La fecha de ultimo pago central no es valida.",
+  );
+  const notes = normalizeText(payload.notes ?? "", 1000);
+
+  db.prepare(`
+    UPDATE service_subscription
+    SET
+      plan_code = ?,
+      status = ?,
+      monthly_amount = ?,
+      currency_code = ?,
+      current_period_start = ?,
+      current_period_end = ?,
+      grace_period_until = ?,
+      last_payment_at = ?,
+      notes = ?,
+      updated_at = ?
+    WHERE id = ?
+  `).run(
+    planCode,
+    status,
+    monthlyAmount,
+    currencyCode,
+    currentPeriodStart,
+    currentPeriodEnd,
+    gracePeriodUntil,
+    lastPaymentAt,
+    notes,
+    nowIso(),
+    SERVICE_SUBSCRIPTION_ID,
+  );
+
+  return getServiceSubscription();
+}
+
 function mapPayment(row) {
   return {
     id: row.id,
@@ -201,6 +280,106 @@ function listServiceSubscriptionPayments(limit = 12) {
     ORDER BY paid_at DESC, id DESC
     LIMIT ?
   `).all(safeLimit).map(mapPayment);
+}
+
+function normalizePaymentSnapshot(payment = {}) {
+  const amount = roundMoney(payment.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return null;
+  }
+  const paidAt = normalizeOptionalIso(
+    payment.paidAt ?? payment.paid_at,
+    "La fecha del pago central no es valida.",
+  );
+  if (!paidAt) {
+    return null;
+  }
+  const periodStart = normalizeOptionalDateKey(
+    payment.periodStart ?? payment.period_start,
+    "La fecha inicial del pago central debe tener formato YYYY-MM-DD.",
+  );
+  const periodEnd = normalizeOptionalDateKey(
+    payment.periodEnd ?? payment.period_end,
+    "La fecha final del pago central debe tener formato YYYY-MM-DD.",
+  );
+  if (periodStart && periodEnd && periodStart > periodEnd) {
+    throw createHttpError("El periodo del pago central no es valido.", 400);
+  }
+
+  return {
+    amount,
+    paymentMethod: normalizeText(payment.paymentMethod ?? payment.payment_method ?? "", 60),
+    paidAt,
+    periodStart,
+    periodEnd,
+    notes: normalizeText(payment.notes ?? "", 1000),
+  };
+}
+
+function syncServiceSubscriptionPayments(payments = []) {
+  const source = Array.isArray(payments) ? payments : [];
+  let inserted = 0;
+  let skipped = 0;
+  const now = nowIso();
+
+  const exists = db.prepare(`
+    SELECT id
+    FROM service_subscription_payments
+    WHERE
+      amount = ?
+      AND paid_at = ?
+      AND COALESCE(period_start, '') = COALESCE(?, '')
+      AND COALESCE(period_end, '') = COALESCE(?, '')
+    LIMIT 1
+  `);
+  const insert = db.prepare(`
+    INSERT INTO service_subscription_payments (
+      amount,
+      payment_method,
+      paid_at,
+      period_start,
+      period_end,
+      notes,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  db.transaction(() => {
+    source.forEach((payment) => {
+      const normalized = normalizePaymentSnapshot(payment);
+      if (!normalized) {
+        skipped += 1;
+        return;
+      }
+      const duplicate = exists.get(
+        normalized.amount,
+        normalized.paidAt,
+        normalized.periodStart,
+        normalized.periodEnd,
+      );
+      if (duplicate) {
+        skipped += 1;
+        return;
+      }
+
+      insert.run(
+        normalized.amount,
+        normalized.paymentMethod,
+        normalized.paidAt,
+        normalized.periodStart,
+        normalized.periodEnd,
+        normalized.notes,
+        now,
+      );
+      inserted += 1;
+    });
+  })();
+
+  return {
+    inserted,
+    skipped,
+    total: source.length,
+  };
 }
 
 function recordServiceSubscriptionPayment(payload = {}) {
@@ -277,5 +456,7 @@ module.exports = {
   getServiceSubscription,
   listServiceSubscriptionPayments,
   recordServiceSubscriptionPayment,
+  syncServiceSubscriptionPayments,
+  syncServiceSubscriptionSnapshot,
   updateServiceSubscription,
 };

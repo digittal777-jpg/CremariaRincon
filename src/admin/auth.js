@@ -83,21 +83,22 @@ function parseCookiesFromRequest(request) {
       return cookies;
     }
 
-    cookies[key] = decodeURIComponent(value);
+    try {
+      cookies[key] = decodeURIComponent(value);
+    } catch (_error) {
+      cookies[key] = value;
+    }
     return cookies;
   }, {});
 }
 
 function getAdminClientAddress(request) {
-  const forwardedFor = String(request?.headers?.["x-forwarded-for"] || "")
-    .split(",")
-    .map((fragment) => fragment.trim())
-    .find(Boolean);
-
-  return forwardedFor
+  return String(
+    request?.ip
     || request?.socket?.remoteAddress
-    || request?.ip
-    || "unknown";
+    || request?.connection?.remoteAddress
+    || "unknown",
+  ).trim() || "unknown";
 }
 
 function getAdminSessionIdFromRequest(request) {

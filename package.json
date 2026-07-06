@@ -16,6 +16,8 @@
     "seed:business": "node scripts/seed-business-template.js",
     "clone:business": "node scripts/clone-business.js",
     "provision:client": "node scripts/provision-client.js",
+    "validate:client": "node scripts/validate-client.js",
+    "owner-control:start": "node ../owner-control/server.js",
     "telegram:updates": "node scripts/telegram-helper.js updates",
     "telegram:test": "node scripts/telegram-helper.js send-test",
     "test": "node --test"

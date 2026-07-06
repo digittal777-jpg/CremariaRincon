@@ -32,6 +32,38 @@ const ADMIN_WORKSPACE_SECTION_KEYS = [
   "weightedAudit",
   "periodClosures",
 ];
+const ADMIN_SECTION_KEYS = [
+  "overview",
+  "inventory",
+  "operations",
+  "closures",
+  "team",
+  "config",
+];
+const ADMIN_SECTION_WORKSPACE_OPTIONS = {
+  overview: {
+    snapshot: true,
+  },
+  inventory: {
+    snapshot: true,
+  },
+  operations: {
+    editorData: true,
+    requests: true,
+  },
+  closures: {
+    weightedAudit: true,
+    periodClosures: true,
+  },
+  team: {
+    branches: true,
+    cashiers: true,
+  },
+  config: {
+    auditLogs: true,
+    config: true,
+  },
+};
 
 function getAdminWorkspaceProfile(profile = "full") {
   if (profile === "live") {
@@ -74,6 +106,70 @@ function getAdminWorkspaceLiveOptions(branch = getAdminBranch()) {
     profile: "live",
     branch,
   };
+}
+
+function normalizeAdminSectionKey(sectionKey = state.admin.activeSection) {
+  const safeSection = String(sectionKey || "").trim();
+  return ADMIN_SECTION_KEYS.includes(safeSection) ? safeSection : "overview";
+}
+
+function getAdminWorkspaceSectionOptions(
+  sectionKey = state.admin.activeSection,
+  branch = getAdminBranch(),
+  force = false,
+) {
+  const activeSection = normalizeAdminSectionKey(sectionKey);
+  return {
+    profile: "custom",
+    branch,
+    force: Boolean(force),
+    ...(ADMIN_SECTION_WORKSPACE_OPTIONS[activeSection] || ADMIN_SECTION_WORKSPACE_OPTIONS.overview),
+  };
+}
+
+function getAdminWorkspaceSectionLiveOptions(branch = getAdminBranch()) {
+  return getAdminWorkspaceSectionOptions(state.admin.activeSection, branch, false);
+}
+
+function renderAdminSectionNavigation() {
+  if (!refs.adminCard) {
+    return;
+  }
+
+  const activeSection = normalizeAdminSectionKey(state.admin.activeSection);
+  state.admin.activeSection = activeSection;
+  refs.adminCard.classList.add("has-section-filter");
+  refs.adminCard.dataset.activeAdminSection = activeSection;
+  refs.adminSectionNav
+    ?.querySelectorAll("[data-admin-section-tab]")
+    .forEach((button) => {
+      const isActive = button.dataset.adminSectionTab === activeSection;
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-selected", isActive ? "true" : "false");
+    });
+}
+
+function setAdminActiveSection(sectionKey, options = {}) {
+  const activeSection = normalizeAdminSectionKey(sectionKey);
+  if (state.admin.activeSection === activeSection && options.force !== true) {
+    renderAdminSectionNavigation();
+    return;
+  }
+
+  state.admin.activeSection = activeSection;
+  renderAdminSectionNavigation();
+  if (refs.adminModal?.classList.contains("open")) {
+    renderAdminModal();
+  }
+  if (
+    options.refresh !== false
+    && refs.adminModal?.classList.contains("open")
+    && state.admin.authenticated
+  ) {
+    void refreshAdminWorkspace(
+      getAdminWorkspaceSectionOptions(activeSection, getAdminBranch(), options.force === true),
+    ).catch(() => {});
+  }
 }
 
 function getAdminWorkspaceBranchSwitchOptions(branch = getAdminBranch()) {
@@ -120,6 +216,8 @@ function resetAdminSensitiveWorkspaceData() {
   state.admin.metrics = null;
   state.admin.profitability = null;
   state.admin.subscription = null;
+  state.admin.subscriptionControl = null;
+  state.admin.subscriptionPayments = [];
   state.admin.supportHealth = null;
   state.admin.backupsStatus = null;
   state.admin.auditLogs = [];
@@ -1076,7 +1174,7 @@ function applyAdminSnapshot(snapshot) {
 
 async function loadAdminSnapshot(branch = getAdminBranch()) {
   const snapshot = await requestAdminJson(
-    `/api/bootstrap?branch=${encodeURIComponent(branch)}&includeInactiveInventory=1`,
+    `/api/admin/bootstrap?branch=${encodeURIComponent(branch)}&includeInactiveInventory=1`,
   );
   applyAdminSnapshot(snapshot);
   state.admin.capabilitiesResolved = Array.isArray(snapshot.adminCapabilities);
@@ -1731,14 +1829,14 @@ function syncWeightedAuditRowPreview(row) {
   }
 
   const preview = getWeightedAuditPreviewItem(sessionItem);
-  row.dataset.auditStatus = preview.statusKey;
+  row.dataset.auditStatus = sanitizeClassToken(preview.statusKey, "pending");
   row.classList.toggle("weighted-audit-row-needs-reason", preview.missingReason);
   row.classList.toggle("weighted-audit-row-incident", preview.incident);
 
   const statusNode = row.querySelector('[data-role="weighted-status"]');
   if (statusNode) {
     statusNode.textContent = preview.statusLabel;
-    statusNode.className = `small-pill weighted-audit-pill ${preview.statusKey}${preview.missingReason ? " needs-reason" : ""}`;
+    statusNode.className = `small-pill weighted-audit-pill ${sanitizeClassToken(preview.statusKey, "pending")}${preview.missingReason ? " needs-reason" : ""}`;
   }
 
   const differenceNode = row.querySelector('[data-role="weighted-difference"]');
@@ -1749,7 +1847,7 @@ function syncWeightedAuditRowPreview(row) {
         ? "Invalido"
         : `${preview.difference > 0 ? "+" : ""}${formatQuantity(preview.difference)}`;
     differenceNode.textContent = differenceText;
-    differenceNode.className = `weighted-audit-difference ${preview.statusKey}`;
+    differenceNode.className = `weighted-audit-difference ${sanitizeClassToken(preview.statusKey, "pending")}`;
   }
 
   const helperNode = row.querySelector('[data-role="weighted-helper"]');
@@ -2032,6 +2130,8 @@ async function loadAdminMetrics() {
     state.admin.metrics = null;
     state.admin.profitability = null;
     state.admin.subscription = null;
+    state.admin.subscriptionControl = null;
+    state.admin.subscriptionPayments = [];
     state.admin.supportHealth = null;
     state.admin.backupsStatus = null;
     state.admin.metricsLoading = false;
@@ -2042,12 +2142,19 @@ async function loadAdminMetrics() {
 
   try {
     const branch = getAdminBranch();
+    const profitabilityParams = new URLSearchParams({
+      period: state.admin.profitabilityPeriod || "today",
+      branch,
+    });
+    if (state.admin.profitabilityDateKey) {
+      profitabilityParams.set("dateKey", state.admin.profitabilityDateKey);
+    }
     const [metricsResult, backupStatusResult, profitabilityResult, subscriptionResult, healthResult] = await Promise.allSettled([
       requestAdminJson("/api/admin/metrics"),
       hasAdminCapability("backups")
         ? requestAdminJson("/api/admin/backups/status")
         : Promise.resolve(null),
-      requestAdminJson(`/api/admin/profitability?period=today&branch=${encodeURIComponent(branch)}`),
+      requestAdminJson(`/api/admin/profitability?${profitabilityParams.toString()}`),
       requestAdminJson("/api/admin/service-subscription"),
       requestAdminJson(`/api/admin/support-health?branch=${encodeURIComponent(branch)}`),
     ]);
@@ -2063,9 +2170,23 @@ async function loadAdminMetrics() {
     }
     if (subscriptionResult.status === "fulfilled") {
       state.admin.subscription = subscriptionResult.value?.subscription || null;
+      state.admin.subscriptionControl = subscriptionResult.value?.controlPlane || null;
+      state.admin.subscriptionPayments = Array.isArray(subscriptionResult.value?.payments)
+        ? subscriptionResult.value.payments
+        : [];
     }
     if (healthResult.status === "fulfilled") {
       state.admin.supportHealth = healthResult.value?.health || null;
+    }
+    if (subscriptionResult.status === "fulfilled" && state.admin.subscriptionControl?.usable) {
+      void syncAdminControlConfigFromControlPlane({
+        silent: true,
+        skipMetricsReload: true,
+        minIntervalMs: 30 * 1000,
+      });
+    }
+    if (healthResult.status === "fulfilled" && state.admin.supportHealth && state.admin.subscriptionControl?.usable) {
+      void reportAdminSupportHealthToControlPlane(branch);
     }
   } catch (_error) {
     // Evita toasts repetidos si el panel admin queda abierto sin conexion.
@@ -2076,6 +2197,225 @@ async function loadAdminMetrics() {
     } else {
       renderAdminModal();
     }
+  }
+}
+
+async function refreshAdminSubscriptionControlQuietly() {
+  try {
+    const response = await requestAdminJson("/api/admin/service-subscription");
+    state.admin.subscription = response.subscription || state.admin.subscription || null;
+    state.admin.subscriptionControl = response.controlPlane || state.admin.subscriptionControl || null;
+    state.admin.subscriptionPayments = Array.isArray(response.payments)
+      ? response.payments
+      : state.admin.subscriptionPayments;
+    renderAdminModal();
+  } catch (_error) {
+    // Si tampoco puedo refrescar el estado, conservamos el snapshot actual.
+  }
+}
+
+async function reportAdminSupportHealthToControlPlane(branch = getAdminBranch(), options = {}) {
+  if (!state.admin.subscriptionControl?.usable) {
+    return null;
+  }
+  if (state.admin.controlPlaneHealthReporting) {
+    return null;
+  }
+
+  const now = Date.now();
+  const minIntervalMs = Number(options.minIntervalMs || 5 * 60 * 1000);
+  if (!options.force && now - Number(state.admin.controlPlaneHealthReportedAt || 0) < minIntervalMs) {
+    return null;
+  }
+
+  state.admin.controlPlaneHealthReporting = true;
+  try {
+    const response = await requestAdminJson("/api/admin/control-plane/health/report", {
+      method: "POST",
+      body: JSON.stringify({ branch }),
+    });
+    state.admin.controlPlaneHealthReportedAt = Date.now();
+    return response;
+  } catch (_error) {
+    await refreshAdminSubscriptionControlQuietly();
+    return null;
+  } finally {
+    state.admin.controlPlaneHealthReporting = false;
+  }
+}
+
+async function ensureOwnerSubscriptionWriteAccess(actionMessage) {
+  if (state.online && state.owner.authenticated && !state.owner.csrfToken) {
+    try {
+      await loadOwnerAuthStatus();
+    } catch (_error) {
+      // El mensaje especifico lo damos abajo para mantener clara la regla owner-only.
+    }
+  }
+
+  if (!state.owner.authenticated || !state.owner.csrfToken) {
+    showToast(actionMessage, "error");
+    return false;
+  }
+
+  return true;
+}
+
+async function syncAdminSubscriptionFromControlPlane() {
+  if (!hasAdminCapability("support_tools")) {
+    showToast("La sincronizacion central esta bloqueada por permisos.", "error");
+    return;
+  }
+
+  try {
+    const response = await requestAdminJson("/api/admin/service-subscription/sync", {
+      method: "POST",
+    });
+    state.admin.subscription = response.subscription || null;
+    state.admin.subscriptionControl = response.controlPlane || state.admin.subscriptionControl || null;
+    state.admin.subscriptionPayments = Array.isArray(response.payments) ? response.payments : state.admin.subscriptionPayments;
+    showToast("Suscripcion sincronizada desde owner-control.", "success");
+    renderAdminModal();
+    void loadAdminMetrics();
+  } catch (error) {
+    await refreshAdminSubscriptionControlQuietly();
+    showToast(error.message || "No pude sincronizar owner-control.", "error");
+  }
+}
+
+async function syncAdminControlConfigFromControlPlane(options = {}) {
+  if (!hasAdminCapability("support_tools")) {
+    if (!options.silent) {
+      showToast("La configuracion central esta bloqueada por permisos.", "error");
+    }
+    return;
+  }
+  if (state.admin.controlPlaneConfigSyncing) {
+    return;
+  }
+
+  const now = Date.now();
+  const minIntervalMs = Number(options.minIntervalMs || 0);
+  if (!options.force && minIntervalMs > 0 && now - Number(state.admin.controlPlaneConfigSyncedAt || 0) < minIntervalMs) {
+    return;
+  }
+
+  state.admin.controlPlaneConfigSyncing = true;
+  try {
+    const response = await requestAdminJson("/api/admin/control-plane/config/sync", {
+      method: "POST",
+    });
+    state.profile = response.businessProfile || response.ownerConsole?.businessProfile || state.profile;
+    state.enabledModules = Array.isArray(response.enabledModules)
+      ? response.enabledModules
+      : state.enabledModules;
+    state.adminCapabilities = Array.isArray(response.adminCapabilities)
+      ? response.adminCapabilities
+      : state.adminCapabilities;
+    state.admin.capabilitiesResolved = Array.isArray(response.adminCapabilities);
+    state.admin.subscriptionControl = response.controlPlane || state.admin.subscriptionControl || null;
+    state.admin.controlPlaneConfigSyncedAt = Date.now();
+    updateModuleVisibility();
+    renderAdminModal();
+    if (response.healthReport) {
+      state.admin.controlPlaneHealthReportedAt = Date.now();
+    }
+    if (!options.silent) {
+      showToast(
+        response.healthReportError
+          ? "Configuracion sincronizada; salud central pendiente."
+          : "Configuracion POS y salud sincronizadas desde owner-control.",
+        response.healthReportError ? "warning" : "success",
+      );
+    }
+    if (!options.skipMetricsReload) {
+      void loadAdminMetrics();
+    }
+  } catch (error) {
+    await refreshAdminSubscriptionControlQuietly();
+    if (!options.silent) {
+      showToast(error.message || "No pude sincronizar configuracion central.", "error");
+    }
+  } finally {
+    state.admin.controlPlaneConfigSyncing = false;
+  }
+}
+
+async function saveAdminSubscriptionSettings() {
+  if (!hasAdminCapability("support_tools")) {
+    showToast("La suscripcion esta bloqueada por permisos.", "error");
+    return;
+  }
+  if (!await ensureOwnerSubscriptionWriteAccess("Solo owner puede guardar la suscripcion.")) {
+    return;
+  }
+
+  const payload = {
+    planCode: refs.adminSubscriptionPlan?.value.trim(),
+    status: refs.adminSubscriptionState?.value,
+    monthlyAmount: refs.adminSubscriptionAmount?.value,
+    currentPeriodEnd: refs.adminSubscriptionPeriodEnd?.value,
+    gracePeriodUntil: refs.adminSubscriptionGrace?.value,
+    notes: refs.adminSubscriptionNotes?.value.trim(),
+  };
+
+  try {
+    const response = await requestOwnerJson("/api/owner/service-subscription", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    state.admin.subscription = response.subscription || null;
+    showToast("Estado de suscripcion guardado.", "success");
+    renderAdminModal();
+    void loadAdminMetrics();
+  } catch (error) {
+    showToast(error.message || "No pude guardar la suscripcion.", "error");
+  }
+}
+
+async function recordAdminSubscriptionPayment() {
+  if (!hasAdminCapability("support_tools")) {
+    showToast("El registro de pagos esta bloqueado por permisos.", "error");
+    return;
+  }
+  if (!await ensureOwnerSubscriptionWriteAccess("Solo owner puede registrar pagos de suscripcion.")) {
+    return;
+  }
+
+  const amount = Number(refs.adminSubscriptionPaymentAmount?.value || 0);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    showToast("Captura un pago mayor a cero.", "error");
+    return;
+  }
+
+  const payload = {
+    amount,
+    paymentMethod: refs.adminSubscriptionPaymentMethod?.value.trim() || "Transferencia",
+    periodStart: refs.adminSubscriptionPaymentStart?.value,
+    periodEnd: refs.adminSubscriptionPaymentEnd?.value,
+    notes: refs.adminSubscriptionPaymentNotes?.value.trim(),
+  };
+
+  try {
+    const response = await requestOwnerJson("/api/owner/service-subscription/payments", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    state.admin.subscription = response.subscription || null;
+    if (response.payment) {
+      state.admin.subscriptionPayments = [
+        response.payment,
+        ...(Array.isArray(state.admin.subscriptionPayments) ? state.admin.subscriptionPayments : []),
+      ].slice(0, 12);
+    }
+    if (refs.adminSubscriptionPaymentNotes) {
+      refs.adminSubscriptionPaymentNotes.value = "";
+    }
+    showToast("Pago de suscripcion registrado.", "success");
+    renderAdminModal();
+    void loadAdminMetrics();
+  } catch (error) {
+    showToast(error.message || "No pude registrar el pago.", "error");
   }
 }
 
@@ -2099,7 +2439,51 @@ function startAdminMetricsPolling() {
   }, 15000);
 }
 
+function setAdminInventoryMode(mode, options = {}) {
+  const nextMode = normalizeAdminInventoryMode(mode);
+  state.admin.inventoryMode = nextMode;
+  if (nextMode === "movement") {
+    state.admin.inventoryExpanded = false;
+  } else if (options.expand) {
+    state.admin.inventoryExpanded = true;
+  }
+
+  if (state.admin.inventoryExpanded) {
+    renderInventory();
+  }
+  renderAdminModal();
+}
+
+function setAdminInventoryFilter(filter) {
+  state.admin.inventoryFilter = normalizeAdminInventoryFilterKey(filter);
+  if (state.admin.inventoryExpanded) {
+    renderInventory();
+  }
+  renderAdminModal();
+}
+
+function updateAdminInventorySearch(value) {
+  state.admin.inventorySearch = String(value || "");
+  if (state.admin.inventoryExpanded) {
+    renderInventory();
+  }
+}
+
+async function openAdminInventoryMovement(mode = "receive") {
+  setAdminInventoryMode("movement");
+  state.quickImport.mode = mode === "return" ? "return" : "receive";
+  await openQuickImportModal();
+}
+
+function openAdminInventoryCountMode() {
+  setAdminInventoryMode("edit", { expand: true });
+}
+
 function toggleAdminInventoryPanel() {
+  if (normalizeAdminInventoryMode(state.admin.inventoryMode) !== "edit") {
+    setAdminInventoryMode("edit", { expand: true });
+    return;
+  }
   state.admin.inventoryExpanded = !state.admin.inventoryExpanded;
   if (state.admin.inventoryExpanded) {
     renderInventory();
@@ -2156,7 +2540,9 @@ async function openAdminModal() {
   }
   renderAdminModal();
   startAdminMetricsPolling();
-  void refreshAdminWorkspace(getAdminWorkspaceFullOptions(getAdminBranch(), true)).catch(() => {});
+  void refreshAdminWorkspace(
+    getAdminWorkspaceSectionOptions(state.admin.activeSection, getAdminBranch(), true),
+  ).catch(() => {});
 }
 
 function closeAdminModal(options = {}) {
@@ -2472,6 +2858,7 @@ async function loadOwnerConsoleConfig() {
     state.owner.availableModules = Array.isArray(response.availableModules) ? response.availableModules : [];
     state.owner.adminSections = Array.isArray(response.adminSections) ? response.adminSections : [];
     state.owner.templates = Array.isArray(templatesResponse.templates) ? templatesResponse.templates : [];
+    state.owner.operationGuide = response.operationGuide || null;
     state.enabledModules = Array.isArray(response.enabledModules) ? response.enabledModules : state.enabledModules;
     state.adminCapabilities = Array.isArray(response.adminCapabilities) ? response.adminCapabilities : state.adminCapabilities;
     state.admin.capabilitiesResolved = Array.isArray(response.adminCapabilities);
@@ -2492,6 +2879,16 @@ async function loadOwnerConsoleConfig() {
   } finally {
     state.owner.loading = false;
     renderOwnerConsoleModal();
+  }
+}
+
+async function refreshOwnerOperationGuideQuietly() {
+  try {
+    const response = await requestOwnerJson("/api/owner/config");
+    state.owner.operationGuide = response.operationGuide || state.owner.operationGuide;
+    renderOwnerConsoleModal();
+  } catch (_error) {
+    // Si tampoco puedo refrescar el owner panel, dejamos el estado actual.
   }
 }
 
@@ -2543,6 +2940,145 @@ async function submitOwnerConsole() {
     showToast(error.message || "No pude guardar la consola owner.", "error");
   } finally {
     state.owner.saving = false;
+    renderOwnerConsoleModal();
+  }
+}
+
+async function copyOwnerOperationCommand(event) {
+  const syncRuntimeButton = event.target.closest("[data-owner-runtime-sync]");
+  if (syncRuntimeButton) {
+    await syncOwnerRuntimeConfigFromControlPlane();
+    return;
+  }
+
+  const saveRuntimeButton = event.target.closest("[data-owner-runtime-save]");
+  if (saveRuntimeButton) {
+    await submitOwnerRuntimeConfig();
+    return;
+  }
+
+  const button = event.target.closest("[data-owner-copy-command]");
+  if (!button) {
+    return;
+  }
+
+  const commandId = button.dataset.ownerCopyCommand || "";
+  const command = (state.owner.operationGuide?.commands || [])
+    .find((item) => item.id === commandId)
+    ?.command;
+
+  if (!command) {
+    showToast("No pude encontrar el comando owner.", "error");
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(command);
+    showToast("Comando copiado.", "success");
+  } catch (_error) {
+    showToast("No pude copiarlo; selecciona el comando manualmente.", "error");
+  }
+}
+
+function getOwnerRuntimeConfigPayload() {
+  const values = {};
+  const clearKeys = [];
+  refs.ownerOperationGuide
+    ?.querySelectorAll("[data-owner-runtime-key]")
+    .forEach((field) => {
+      const key = field.dataset.ownerRuntimeKey || "";
+      const isSecret = field.dataset.ownerRuntimeSecret === "true";
+      const value = String(field.value || "").trim();
+      const clearInput = [...refs.ownerOperationGuide.querySelectorAll("[data-owner-runtime-clear]")]
+        .find((input) => input.dataset.ownerRuntimeClear === key);
+
+      if (clearInput?.checked) {
+        clearKeys.push(key);
+        return;
+      }
+      if (isSecret && !value) {
+        return;
+      }
+      values[key] = value;
+    });
+
+  return { values, clearKeys };
+}
+
+async function submitOwnerRuntimeConfig() {
+  if (!state.owner.authenticated) {
+    await openOwnerAuthModal();
+    return;
+  }
+
+  const payload = getOwnerRuntimeConfigPayload();
+  const valueCount = Object.keys(payload.values || {}).length + (payload.clearKeys || []).length;
+  if (valueCount === 0) {
+    showToast("No hay variables nuevas para guardar.", "info");
+    return;
+  }
+
+  state.owner.runtimeConfigSaving = true;
+  renderOwnerConsoleModal();
+  try {
+    const response = await requestOwnerJson("/api/owner/runtime-config", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    state.owner.operationGuide = response.operationGuide || state.owner.operationGuide;
+    const changed = Array.isArray(response.updatedKeys) && response.updatedKeys.length > 0
+      || Array.isArray(response.clearedKeys) && response.clearedKeys.length > 0;
+    const restartPending = Boolean(response.operationGuide?.current?.runtimeConfig?.restartRequired);
+    if (!changed) {
+      showToast(
+        restartPending
+          ? "No hubo cambios nuevos. El POS sigue con reinicio pendiente."
+          : "No hubo cambios nuevos en el archivo local.",
+        "info",
+      );
+    } else {
+      showToast(
+        response.requiresRestart
+          ? "Variables guardadas. Reinicia el POS para aplicar cambios de arranque."
+          : "Variables guardadas.",
+        "success",
+      );
+    }
+  } catch (error) {
+    showToast(error.message || "No pude guardar las variables del POS.", "error");
+  } finally {
+    state.owner.runtimeConfigSaving = false;
+    renderOwnerConsoleModal();
+  }
+}
+
+async function syncOwnerRuntimeConfigFromControlPlane() {
+  if (!state.owner.authenticated) {
+    await openOwnerAuthModal();
+    return;
+  }
+  if (state.owner.runtimeConfigSyncing) {
+    return;
+  }
+
+  state.owner.runtimeConfigSyncing = true;
+  renderOwnerConsoleModal();
+  try {
+    const response = await requestOwnerJson("/api/owner/runtime-config/sync", {
+      method: "POST",
+    });
+    state.owner.operationGuide = response.operationGuide || state.owner.operationGuide;
+    showToast(
+      response.requiresRestart
+        ? "Variables sincronizadas desde owner-control. Reinicia el POS para aplicarlas al proceso."
+        : "Variables sincronizadas desde owner-control.",
+      response.runtimeConfigSyncReportError ? "info" : "success",
+    );
+  } catch (error) {
+    await refreshOwnerOperationGuideQuietly();
+    showToast(error.message || "No pude sincronizar variables desde owner-control.", "error");
+  } finally {
+    state.owner.runtimeConfigSyncing = false;
     renderOwnerConsoleModal();
   }
 }

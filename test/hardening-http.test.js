@@ -6,10 +6,50 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { once } = require("node:events");
 const Database = require("better-sqlite3");
+const {
+  SELF_SIGNED_CERT_B64,
+  SELF_SIGNED_KEY_B64,
+} = require("../support/self-signed-tls");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const SERVER_PATH = path.join(ROOT_DIR, "src", "server.js");
 const WORKBOOK_PATH = path.join(ROOT_DIR, "Queseria El rincon V1.5.xlsx");
+const ISOLATED_SERVER_ENV_KEYS = [
+  "POS_CONFIG_PATH",
+  "POS_PUBLIC_ORIGIN",
+  "POS_ALLOWED_ORIGINS",
+  "POS_SECURE_COOKIES",
+  "POS_FORCE_HTTPS",
+  "POS_TRUST_PROXY",
+  "POS_HSTS_MAX_AGE_SECONDS",
+  "POS_HTTPS_CERT_PATH",
+  "POS_HTTPS_KEY_PATH",
+  "POS_HTTPS_CA_PATH",
+  "POS_HTTPS_CERT_B64",
+  "POS_HTTPS_KEY_B64",
+  "POS_HTTPS_CA_B64",
+  "POS_HTTP_REDIRECT_PORT",
+  "CONTROL_API_URL",
+  "CONTROL_CLIENT_SLUG",
+  "CONTROL_CLIENT_SECRET",
+  "CONTROL_REQUIRE_HTTPS",
+  "CONTROL_CONFIG_POLL_MS",
+  "CONTROL_SYNC_TIMEOUT_MS",
+  "CONTROL_CONFIG_SYNC_MAX_AGE_MS",
+  "RAILWAY_PUBLIC_DOMAIN",
+  "RAILWAY_STATIC_URL",
+];
+
+function buildIsolatedServerEnv(overrides = {}) {
+  const nextEnv = { ...process.env };
+  ISOLATED_SERVER_ENV_KEYS.forEach((key) => {
+    delete nextEnv[key];
+  });
+  return {
+    ...nextEnv,
+    ...overrides,
+  };
+}
 
 async function stopServerProcess(child) {
   if (child.exitCode != null) {
@@ -94,18 +134,20 @@ function createCookieClient(baseUrl) {
   };
 }
 
-async function startServer(testContext, { bootstrapToken = "" } = {}) {
+async function startServer(testContext, { bootstrapToken = "", env = {} } = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "retail-base-hardening-"));
   const dbPath = path.join(tempDir, "test.sqlite");
+  const runtimePath = path.join(tempDir, "runtime.json");
   const port = 33000 + Math.floor(Math.random() * 1000);
   const child = spawn(process.execPath, [SERVER_PATH], {
     cwd: ROOT_DIR,
-    env: {
-      ...process.env,
+    env: buildIsolatedServerEnv({
       PORT: String(port),
       POS_DB_PATH: dbPath,
+      POS_CONFIG_PATH: runtimePath,
       POS_BOOTSTRAP_TOKEN: bootstrapToken,
-    },
+      ...env,
+    }),
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -128,7 +170,7 @@ async function startServer(testContext, { bootstrapToken = "" } = {}) {
     try {
       const response = await fetch(`${baseUrl}/api/health`);
       if (response.ok) {
-        return { baseUrl, dbPath };
+        return { baseUrl, dbPath, port };
       }
     } catch (_error) {
       // Seguir esperando.
@@ -143,6 +185,338 @@ async function startServer(testContext, { bootstrapToken = "" } = {}) {
 
   throw new Error(`No pude levantar el servidor de prueba a tiempo:\n${logs}`);
 }
+
+async function startHttpsServer(testContext, { bootstrapToken = "", env = {} } = {}) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "retail-base-hardening-https-"));
+  const dbPath = path.join(tempDir, "test.sqlite");
+  const runtimePath = path.join(tempDir, "runtime.json");
+  const port = 34000 + Math.floor(Math.random() * 1000);
+  const redirectPort = 35000 + Math.floor(Math.random() * 1000);
+  const publicOrigin = `https://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, [SERVER_PATH], {
+    cwd: ROOT_DIR,
+    env: buildIsolatedServerEnv({
+      PORT: String(port),
+      POS_DB_PATH: dbPath,
+      POS_CONFIG_PATH: runtimePath,
+      POS_BOOTSTRAP_TOKEN: bootstrapToken,
+      POS_FORCE_HTTPS: "true",
+      POS_SECURE_COOKIES: "true",
+      POS_PUBLIC_ORIGIN: publicOrigin,
+      POS_HTTPS_CERT_B64: SELF_SIGNED_CERT_B64,
+      POS_HTTPS_KEY_B64: SELF_SIGNED_KEY_B64,
+      POS_HTTP_REDIRECT_PORT: String(redirectPort),
+      ...env,
+    }),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let logs = "";
+  child.stdout.on("data", (chunk) => {
+    logs += chunk.toString();
+  });
+  child.stderr.on("data", (chunk) => {
+    logs += chunk.toString();
+  });
+
+  testContext.after(async () => {
+    await stopServerProcess(child);
+    removeDirWithRetry(tempDir);
+  });
+
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      const response = await rawHttpsRequest(port, "/api/health");
+      if (response.status === 200) {
+        return { baseUrl: publicOrigin, dbPath, port, redirectPort };
+      }
+    } catch (_error) {
+      // Seguir esperando.
+    }
+
+    if (child.exitCode != null) {
+      throw new Error(`El servidor HTTPS termino antes de responder:\n${logs}`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  throw new Error(`No pude levantar el servidor HTTPS de prueba a tiempo:\n${logs}`);
+}
+
+async function rawHttpRequest(port, pathname, options = {}) {
+  return new Promise((resolve, reject) => {
+    const request = require("node:http").request({
+      host: options.host || "127.0.0.1",
+      port,
+      path: pathname,
+      method: options.method || "GET",
+      headers: options.headers || {},
+    }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+      response.on("end", () => {
+        let parsedBody = body;
+        try {
+          parsedBody = body ? JSON.parse(body) : null;
+        } catch (_error) {
+          parsedBody = body;
+        }
+        resolve({
+          status: response.statusCode,
+          headers: response.headers,
+          body: parsedBody,
+        });
+      });
+    });
+    request.on("error", reject);
+    if (options.body) {
+      request.write(options.body);
+    }
+    request.end();
+  });
+}
+
+async function rawHttpsRequest(port, pathname, options = {}) {
+  return new Promise((resolve, reject) => {
+    const request = require("node:https").request({
+      host: options.host || "127.0.0.1",
+      port,
+      path: pathname,
+      method: options.method || "GET",
+      headers: options.headers || {},
+      rejectUnauthorized: false,
+    }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+      response.on("end", () => {
+        let parsedBody = body;
+        try {
+          parsedBody = body ? JSON.parse(body) : null;
+        } catch (_error) {
+          parsedBody = body;
+        }
+        resolve({
+          status: response.statusCode,
+          headers: response.headers,
+          body: parsedBody,
+        });
+      });
+    });
+    request.on("error", reject);
+    if (options.body) {
+      request.write(options.body);
+    }
+    request.end();
+  });
+}
+
+function getNonLoopbackIpv4() {
+  const interfaces = os.networkInterfaces();
+  for (const addresses of Object.values(interfaces)) {
+    for (const addressInfo of addresses || []) {
+      const family = typeof addressInfo?.family === "string"
+        ? addressInfo.family
+        : Number(addressInfo?.family) === 6
+          ? "IPv6"
+          : "IPv4";
+      if (addressInfo?.address && !addressInfo.internal && family === "IPv4") {
+        return addressInfo.address;
+      }
+    }
+  }
+  return "";
+}
+
+test("POS blocks non-local HTTP APIs when HTTPS is forced", async (t) => {
+  const server = await startServer(t, {
+    env: {
+      POS_FORCE_HTTPS: "true",
+      POS_PUBLIC_ORIGIN: "https://pos-secure.example",
+      POS_TRUST_PROXY: "loopback,linklocal,uniquelocal",
+    },
+  });
+
+  const localHealth = await fetch(`${server.baseUrl}/api/health`);
+  assert.equal(localHealth.status, 200);
+
+  const remoteHost = getNonLoopbackIpv4();
+  assert.ok(remoteHost, "No encontre una IPv4 local para probar trafico HTTP no-loopback.");
+
+  const insecureApi = await rawHttpRequest(server.port, "/api/health", {
+    host: remoteHost,
+    headers: {
+      Host: "localhost",
+    },
+  });
+  assert.equal(insecureApi.status, 426);
+  assert.match(insecureApi.body.message, /HTTPS requerido/i);
+
+  const insecurePage = await rawHttpRequest(server.port, "/", {
+    host: remoteHost,
+    headers: {
+      Host: "evil.example",
+    },
+  });
+  assert.equal(insecurePage.status, 308);
+  assert.equal(String(insecurePage.headers.location || ""), "https://pos-secure.example/");
+
+  const insecureSocket = await rawHttpRequest(server.port, "/socket.io/?EIO=4&transport=polling&t=test", {
+    host: remoteHost,
+    headers: {
+      Host: "localhost",
+    },
+  });
+  assert.notEqual(insecureSocket.status, 200);
+  assert.match(String(JSON.stringify(insecureSocket.body || "")), /https|transport error|forbidden/i);
+
+  const forwardedHttps = await rawHttpRequest(server.port, "/api/health", {
+    headers: {
+      Host: "pos.example",
+      "X-Forwarded-Proto": "https",
+    },
+  });
+  assert.equal(forwardedHttps.status, 200);
+  assert.match(String(forwardedHttps.headers["strict-transport-security"] || ""), /max-age=/i);
+});
+
+test("POS ignores forged forwarded proto when trust proxy is disabled", async (t) => {
+  const server = await startServer(t, {
+    env: {
+      POS_FORCE_HTTPS: "true",
+      POS_PUBLIC_ORIGIN: "https://pos-secure.example",
+      POS_TRUST_PROXY: "false",
+    },
+  });
+  const remoteHost = getNonLoopbackIpv4();
+  assert.ok(remoteHost, "No encontre una IPv4 local para probar trafico HTTP no-loopback.");
+
+  const insecureApi = await rawHttpRequest(server.port, "/api/health", {
+    host: remoteHost,
+    headers: {
+      Host: "pos.example",
+      "X-Forwarded-Proto": "https",
+    },
+  });
+  assert.equal(insecureApi.status, 426);
+  assert.match(insecureApi.body.message, /HTTPS requerido/i);
+});
+
+test("POS survives an invalid trust proxy setting and fails closed", async (t) => {
+  const server = await startServer(t, {
+    env: {
+      POS_FORCE_HTTPS: "true",
+      POS_PUBLIC_ORIGIN: "https://pos-secure.example",
+      POS_TRUST_PROXY: "loopback,???",
+    },
+  });
+  const remoteHost = getNonLoopbackIpv4();
+  assert.ok(remoteHost, "No encontre una IPv4 local para probar trafico HTTP no-loopback.");
+
+  const insecureApi = await rawHttpRequest(server.port, "/api/health", {
+    host: remoteHost,
+    headers: {
+      Host: "pos.example",
+      "X-Forwarded-Proto": "https",
+    },
+  });
+  assert.equal(insecureApi.status, 426);
+  assert.match(insecureApi.body.message, /HTTPS requerido/i);
+});
+
+test("POS rejects overbroad trust proxy settings and fails closed", async (t) => {
+  const server = await startServer(t, {
+    env: {
+      POS_FORCE_HTTPS: "true",
+      POS_PUBLIC_ORIGIN: "https://pos-secure.example",
+      POS_TRUST_PROXY: "true",
+    },
+  });
+  const remoteHost = getNonLoopbackIpv4();
+  assert.ok(remoteHost, "No encontre una IPv4 local para probar trafico HTTP no-loopback.");
+
+  const insecureApi = await rawHttpRequest(server.port, "/api/health", {
+    host: remoteHost,
+    headers: {
+      Host: "pos.example",
+      "X-Forwarded-Proto": "https",
+    },
+  });
+  assert.equal(insecureApi.status, 426);
+  assert.match(insecureApi.body.message, /HTTPS requerido/i);
+});
+
+test("POS emits browser hardening headers for api and shell responses", async (t) => {
+  const server = await startServer(t, {
+    env: {
+      POS_FORCE_HTTPS: "true",
+      POS_PUBLIC_ORIGIN: "https://pos-secure.example",
+    },
+  });
+
+  const apiHealth = await rawHttpRequest(server.port, "/api/health");
+  assert.equal(apiHealth.status, 200);
+  assert.match(String(apiHealth.headers["content-security-policy"] || ""), /default-src 'self'/i);
+  assert.match(String(apiHealth.headers["content-security-policy"] || ""), /upgrade-insecure-requests/i);
+  assert.doesNotMatch(String(apiHealth.headers["content-security-policy"] || ""), /connect-src[^;]* ws:/i);
+  assert.match(String(apiHealth.headers["content-security-policy"] || ""), /connect-src[^;]* wss:/i);
+  assert.equal(String(apiHealth.headers["cross-origin-opener-policy"] || ""), "same-origin");
+  assert.equal(String(apiHealth.headers["cross-origin-resource-policy"] || ""), "same-origin");
+  assert.equal(String(apiHealth.headers["origin-agent-cluster"] || ""), "?1");
+  assert.equal(String(apiHealth.headers["x-permitted-cross-domain-policies"] || ""), "none");
+
+  const shell = await rawHttpRequest(server.port, "/");
+  assert.equal(shell.status, 200);
+  assert.equal(String(shell.headers["cache-control"] || ""), "no-store");
+  assert.match(String(shell.headers["content-security-policy"] || ""), /script-src 'self'/i);
+  assert.match(String(shell.headers["content-security-policy"] || ""), /style-src 'self' 'unsafe-inline' https:\/\/fonts\.googleapis\.com/i);
+  assert.match(String(shell.headers["content-security-policy"] || ""), /font-src 'self' https:\/\/fonts\.gstatic\.com/i);
+  assert.match(String(shell.headers["content-security-policy"] || ""), /upgrade-insecure-requests/i);
+
+  const directShell = await rawHttpRequest(server.port, "/index.html");
+  assert.equal(directShell.status, 200);
+  assert.equal(String(directShell.headers["cache-control"] || ""), "no-store");
+});
+
+test("POS can terminate HTTPS directly from owner-managed runtime variables", async (t) => {
+  const server = await startHttpsServer(t);
+
+  const secureHealth = await rawHttpsRequest(server.port, "/api/health");
+  assert.equal(secureHealth.status, 200);
+  assert.match(String(secureHealth.headers["strict-transport-security"] || ""), /max-age=/i);
+  assert.match(String(secureHealth.headers["content-security-policy"] || ""), /upgrade-insecure-requests/i);
+
+  const redirectedShell = await rawHttpRequest(server.redirectPort, "/administracion", {
+    headers: {
+      Host: `127.0.0.1:${server.redirectPort}`,
+    },
+  });
+  assert.equal(redirectedShell.status, 308);
+  assert.equal(String(redirectedShell.headers.location || ""), `${server.baseUrl}/administracion`);
+});
+
+test("POS direct HTTPS accepts its own local secure origin even without POS_PUBLIC_ORIGIN", async (t) => {
+  const server = await startHttpsServer(t, {
+    env: {
+      POS_PUBLIC_ORIGIN: "",
+    },
+  });
+
+  const localSecureOrigin = `https://127.0.0.1:${server.port}`;
+  const secureHealth = await rawHttpsRequest(server.port, "/api/health", {
+    headers: {
+      Origin: localSecureOrigin,
+    },
+  });
+  assert.equal(secureHealth.status, 200);
+  assert.equal(String(secureHealth.headers["access-control-allow-origin"] || ""), localSecureOrigin);
+});
 
 test("setup admin/owner stays blocked when bootstrap token is absent", async (t) => {
   const server = await startServer(t, { bootstrapToken: "" });
@@ -171,6 +545,233 @@ test("setup admin/owner stays blocked when bootstrap token is absent", async (t)
     body: JSON.stringify({ username: "ownerroot", password: "owner1234" }),
   });
   assert.equal(ownerSetup.status, 403);
+});
+
+test("admin and owner login throttles ignore spoofed forwarded-for headers", async (t) => {
+  const server = await startServer(t, { bootstrapToken: "bootstrap-secret-123" });
+  const guest = createCookieClient(server.baseUrl);
+
+  const adminSetup = await guest.json("/api/admin/auth/setup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bootstrap-Token": "bootstrap-secret-123",
+    },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(adminSetup.status, 201);
+
+  const ownerSetup = await guest.json("/api/owner/auth/setup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bootstrap-Token": "bootstrap-secret-123",
+    },
+    body: JSON.stringify({ username: "ownerroot", password: "owner1234" }),
+  });
+  assert.equal(ownerSetup.status, 201);
+
+  const adminLoginOk = await guest.json("/api/admin/auth/login", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(adminLoginOk.status, 200);
+
+  const cashierCreate = await guest.json("/api/admin/cashiers", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": adminLoginOk.body.csrfToken,
+    },
+    body: JSON.stringify({
+      name: "ana",
+      branch: "carrizal",
+      password: "1234",
+    }),
+  });
+  assert.equal(cashierCreate.status, 201);
+
+  const otherCashierCreate = await guest.json("/api/admin/cashiers", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": adminLoginOk.body.csrfToken,
+    },
+    body: JSON.stringify({
+      name: "luis",
+      branch: "carrizal",
+      password: "1234",
+    }),
+  });
+  assert.equal(otherCashierCreate.status, 201);
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const adminLogin = await guest.json("/api/admin/auth/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-For": `198.51.100.${attempt + 10}`,
+      },
+      body: JSON.stringify({ username: "diana", password: "mal" }),
+    });
+    assert.equal(adminLogin.status, 401);
+  }
+
+  const blockedAdmin = await guest.json("/api/admin/auth/login", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Forwarded-For": "203.0.113.99",
+    },
+    body: JSON.stringify({ username: "diana", password: "mal" }),
+  });
+  assert.equal(blockedAdmin.status, 429);
+  assert.match(String(blockedAdmin.body?.message || ""), /Demasiados intentos/i);
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const ownerLogin = await guest.json("/api/owner/auth/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-For": `198.51.100.${attempt + 30}`,
+      },
+      body: JSON.stringify({ username: "ownerroot", password: "mal" }),
+    });
+    assert.equal(ownerLogin.status, 401);
+  }
+
+  const blockedOwner = await guest.json("/api/owner/auth/login", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Forwarded-For": "203.0.113.77",
+    },
+    body: JSON.stringify({ username: "ownerroot", password: "mal" }),
+  });
+  assert.equal(blockedOwner.status, 429);
+  assert.match(String(blockedOwner.body?.message || ""), /Demasiados intentos/i);
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const cashierLogin = await guest.json("/api/cashier/auth", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-For": `198.51.100.${attempt + 50}`,
+      },
+      body: JSON.stringify({ name: "ana", branch: "carrizal", password: "mal" }),
+    });
+    assert.equal(cashierLogin.status, 401);
+  }
+
+  const blockedCashier = await guest.json("/api/cashier/auth", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Forwarded-For": "203.0.113.55",
+    },
+    body: JSON.stringify({ name: "ana", branch: "carrizal", password: "mal" }),
+  });
+  assert.equal(blockedCashier.status, 429);
+  assert.match(String(blockedCashier.body?.message || ""), /Demasiados intentos/i);
+
+  const otherCashierStillAllowedToAttempt = await guest.json("/api/cashier/auth", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Forwarded-For": "203.0.113.56",
+    },
+    body: JSON.stringify({ name: "luis", branch: "carrizal", password: "mal" }),
+  });
+  assert.equal(otherCashierStillAllowedToAttempt.status, 401);
+});
+
+test("auth status endpoints tolerate malformed cookies without crashing", async (t) => {
+  const server = await startServer(t);
+
+  const adminStatus = await rawHttpRequest(server.port, "/api/admin/auth/status", {
+    headers: {
+      Cookie: "cremeria_admin_session=%E0%A4%A",
+    },
+  });
+  assert.equal(adminStatus.status, 200);
+
+  const ownerStatus = await rawHttpRequest(server.port, "/api/owner/auth/status", {
+    headers: {
+      Cookie: "cremeria_owner_session=%E0%A4%A",
+    },
+  });
+  assert.equal(ownerStatus.status, 200);
+});
+
+test("corrupted cashier session rows degrade into logged-out state and get deleted", async (t) => {
+  const server = await startServer(t, { bootstrapToken: "bootstrap-secret-123" });
+  const guest = createCookieClient(server.baseUrl);
+  const adminClient = createCookieClient(server.baseUrl);
+
+  const adminSetup = await guest.json("/api/admin/auth/setup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bootstrap-Token": "bootstrap-secret-123",
+    },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(adminSetup.status, 201);
+
+  const adminLogin = await adminClient.json("/api/admin/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(adminLogin.status, 200);
+
+  const initCashiers = await adminClient.json("/api/admin/cashiers/init-test", {
+    method: "POST",
+    headers: { "X-CSRF-Token": adminLogin.body.csrfToken },
+  });
+  assert.equal(initCashiers.status, 200);
+
+  const db = new Database(server.dbPath);
+
+  const cashierRow = db.prepare(`
+    SELECT id
+    FROM cashiers
+    WHERE name = ? AND branch = ? AND active = 1
+  `).get("Juan", "carrizal");
+  assert.ok(cashierRow?.id);
+
+  db.prepare(`
+    INSERT INTO cashier_sessions (token, cashier_id, created_at, expires_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    "broken-cashier-token",
+    cashierRow.id,
+    new Date().toISOString(),
+    "not-a-date",
+    new Date().toISOString(),
+  );
+
+  const cashierStatus = await guest.json("/api/cashier/auth/status", {
+    headers: {
+      "X-Cashier-Token": "broken-cashier-token",
+    },
+  });
+  assert.equal(cashierStatus.status, 200);
+  assert.equal(cashierStatus.body.authenticated, false);
+
+  const protectedEndpoint = await guest.json("/api/register/summary?shift=Tarde&branch=carrizal&cashier=Juan", {
+    headers: {
+      "X-Cashier-Token": "broken-cashier-token",
+    },
+  });
+  assert.equal(protectedEndpoint.status, 401);
+
+  const remainingSession = db.prepare("SELECT token FROM cashier_sessions WHERE token = ?").get("broken-cashier-token");
+  assert.equal(remainingSession, undefined);
+  db.close();
 });
 
 test("client error reports stay bounded per client window", async (t) => {
@@ -491,6 +1092,95 @@ test("owner can persist an empty admin capability set and bootstrap preserves mi
   assert.equal(mixedBootstrap.body.auth.adminAuthenticated, true);
   assert.equal(mixedBootstrap.body.auth.permissions.canViewAdmin, true);
   assert.deepEqual(mixedBootstrap.body.adminCapabilities, []);
+});
+
+test("service subscription billing writes require owner even when admin can view support tools", async (t) => {
+  const server = await startServer(t, { bootstrapToken: "bootstrap-secret-123" });
+  const guest = createCookieClient(server.baseUrl);
+  const adminClient = createCookieClient(server.baseUrl);
+  const ownerClient = createCookieClient(server.baseUrl);
+
+  const adminSetup = await guest.json("/api/admin/auth/setup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bootstrap-Token": "bootstrap-secret-123",
+    },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(adminSetup.status, 201);
+
+  const ownerSetup = await guest.json("/api/owner/auth/setup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bootstrap-Token": "bootstrap-secret-123",
+    },
+    body: JSON.stringify({ username: "ownerroot", password: "owner1234" }),
+  });
+  assert.equal(ownerSetup.status, 201);
+
+  const adminLogin = await adminClient.json("/api/admin/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(adminLogin.status, 200);
+  const adminCsrfToken = adminLogin.body.csrfToken;
+
+  const adminView = await adminClient.json("/api/admin/service-subscription");
+  assert.equal(adminView.status, 200);
+
+  const blockedAdminSubscriptionUpdate = await adminClient.json("/api/admin/service-subscription", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": adminCsrfToken,
+    },
+    body: JSON.stringify({ status: "active", monthlyAmount: 999 }),
+  });
+  assert.equal(blockedAdminSubscriptionUpdate.status, 401);
+
+  const blockedAdminPayment = await adminClient.json("/api/admin/service-subscription/payments", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": adminCsrfToken,
+    },
+    body: JSON.stringify({ amount: 999, periodStart: "2026-07-01", periodEnd: "2026-07-31" }),
+  });
+  assert.equal(blockedAdminPayment.status, 401);
+
+  const ownerLogin = await ownerClient.json("/api/owner/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "ownerroot", password: "owner1234" }),
+  });
+  assert.equal(ownerLogin.status, 200);
+  const ownerCsrfToken = ownerLogin.body.csrfToken;
+
+  const ownerUpdate = await ownerClient.json("/api/owner/service-subscription", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": ownerCsrfToken,
+    },
+    body: JSON.stringify({ status: "overdue", monthlyAmount: 999 }),
+  });
+  assert.equal(ownerUpdate.status, 200);
+  assert.equal(ownerUpdate.body.subscription.status, "overdue");
+
+  const ownerPayment = await ownerClient.json("/api/owner/service-subscription/payments", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": ownerCsrfToken,
+    },
+    body: JSON.stringify({ amount: 999, periodStart: "2026-07-01", periodEnd: "2026-07-31" }),
+  });
+  assert.equal(ownerPayment.status, 201);
+  assert.equal(ownerPayment.body.subscription.status, "active");
+  assert.equal(ownerPayment.body.subscription.monthlyAmount, 999);
 });
 
 test("corrupted owner capability settings fall back to defaults instead of blocking admin", async (t) => {

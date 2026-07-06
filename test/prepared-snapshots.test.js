@@ -79,12 +79,15 @@ function loadPreparedSnapshotContext() {
       state,
       STORAGE_KEYS,
       buildPersistedSnapshot,
+      restoreSnapshot,
       saveSnapshot,
       flushDeferredJsonPersist,
       restorePreparedSnapshot,
       getPreparedOfflineSnapshot,
       buildPublicSnapshotCacheView,
       resolveStartupSnapshotFromCache,
+      readStorageJson,
+      persistJson,
     };
   `).runInContext(vmContext);
 
@@ -174,6 +177,65 @@ test("startup snapshot resolution never reuses privileged cached snapshots for o
   });
   assert.equal(resolvedCashierSnapshot.auth.role, "cashier");
   assert.equal(resolvedCashierSnapshot.products[0].stock, 9);
+});
+
+test("persisted snapshot cache strips privileged data but keeps cashier offline snapshots intact", async () => {
+  const api = loadPreparedSnapshotContext();
+  api.state.store.currentBranch = "carrizal";
+  api.state.products = [{ id: 6, name: "Oaxaca", stock: 11, cost: 32, stockInitialized: true }];
+
+  api.state.owner.authenticated = true;
+  api.saveSnapshot(api.buildPersistedSnapshot());
+  api.flushDeferredJsonPersist(api.STORAGE_KEYS.snapshot);
+
+  const storedOwnerSnapshot = api.readStorageJson(api.STORAGE_KEYS.snapshot, null);
+  assert.equal(storedOwnerSnapshot?.auth?.role, "guest");
+  assert.equal(storedOwnerSnapshot?.products?.[0]?.stock, 0);
+  assert.equal(storedOwnerSnapshot?.products?.[0]?.cost, 0);
+
+  api.state.owner.authenticated = false;
+  api.state.cashier.authenticated = true;
+  api.state.cashier.id = 44;
+  api.state.cashier.name = "Mara";
+  api.state.cashier.branch = "carrizal";
+  api.saveSnapshot(api.buildPersistedSnapshot());
+  api.flushDeferredJsonPersist(api.STORAGE_KEYS.snapshot);
+  api.flushDeferredJsonPersist(api.STORAGE_KEYS.preparedSnapshots);
+
+  const storedCashierSnapshot = api.readStorageJson(api.STORAGE_KEYS.snapshot, null);
+  assert.equal(storedCashierSnapshot?.auth?.role, "cashier");
+  assert.equal(storedCashierSnapshot?.products?.[0]?.stock, 11);
+
+  const storedPreparedSnapshot = await api.restorePreparedSnapshot("carrizal");
+  assert.equal(storedPreparedSnapshot?.auth?.role, "cashier");
+  assert.equal(storedPreparedSnapshot?.products?.[0]?.stock, 11);
+});
+
+test("restoring a legacy privileged snapshot rewrites the cache to its public-safe view", async () => {
+  const api = loadPreparedSnapshotContext();
+  const legacyOwnerSnapshot = {
+    store: { currentBranch: "carrizal" },
+    products: [{ id: 7, name: "Asadero", stock: 13, cost: 28, stockInitialized: true }],
+    summary: { catalogSize: 1, inventoryValue: 364 },
+    auth: {
+      role: "owner",
+      ownerAuthenticated: true,
+      adminAuthenticated: false,
+      cashierAuthenticated: false,
+      cashier: null,
+    },
+  };
+
+  api.persistJson(api.STORAGE_KEYS.snapshot, legacyOwnerSnapshot);
+
+  const restoredSnapshot = await api.restoreSnapshot();
+  assert.equal(restoredSnapshot?.auth?.role, "guest");
+  assert.equal(restoredSnapshot?.products?.[0]?.stock, 0);
+
+  const rewrittenSnapshot = api.readStorageJson(api.STORAGE_KEYS.snapshot, null);
+  assert.equal(rewrittenSnapshot?.auth?.role, "guest");
+  assert.equal(rewrittenSnapshot?.products?.[0]?.stock, 0);
+  assert.equal(rewrittenSnapshot?.products?.[0]?.cost, 0);
 });
 
 test("public snapshot cache view also strips inventory snapshots and comparison stock", () => {

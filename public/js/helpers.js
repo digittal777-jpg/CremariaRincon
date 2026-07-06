@@ -11,6 +11,16 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function sanitizeClassToken(value, fallback = "") {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (/^[a-z0-9_-]+$/.test(normalized)) {
+    return normalized;
+  }
+
+  const safeFallback = String(fallback ?? "").trim().toLowerCase();
+  return /^[a-z0-9_-]+$/.test(safeFallback) ? safeFallback : "";
+}
+
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -841,6 +851,26 @@ function getStatusLabel(status) {
   }
 
   return "Disponible";
+}
+
+function normalizeAdminInventoryMode(mode) {
+  return mode === "edit" ? "edit" : "movement";
+}
+
+function getAdminInventoryFilterDefinitions() {
+  return [
+    { value: "all", label: "Todos" },
+    { value: "low", label: "Bajos" },
+    { value: "negative", label: "Negativos" },
+    { value: "uncounted", label: "Sin conteo" },
+    { value: "inactive", label: "Inactivos" },
+  ];
+}
+
+function normalizeAdminInventoryFilterKey(filter) {
+  return getAdminInventoryFilterDefinitions().some((entry) => entry.value === filter)
+    ? filter
+    : "all";
 }
 
 function getBranchOptions() {

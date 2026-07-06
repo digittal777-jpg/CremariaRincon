@@ -252,7 +252,7 @@ function renderMyMerchandiseRequests() {
       >
         <div class="admin-record-item-head">
           <strong>Solicitud #${requestRecord.id}</strong>
-          <span class="request-status-pill ${requestRecord.status}">
+          <span class="request-status-pill ${sanitizeClassToken(requestRecord.status, "pending")}">
             ${escapeHtml(getMerchandiseRequestStatusLabel(requestRecord.status))}
           </span>
         </div>
@@ -509,15 +509,15 @@ function renderMerchandiseRequestModal() {
     refs.merchandiseRequestProducts.innerHTML = filteredProducts
       .map((product) => `
         <button
-          class="product-card ${product.status}"
+          class="product-card ${sanitizeClassToken(product.status, "normal")}"
           data-action="open-merchandise-product"
           data-product-id="${product.id}"
           type="button"
         >
           <div class="product-top">
             <span class="product-chip">${escapeHtml(product.categoryLabel)}</span>
-            <span class="status-chip ${product.status}">
-              ${getStatusLabel(product.status)}
+            <span class="status-chip ${sanitizeClassToken(product.status, "normal")}">
+              ${escapeHtml(getStatusLabel(product.status))}
             </span>
           </div>
           <h3>${escapeHtml(product.name)}</h3>
@@ -561,7 +561,7 @@ function renderMerchandiseRequestModal() {
             </button>
           </div>
           <div class="merchandise-request-line-foot">
-            <span class="request-mode-pill ${item.mode}">
+            <span class="request-mode-pill ${sanitizeClassToken(item.mode, "receive")}">
               ${escapeHtml(getMerchandiseRequestModeLabel(item.mode))}
             </span>
             <strong>${formatMerchandiseSignedValue(item.totalValue)}</strong>

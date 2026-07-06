@@ -701,6 +701,7 @@ test("saving the same weekly closure updates one snapshot, detects stale data an
     const { getDb, nowIso } = require("./src/db");
     const sales = require("./src/services/sales");
     const { exportWorkbookReport } = require("./src/services/export");
+    const { getStoreDateKey, getStorePeriodRange } = require("./src/utils/helpers");
     const {
       getPeriodClosureById,
       listPeriodClosures,
@@ -713,6 +714,12 @@ test("saving the same weekly closure updates one snapshot, detects stale data an
       function toIso(dateKey, hour = 18) {
         const [year, month, day] = String(dateKey).split("-").map(Number);
         return new Date(Date.UTC(year, month - 1, day, hour, 0, 0)).toISOString();
+      }
+
+      function shiftDateKey(dateKey, days) {
+        const date = new Date(\`\${dateKey}T12:00:00.000Z\`);
+        date.setUTCDate(date.getUTCDate() + Number(days || 0));
+        return date.toISOString().slice(0, 10);
       }
 
       function insertProduct(name, price) {
@@ -775,6 +782,12 @@ test("saving the same weekly closure updates one snapshot, detects stale data an
         return count;
       }
 
+      const anchorDateKey = shiftDateKey(getStoreDateKey(new Date()), -10);
+      const weekRange = getStorePeriodRange("week", anchorDateKey);
+      const firstWeekDateKey = weekRange.startDateKey;
+      const secondWeekDateKey = shiftDateKey(weekRange.startDateKey, 2);
+      const outsideWeekDateKey = shiftDateKey(weekRange.endDateKey, 2);
+
       const productId = insertProduct("Producto export semanal", 90);
       const saleWeekOne = sales.createSale({
         shift: "Tarde",
@@ -790,7 +803,7 @@ test("saving the same weekly closure updates one snapshot, detects stale data an
           lineTotal: 90,
         }],
       });
-      stampSale(saleWeekOne.id, "2026-06-15");
+      stampSale(saleWeekOne.id, firstWeekDateKey);
 
       const saleWeekTwo = sales.createSale({
         shift: "Tarde",
@@ -806,7 +819,7 @@ test("saving the same weekly closure updates one snapshot, detects stale data an
           lineTotal: 110,
         }],
       });
-      stampSale(saleWeekTwo.id, "2026-06-17");
+      stampSale(saleWeekTwo.id, secondWeekDateKey);
 
       const saleOutsideWeek = sales.createSale({
         shift: "Tarde",
@@ -822,7 +835,7 @@ test("saving the same weekly closure updates one snapshot, detects stale data an
           lineTotal: 130,
         }],
       });
-      stampSale(saleOutsideWeek.id, "2026-06-23");
+      stampSale(saleOutsideWeek.id, outsideWeekDateKey);
 
       insertRegisterEvent({
         eventType: "start",
@@ -831,7 +844,7 @@ test("saving the same weekly closure updates one snapshot, detects stale data an
         openingAmount: 150,
         countedAmount: 150,
         expectedCash: 150,
-        dateKey: "2026-06-15",
+        dateKey: firstWeekDateKey,
         hour: 14,
       });
       insertRegisterEvent({
@@ -839,7 +852,7 @@ test("saving the same weekly closure updates one snapshot, detects stale data an
         shift: "Tarde",
         cashier: "Juan",
         differenceAmount: 0,
-        dateKey: "2026-06-15",
+        dateKey: firstWeekDateKey,
         hour: 21,
       });
       insertRegisterEvent({
@@ -849,7 +862,7 @@ test("saving the same weekly closure updates one snapshot, detects stale data an
         openingAmount: 160,
         countedAmount: 160,
         expectedCash: 160,
-        dateKey: "2026-06-17",
+        dateKey: secondWeekDateKey,
         hour: 14,
       });
       insertRegisterEvent({
@@ -857,21 +870,21 @@ test("saving the same weekly closure updates one snapshot, detects stale data an
         shift: "Tarde",
         cashier: "Juan",
         differenceAmount: 1,
-        dateKey: "2026-06-17",
+        dateKey: secondWeekDateKey,
         hour: 21,
       });
 
       const firstSave = savePeriodClosure({
         branch: "carrizal",
         periodType: "week",
-        anchorDateKey: "2026-06-18",
+        anchorDateKey,
         notes: "Primer cierre",
         createdBy: "diana",
       });
       const secondSave = savePeriodClosure({
         branch: "carrizal",
         periodType: "week",
-        anchorDateKey: "2026-06-18",
+        anchorDateKey,
         notes: "Cierre ajustado",
         createdBy: "eva",
       });
@@ -887,12 +900,12 @@ test("saving the same weekly closure updates one snapshot, detects stale data an
       const weekReport = await exportWorkbookReport({
         branch: "carrizal",
         scope: "store-week",
-        baseDate: "2026-06-18",
+        baseDate: anchorDateKey,
       });
       const dayReport = await exportWorkbookReport({
         branch: "carrizal",
         scope: "store-day",
-        baseDate: "2026-06-17",
+        baseDate: secondWeekDateKey,
       });
       const allTimeReport = await exportWorkbookReport({
         branch: "carrizal",
@@ -909,6 +922,7 @@ test("saving the same weekly closure updates one snapshot, detects stale data an
         allTimeSalesRows: countSheetRows(allTimeReport.workbook, "Ventas Detalle"),
         weekScope: weekReport.scope,
         weekExportDateKey: weekReport.exportDateKey,
+        expectedWeekExportDateKey: \`\${weekRange.startDateKey}_a_\${weekRange.endDateKey}\`,
       }));
     })().catch((error) => {
       console.error(error);
@@ -926,5 +940,5 @@ test("saving the same weekly closure updates one snapshot, detects stale data an
   assert.equal(payload.weekSalesRows, 2);
   assert.equal(payload.daySalesRows, 1);
   assert.equal(payload.allTimeSalesRows, 3);
-  assert.equal(payload.weekExportDateKey, "2026-06-15_a_2026-06-21");
+  assert.equal(payload.weekExportDateKey, payload.expectedWeekExportDateKey);
 });

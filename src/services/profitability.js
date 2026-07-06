@@ -197,6 +197,62 @@ function listMissingCostProducts(branch = ALL_BRANCHES, limit = 25) {
   }));
 }
 
+function buildProfitabilityActions(totals, inventory, lowMarginProducts, missingCostProducts) {
+  const actions = [];
+
+  if (inventory.missingCostProductsCount > 0 || totals.missingCostLineCount > 0) {
+    actions.push({
+      code: "missing_costs",
+      severity: "critical",
+      title: "Completar costos faltantes",
+      detail: `${inventory.missingCostProductsCount} producto(s) activo(s) sin costo. La utilidad queda incompleta hasta corregirlos.`,
+      target: "inventory",
+    });
+  }
+
+  if (Array.isArray(lowMarginProducts) && lowMarginProducts.length > 0) {
+    actions.push({
+      code: "low_margin",
+      severity: "risk",
+      title: "Revisar productos de margen bajo",
+      detail: `${lowMarginProducts.length} producto(s) vendidos tienen margen menor a 20%.`,
+      target: "pricing",
+    });
+  }
+
+  if (inventory.negativeStockProductsCount > 0) {
+    actions.push({
+      code: "negative_stock",
+      severity: "risk",
+      title: "Corregir stock negativo",
+      detail: `${inventory.negativeStockProductsCount} producto(s) tienen existencia negativa y pueden distorsionar compras o costos.`,
+      target: "inventory",
+    });
+  }
+
+  if (totals.salesTotal <= 0) {
+    actions.push({
+      code: "no_sales_period",
+      severity: "info",
+      title: "Sin ventas en el periodo",
+      detail: "Cambia periodo o sucursal para comparar utilidad con actividad real.",
+      target: "period",
+    });
+  }
+
+  if (actions.length === 0) {
+    actions.push({
+      code: "healthy_profitability",
+      severity: "ok",
+      title: "Rentabilidad legible",
+      detail: "Los costos principales estan capturados y el reporte puede usarse para explicar utilidad.",
+      target: "review",
+    });
+  }
+
+  return actions;
+}
+
 function getProfitabilityReport(options = {}) {
   const normalizedBranch = normalizeBranch(options.branch || ALL_BRANCHES, { allowAll: true });
   const range = resolveProfitabilityRange(options);
@@ -278,6 +334,24 @@ function getProfitabilityReport(options = {}) {
     .filter((product) => product.knownLineCount > 0 && product.marginPercent < 20)
     .sort((left, right) => left.marginPercent - right.marginPercent)
     .slice(0, 10);
+  const inventory = getInventoryValuation(normalizedBranch);
+  const missingCostProducts = listMissingCostProducts(normalizedBranch, options.missingCostLimit || 25);
+  const totals = {
+    tickets: tickets.size,
+    lineCount: rows.length,
+    knownLineCount,
+    missingCostLineCount,
+    estimatedCostLineCount,
+    itemCount: roundStock(itemCount),
+    salesTotal: roundMoney(salesTotal),
+    knownSalesTotal: roundMoney(knownSalesTotal),
+    knownCostTotal: roundMoney(knownCostTotal),
+    grossProfit: roundMoney(grossProfit),
+    marginPercent: safePercent(grossProfit, knownSalesTotal),
+    unknownCostSalesTotal: roundMoney(unknownCostSalesTotal),
+    isIncomplete: missingCostLineCount > 0 || unknownCostSalesTotal > 0,
+    hasEstimatedCosts: estimatedCostLineCount > 0,
+  };
 
   return {
     branch: normalizedBranch,
@@ -285,30 +359,17 @@ function getProfitabilityReport(options = {}) {
     anchorDateKey: range.anchorDateKey,
     startDateKey: range.startDateKey,
     endDateKey: range.endDateKey,
-    totals: {
-      tickets: tickets.size,
-      lineCount: rows.length,
-      knownLineCount,
-      missingCostLineCount,
-      estimatedCostLineCount,
-      itemCount: roundStock(itemCount),
-      salesTotal: roundMoney(salesTotal),
-      knownSalesTotal: roundMoney(knownSalesTotal),
-      knownCostTotal: roundMoney(knownCostTotal),
-      grossProfit: roundMoney(grossProfit),
-      marginPercent: safePercent(grossProfit, knownSalesTotal),
-      unknownCostSalesTotal: roundMoney(unknownCostSalesTotal),
-      isIncomplete: missingCostLineCount > 0 || unknownCostSalesTotal > 0,
-      hasEstimatedCosts: estimatedCostLineCount > 0,
-    },
-    inventory: getInventoryValuation(normalizedBranch),
+    totals,
+    inventory,
     topProfitProducts,
     lowMarginProducts,
-    missingCostProducts: listMissingCostProducts(normalizedBranch, options.missingCostLimit || 25),
+    missingCostProducts,
+    actions: buildProfitabilityActions(totals, inventory, lowMarginProducts, missingCostProducts),
   };
 }
 
 module.exports = {
+  buildProfitabilityActions,
   getInventoryValuation,
   getProfitabilityReport,
   listMissingCostProducts,

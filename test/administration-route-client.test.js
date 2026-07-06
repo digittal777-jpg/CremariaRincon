@@ -61,8 +61,10 @@ function loadAdministrationRouteApi({
   new vm.Script(source, { filename: "public/js/app.js" }).runInContext(vmContext);
   new vm.Script(`
     globalThis.__administrationRouteApi = {
+      getApplicationMode,
       openAdministrationRoute,
       returnFromAdministrationRoute,
+      shouldBootstrapCashierRuntime,
     };
   `).runInContext(vmContext);
 
@@ -71,6 +73,25 @@ function loadAdministrationRouteApi({
     window: context.window,
     location,
   };
+}
+
+function getCssRuleBlock(css, selector) {
+  const start = css.indexOf(selector);
+  assert.notEqual(start, -1, `No se encontro el selector ${selector}`);
+  const openingBrace = css.indexOf("{", start);
+  assert.notEqual(openingBrace, -1, `No se encontro bloque para ${selector}`);
+  let depth = 0;
+  for (let index = openingBrace; index < css.length; index += 1) {
+    if (css[index] === "{") {
+      depth += 1;
+    } else if (css[index] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return css.slice(openingBrace + 1, index);
+      }
+    }
+  }
+  assert.fail(`No se pudo cerrar el bloque de ${selector}`);
 }
 
 test("admin button opens a separate administration tab without redirecting cashier", () => {
@@ -95,6 +116,32 @@ test("admin button opens a separate administration tab without redirecting cashi
   assert.equal(location.href, "/");
   assert.equal(openedWindow.opener, null);
   assert.equal(openedWindow.focused, true);
+});
+
+test("administration route uses the admin runtime instead of cashier bootstrap", () => {
+  const cashierRoute = loadAdministrationRouteApi({ pathname: "/" });
+  const adminRoute = loadAdministrationRouteApi({ pathname: "/administracion" });
+
+  assert.equal(cashierRoute.api.getApplicationMode(), "cashier");
+  assert.equal(cashierRoute.api.shouldBootstrapCashierRuntime(), true);
+  assert.equal(adminRoute.api.getApplicationMode(), "admin");
+  assert.equal(adminRoute.api.shouldBootstrapCashierRuntime(), false);
+});
+
+test("administration route lets the page scroll from inside the admin panel", () => {
+  const rootDir = path.resolve(__dirname, "..");
+  const css = fs.readFileSync(path.join(rootDir, "public/styles.css"), "utf8");
+  const bodyBlock = getCssRuleBlock(css, "body.administration-page");
+  const shellBlock = getCssRuleBlock(css, "body.administration-page #admin-modal.modal-shell");
+  const cardBlock = getCssRuleBlock(css, "body.administration-page #admin-modal .admin-card");
+
+  assert.match(bodyBlock, /overflow:\s*auto;/);
+  assert.match(bodyBlock, /overscroll-behavior-y:\s*auto;/);
+  assert.match(bodyBlock, /touch-action:\s*pan-y;/);
+  assert.match(shellBlock, /overflow:\s*visible;/);
+  assert.match(cardBlock, /overflow:\s*visible;/);
+  assert.match(cardBlock, /overscroll-behavior:\s*auto;/);
+  assert.match(cardBlock, /touch-action:\s*pan-y;/);
 });
 
 test("admin button only redirects the current tab when the popup is blocked", () => {

@@ -488,7 +488,7 @@ function renderQuickImportCurrentStateBadge() {
   }
 
   const status = getQuickImportItemStatus(item);
-  refs.quickImportCurrentState.className = `quick-import-current-state ${status}`;
+  refs.quickImportCurrentState.className = `quick-import-current-state ${sanitizeClassToken(status, "pending")}`;
   refs.quickImportCurrentState.textContent = getQuickImportStatusLabel(status);
 }
 
@@ -522,9 +522,9 @@ function renderQuickImportCurrentItem() {
   refs.quickImportProductName.textContent = item.name;
   refs.quickImportProductMeta.textContent = `${item.categoryLabel} · ${item.unit}`;
   refs.quickImportProductPosition.textContent = `${state.quickImport.index + 1} / ${getQuickImportItems().length}`;
-  refs.quickImportProductStatus.className = `status-chip ${item.status}`;
+  refs.quickImportProductStatus.className = `status-chip ${sanitizeClassToken(item.status, "normal")}`;
   refs.quickImportProductStatus.textContent = getStatusLabel(item.status);
-  refs.quickImportCurrentState.className = `quick-import-current-state ${status}`;
+  refs.quickImportCurrentState.className = `quick-import-current-state ${sanitizeClassToken(status, "pending")}`;
   refs.quickImportCurrentState.textContent = getQuickImportStatusLabel(status);
   refs.quickImportStockBefore.textContent = formatQuickImportValue(item.recordedStock, item.unit);
   refs.quickImportSoldToday.textContent = formatQuickImportValue(item.soldToday, item.unit);

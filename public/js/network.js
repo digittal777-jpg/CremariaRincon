@@ -285,6 +285,21 @@ function getCashierTokenFromHeaders(headers = {}) {
   return match ? String(match[1] || "").trim() : "";
 }
 
+function stripSensitiveQueuedHeaders(headers = {}) {
+  if (!headers || typeof headers !== "object") {
+    return {};
+  }
+
+  return Object.entries(headers).reduce((result, [headerName, headerValue]) => {
+    const normalizedHeaderName = String(headerName || "").toLowerCase();
+    if (normalizedHeaderName === "x-cashier-token") {
+      return result;
+    }
+    result[headerName] = headerValue;
+    return result;
+  }, {});
+}
+
 function shouldInvalidateCurrentCashierSessionForAuthFailure(headers = {}) {
   const currentToken = String(state.cashier.token || "").trim();
   if (!currentToken) {
@@ -350,7 +365,9 @@ function normalizeQueuedOperation(operation = {}) {
   };
 
   normalized.headers =
-    normalized.headers && typeof normalized.headers === "object" ? normalized.headers : {};
+    normalized.headers && typeof normalized.headers === "object"
+      ? stripSensitiveQueuedHeaders(normalized.headers)
+      : {};
   normalized.syncAttempts = Math.max(0, Number(normalized.syncAttempts || 0));
   normalized.syncBlocked = Boolean(normalized.syncBlocked);
   normalized.lastSyncAttemptAt = normalized.lastSyncAttemptAt || null;
@@ -1123,8 +1140,9 @@ async function syncPendingQueue(options = {}) {
     operation.lastSyncAttemptAt = new Date().toISOString();
     saveQueue();
 
+    const hasStoredCashierToken = Boolean(getCashierTokenFromHeaders(operation.headers));
     let fallbackHeaders = {};
-    if (Object.keys(operation.headers || {}).length === 0) {
+    if (!hasStoredCashierToken) {
       try {
         const payload = JSON.parse(operation.body || "{}");
         if (
@@ -1140,9 +1158,10 @@ async function syncPendingQueue(options = {}) {
       }
     }
 
-    const operationHeaders = Object.keys(operation.headers || {}).length > 0
-      ? operation.headers
-      : fallbackHeaders;
+    const operationHeaders = {
+      ...fallbackHeaders,
+      ...(operation.headers || {}),
+    };
 
     try {
       const response = await performJsonRequest(operation.url, {
@@ -1550,7 +1569,10 @@ function connectSocket() {
       void refreshCurrentSnapshot().catch(() => {});
     }
     if (shouldRefreshAdminWorkspaceFromDashboardSnapshotEvent(eventBranch)) {
-      void refreshAdminWorkspace(getAdminWorkspaceLiveOptions(getAdminBranch())).catch(() => {});
+      const adminRefreshOptions = typeof getAdminWorkspaceSectionLiveOptions === "function"
+        ? getAdminWorkspaceSectionLiveOptions(getAdminBranch())
+        : getAdminWorkspaceLiveOptions(getAdminBranch());
+      void refreshAdminWorkspace(adminRefreshOptions).catch(() => {});
     }
   });
 

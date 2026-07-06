@@ -124,7 +124,7 @@ async function shouldCacheGuestBootstrapResponse(request, response) {
 async function handleNavigationRequest(request) {
   try {
     const response = await fetch(request);
-    if (isCacheableNavigationResponse(response)) {
+    if (isCacheableNavigationResponse(response) && !isNoStoreResponse(response)) {
       const cache = await caches.open(STATIC_CACHE_NAME);
       cache.put("/index.html", response.clone());
     }
@@ -153,10 +153,16 @@ function isCacheableNavigationResponse(response) {
   return contentType.includes("text/html");
 }
 
+function isNoStoreResponse(response) {
+  const cacheControl = String(response?.headers?.get?.("cache-control") || "").toLowerCase();
+  const pragma = String(response?.headers?.get?.("pragma") || "").toLowerCase();
+  return cacheControl.includes("no-store") || pragma.includes("no-cache");
+}
+
 async function handleStaticRequest(request) {
   try {
     const response = await fetch(request);
-    if (response.ok || response.type === "opaque") {
+    if ((response.ok || response.type === "opaque") && !isNoStoreResponse(response)) {
       const cache = await caches.open(STATIC_CACHE_NAME);
       cache.put(request, response.clone());
     }
