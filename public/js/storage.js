@@ -1328,21 +1328,40 @@ function persistCashierSession() {
   );
 
   if (hasActiveSession) {
-    writeSessionStorageText(
-      STORAGE_KEYS.cashierSession,
-      JSON.stringify({
-        id: state.cashier.id,
-        token: state.cashier.token,
-        name: state.cashier.name,
-        branch: state.cashier.branch,
-        authenticated: state.cashier.authenticated,
-      }),
-    );
+    const serializedSession = JSON.stringify({
+      id: state.cashier.id,
+      token: state.cashier.token,
+      name: state.cashier.name,
+      branch: state.cashier.branch,
+      authenticated: state.cashier.authenticated,
+      expiresAt: new Date(Date.now() + CASHIER_SESSION_STORAGE_TTL_MS).toISOString(),
+    });
+
+    writeSessionStorageText(STORAGE_KEYS.cashierSession, serializedSession);
+    persistText(STORAGE_KEYS.cashierSession, serializedSession);
   } else {
     deleteSessionStorageText(STORAGE_KEYS.cashierSession);
+    clearPersistedText(STORAGE_KEYS.cashierSession);
+  }
+}
+
+function clearRestoredCashierSession() {
+  state.cashier.id = null;
+  state.cashier.token = "";
+  state.cashier.name = "";
+  state.cashier.branch = "";
+  state.cashier.authenticated = false;
+  deleteSessionStorageText(STORAGE_KEYS.cashierSession);
+  clearPersistedText(STORAGE_KEYS.cashierSession);
+}
+
+function resolveCashierSessionExpiration(parsed = {}) {
+  const expiresAtMs = Date.parse(parsed.expiresAt || "");
+  if (Number.isFinite(expiresAtMs)) {
+    return expiresAtMs;
   }
 
-  clearPersistedText(STORAGE_KEYS.cashierSession);
+  return Date.now() + CASHIER_SESSION_STORAGE_TTL_MS;
 }
 
 async function restoreCashierSession() {
@@ -1354,13 +1373,18 @@ async function restoreCashierSession() {
       writeSessionStorageText(STORAGE_KEYS.cashierSession, legacyValue);
     }
   }
-  clearPersistedText(STORAGE_KEYS.cashierSession);
   if (!rawValue) {
     return;
   }
 
   try {
     const parsed = JSON.parse(rawValue);
+    const expiresAtMs = resolveCashierSessionExpiration(parsed);
+    if (expiresAtMs <= Date.now()) {
+      clearRestoredCashierSession();
+      return;
+    }
+
     state.cashier.id = Number.isInteger(Number(parsed.id)) ? Number(parsed.id) : null;
     state.cashier.token = String(parsed.token || "");
     state.cashier.name = parsed.name || "";
@@ -1372,15 +1396,12 @@ async function restoreCashierSession() {
       && parsed.branch,
     );
     if (!state.cashier.authenticated) {
-      deleteSessionStorageText(STORAGE_KEYS.cashierSession);
+      clearRestoredCashierSession();
+      return;
     }
+    persistCashierSession();
   } catch (_error) {
-    state.cashier.id = null;
-    state.cashier.token = "";
-    state.cashier.name = "";
-    state.cashier.branch = "";
-    state.cashier.authenticated = false;
-    deleteSessionStorageText(STORAGE_KEYS.cashierSession);
+    clearRestoredCashierSession();
   }
 }
 

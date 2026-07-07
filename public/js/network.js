@@ -893,6 +893,35 @@ function getQueuedReceivablePaymentClientPaymentId(operation = {}) {
   return String(getQueuedReceivablePaymentPayload(operation)?.clientPaymentId || "").trim();
 }
 
+function getQueuedOperationBranch(operation = {}) {
+  const directBranch = String(operation?.branch || "").trim().toLowerCase();
+  if (directBranch) {
+    return directBranch;
+  }
+
+  try {
+    const payload = JSON.parse(operation.body || "{}");
+    return String(payload?.branch || "").trim().toLowerCase();
+  } catch (_error) {
+    return "";
+  }
+}
+
+function getPendingQueueBranchScope() {
+  return (Array.isArray(state.pendingQueue) ? state.pendingQueue : []).reduce(
+    (scope, operation) => {
+      const branch = getQueuedOperationBranch(operation);
+      if (branch) {
+        scope.branches.add(branch);
+      } else {
+        scope.hasUnknownBranch = true;
+      }
+      return scope;
+    },
+    { branches: new Set(), hasUnknownBranch: false },
+  );
+}
+
 function resolveQueuedReceivablePaymentPayload(operation = {}) {
   const payload = getQueuedReceivablePaymentPayload(operation);
   if (!payload) {
@@ -1342,14 +1371,29 @@ async function retryOfflineSaleByClientSaleId(clientSaleId) {
 }
 
 // Sincronizar eventos de caja offline con el servidor
-async function syncRegisterEvents() {
+async function syncRegisterEvents(options = {}) {
   if (!state.online || state.register.events.length === 0) {
-    return;
+    return { attempted: 0, synced: 0, blocked: false };
   }
 
-  const unsyncedEvents = state.register.events.filter((event) => !event.synced);
+  const excludedBranches = new Set(
+    [...(options.excludeBranches || [])]
+      .map((branch) => String(branch || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const unsyncedEvents = state.register.events
+    .filter((event) => !event.synced)
+    .filter((event) => !excludedBranches.has(String(event.branch || "").trim().toLowerCase()))
+    .sort((left, right) =>
+      String(left.createdAt || "").localeCompare(String(right.createdAt || ""))
+      || String(left.clientEventId || left.id || "").localeCompare(String(right.clientEventId || right.id || "")),
+    );
+  let attempted = 0;
+  let syncedCount = 0;
+  let blocked = false;
 
   for (const event of unsyncedEvents) {
+    let eventHeaders = {};
     try {
       const url = event.eventType === "start"
         ? "/api/register/start"
@@ -1367,11 +1411,17 @@ async function syncRegisterEvents() {
         withdrawalsAmount: event.withdrawalsAmount || 0,
       };
 
-      const eventHeaders = event.cashierToken
+      eventHeaders = event.cashierToken
         ? getCashierAuthHeaders(event.cashierToken)
         : event.cashier === state.cashier.name && event.branch === state.cashier.branch
           ? getCashierAuthHeaders(state.cashier.token || "")
           : {};
+
+      event.lastSyncAttemptAt = new Date().toISOString();
+      event.syncBlocked = false;
+      event.lastSyncError = "";
+      event.lastSyncErrorCode = null;
+      attempted += 1;
 
       const response = await performJsonRequest(url, {
         method: "POST",
@@ -1382,6 +1432,7 @@ async function syncRegisterEvents() {
       // Marcar como sincronizado
       event.synced = true;
       event.syncedAt = new Date().toISOString();
+      syncedCount += 1;
       if (
         event.eventType === "final_cut"
         && event.cashier === state.cashier.name
@@ -1401,10 +1452,23 @@ async function syncRegisterEvents() {
             : "Hay cortes guardados offline, pero el cajero que los capturo necesita reactivar su sesion.",
           "error",
         );
+        blocked = true;
         break;
       }
+      event.syncBlocked = true;
+      event.lastSyncError = error.message || "Error del servidor";
+      event.lastSyncErrorCode = Number.isFinite(Number(error.statusCode))
+        ? Number(error.statusCode)
+        : null;
+      blocked = true;
       console.error("Error sincronizando evento de caja:", error);
-      // Continuar con otros eventos
+      if (typeof showToast === "function") {
+        showToast(
+          "Un corte offline no pudo sincronizarse. Se detuvo la cola de caja para conservar el orden.",
+          "error",
+        );
+      }
+      break;
     }
   }
 
@@ -1416,13 +1480,20 @@ async function syncRegisterEvents() {
   if (typeof loadRegisterSummary === "function" && state.cashier.authenticated) {
     await loadRegisterSummary({ silent: true });
   }
+
+  return { attempted, synced: syncedCount, blocked };
 }
 
 // Sincronizar todo (cola + eventos de caja)
 async function syncAllOfflineData(options = {}) {
   await syncPendingQueue(options);
   if (state.pendingQueue.length > 0) {
-    // Evita sincronizar cortes contra un snapshot que todavia no incluye ventas offline pendientes.
+    const pendingScope = getPendingQueueBranchScope();
+    if (pendingScope.hasUnknownBranch) {
+      // Evita sincronizar cortes contra un snapshot que todavia no incluye ventas offline pendientes.
+      return;
+    }
+    await syncRegisterEvents({ excludeBranches: pendingScope.branches });
     return;
   }
 

@@ -59,4 +59,5 @@ const STORAGE_KEYS = {
 const OFFLINE_DB_NAME = "cremeria-rincon-offline";
 const OFFLINE_DB_VERSION = 1;
 const OFFLINE_DB_STORE = "app_state";
+const CASHIER_SESSION_STORAGE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const PRODUCT_RENDER_BATCH = 24;

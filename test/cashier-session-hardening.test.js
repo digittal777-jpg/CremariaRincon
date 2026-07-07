@@ -175,7 +175,7 @@ function loadCashierSessionHardeningContext(fetchImpl = async () =>
   };
 }
 
-test("cashier session is stored only in sessionStorage and not durable storage", async () => {
+test("cashier session is stored durably with a local expiration", async () => {
   const { api, localStorageEntries, sessionStorageEntries } = loadCashierSessionHardeningContext();
 
   api.state.cashier.id = 7;
@@ -186,15 +186,19 @@ test("cashier session is stored only in sessionStorage and not durable storage",
 
   api.persistCashierSession();
 
-  assert.equal(localStorageEntries.has(api.STORAGE_KEYS.cashierSession), false);
-  assert.equal(api.readStorageText(api.STORAGE_KEYS.cashierSession, ""), "");
+  assert.equal(localStorageEntries.has(api.STORAGE_KEYS.cashierSession), true);
   assert.equal(Boolean(sessionStorageEntries.get(api.STORAGE_KEYS.cashierSession)), true);
+
+  const storedSession = JSON.parse(api.readStorageText(api.STORAGE_KEYS.cashierSession, "{}"));
+  assert.equal(storedSession.token, "cashier-live-token");
+  assert.equal(Date.parse(storedSession.expiresAt) > Date.now(), true);
 
   api.state.cashier.id = null;
   api.state.cashier.token = "";
   api.state.cashier.name = "";
   api.state.cashier.branch = "";
   api.state.cashier.authenticated = false;
+  sessionStorageEntries.delete(api.STORAGE_KEYS.cashierSession);
 
   await api.restoreCashierSession();
 
@@ -205,7 +209,7 @@ test("cashier session is stored only in sessionStorage and not durable storage",
   assert.equal(api.state.cashier.authenticated, true);
 });
 
-test("restoring a legacy durable cashier session migrates it and clears the old copy", async () => {
+test("restoring a legacy durable cashier session keeps it usable and refreshes expiration", async () => {
   const { api, localStorageEntries, sessionStorageEntries } = loadCashierSessionHardeningContext();
   const legacyValue = JSON.stringify({
     id: 9,
@@ -223,8 +227,34 @@ test("restoring a legacy durable cashier session migrates it and clears the old 
   assert.equal(api.state.cashier.name, "Luis");
   assert.equal(api.state.cashier.branch, "miradores");
   assert.equal(api.state.cashier.authenticated, true);
+
+  const refreshedDurableSession = JSON.parse(localStorageEntries.get(api.STORAGE_KEYS.cashierSession));
+  const refreshedTabSession = JSON.parse(sessionStorageEntries.get(api.STORAGE_KEYS.cashierSession));
+  assert.equal(refreshedDurableSession.token, "legacy-token");
+  assert.equal(refreshedTabSession.token, "legacy-token");
+  assert.equal(Date.parse(refreshedDurableSession.expiresAt) > Date.now(), true);
+});
+
+test("expired durable cashier session is discarded on startup", async () => {
+  const { api, localStorageEntries, sessionStorageEntries } = loadCashierSessionHardeningContext();
+  localStorageEntries.set(api.STORAGE_KEYS.cashierSession, JSON.stringify({
+    id: 11,
+    token: "expired-token",
+    name: "Pedro",
+    branch: "carrizal",
+    authenticated: true,
+    expiresAt: new Date(Date.now() - 1000).toISOString(),
+  }));
+
+  await api.restoreCashierSession();
+
+  assert.equal(api.state.cashier.id, null);
+  assert.equal(api.state.cashier.token, "");
+  assert.equal(api.state.cashier.name, "");
+  assert.equal(api.state.cashier.branch, "");
+  assert.equal(api.state.cashier.authenticated, false);
   assert.equal(localStorageEntries.has(api.STORAGE_KEYS.cashierSession), false);
-  assert.equal(sessionStorageEntries.get(api.STORAGE_KEYS.cashierSession), legacyValue);
+  assert.equal(sessionStorageEntries.has(api.STORAGE_KEYS.cashierSession), false);
 });
 
 test("queued offline operations strip stored cashier tokens but keep non-secret headers", () => {
