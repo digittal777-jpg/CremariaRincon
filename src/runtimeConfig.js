@@ -216,7 +216,7 @@ const RUNTIME_VARIABLE_DEFINITIONS = [
     description: "Token para crear owner/admin iniciales.",
     placeholder: "token-largo-privado",
     secret: true,
-    restartRequired: true,
+    restartRequired: false,
   },
   {
     key: "POS_ADMIN_MAX_FAILED_LOGINS",
@@ -487,6 +487,11 @@ const RUNTIME_VARIABLE_DEFINITIONS = [
   },
 ];
 const EDITABLE_RUNTIME_KEYS = new Set(RUNTIME_VARIABLE_DEFINITIONS.map((item) => item.key));
+const RESTART_REQUIRED_RUNTIME_KEYS = new Set(
+  RUNTIME_VARIABLE_DEFINITIONS
+    .filter((item) => item.restartRequired)
+    .map((item) => item.key),
+);
 
 function resolveRuntimeConfigPath(rawPath) {
   const text = String(rawPath || "").trim();
@@ -1064,7 +1069,9 @@ function saveRuntimeConfigValues(payload = {}) {
   validateRuntimeConfigCombination(nextValues);
   const uniqueUpdatedKeys = [...new Set(updatedKeys)].sort();
   const uniqueClearedKeys = [...new Set(clearedKeys)].sort();
-  const changed = uniqueUpdatedKeys.length > 0 || uniqueClearedKeys.length > 0;
+  const changedKeys = [...new Set([...uniqueUpdatedKeys, ...uniqueClearedKeys])].sort();
+  const restartRequiredKeys = changedKeys.filter((key) => RESTART_REQUIRED_RUNTIME_KEYS.has(key));
+  const changed = changedKeys.length > 0;
   if (changed) {
     writeRuntimeConfigFile(targetPath, nextValues);
   }
@@ -1076,7 +1083,8 @@ function saveRuntimeConfigValues(payload = {}) {
     sourcePathRelative: path.relative(ROOT_DIR, targetPath) || path.basename(targetPath),
     updatedKeys: uniqueUpdatedKeys,
     clearedKeys: uniqueClearedKeys,
-    requiresRestart: changed,
+    requiresRestart: restartRequiredKeys.length > 0,
+    restartRequiredKeys,
     snapshot: getRuntimeConfigEditorSnapshot(),
     keys: Object.keys(nextValues).sort(),
   };

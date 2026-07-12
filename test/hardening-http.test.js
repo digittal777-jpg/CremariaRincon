@@ -171,7 +171,7 @@ async function startServer(testContext, { bootstrapToken = "", env = {} } = {}) 
     try {
       const response = await fetch(`${baseUrl}/api/health`);
       if (response.ok) {
-        return { baseUrl, dbPath, port };
+        return { baseUrl, dbPath, port, runtimePath };
       }
     } catch (_error) {
       // Seguir esperando.
@@ -565,6 +565,39 @@ test("setup admin/owner stays blocked when bootstrap token is absent", async (t)
     body: JSON.stringify({ username: "ownerroot", password: "owner1234" }),
   });
   assert.equal(ownerSetup.status, 403);
+});
+
+test("a synced bootstrap token enables initial setup without restarting the POS", async (t) => {
+  const server = await startServer(t, { bootstrapToken: "" });
+  const guest = createCookieClient(server.baseUrl);
+  const token = "bootstrap-runtime-synced-123";
+
+  const statusBeforeSync = await guest.json("/api/admin/auth/status");
+  assert.equal(statusBeforeSync.status, 200);
+  assert.equal(statusBeforeSync.body.configured, false);
+  assert.equal(statusBeforeSync.body.setupAllowed, false);
+
+  fs.writeFileSync(server.runtimePath, JSON.stringify({
+    updatedAt: new Date().toISOString(),
+    env: {
+      POS_BOOTSTRAP_TOKEN: token,
+    },
+  }), "utf8");
+
+  const statusAfterSync = await guest.json("/api/admin/auth/status");
+  assert.equal(statusAfterSync.status, 200);
+  assert.equal(statusAfterSync.body.configured, false);
+  assert.equal(statusAfterSync.body.setupAllowed, true);
+
+  const adminSetup = await guest.json("/api/admin/auth/setup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Bootstrap-Token": token,
+    },
+    body: JSON.stringify({ username: "diana", password: "admin1234" }),
+  });
+  assert.equal(adminSetup.status, 201);
 });
 
 test("admin and owner login throttles ignore spoofed forwarded-for headers", async (t) => {

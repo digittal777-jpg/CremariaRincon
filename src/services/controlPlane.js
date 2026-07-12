@@ -249,7 +249,9 @@ async function syncRuntimeConfigFromControlPlane() {
         runtimeHash: remoteRuntimeConfig.runtimeHash || "",
         reportedAt: syncedAt,
         message: saveResult.updatedKeys.length || saveResult.clearedKeys.length
-          ? "Variables runtime aplicadas por el POS. Reinicio requerido para tomarlas en proceso."
+          ? saveResult.requiresRestart
+            ? "Variables runtime aplicadas por el POS. Reinicio requerido para tomarlas en proceso."
+            : "Variables runtime aplicadas por el POS y activas sin reinicio."
           : "Variables runtime verificadas por el POS; no hubo cambios locales.",
       }),
     });

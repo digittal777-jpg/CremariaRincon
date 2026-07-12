@@ -221,6 +221,49 @@ test("runtime config save treats identical values as a no-op", (t) => {
   assert.deepEqual(secondSave.clearedKeys, []);
 });
 
+test("bootstrap token changes apply without restart while static runtime changes still require one", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-runtime-bootstrap-"));
+  const configPath = path.join(tempDir, "runtime.json");
+  const previousEnv = {
+    POS_CONFIG_PATH: process.env.POS_CONFIG_PATH,
+  };
+
+  t.after(() => {
+    Object.entries(previousEnv).forEach(([key, value]) => {
+      if (value == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    });
+    clearSrcRequireCache();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  process.env.POS_CONFIG_PATH = configPath;
+  clearSrcRequireCache();
+  const runtimeConfig = require("../src/runtimeConfig");
+
+  const tokenOnlySave = runtimeConfig.saveRuntimeConfigValues({
+    values: {
+      POS_BOOTSTRAP_TOKEN: "bootstrap-runtime-one",
+    },
+  });
+  assert.equal(tokenOnlySave.changed, true);
+  assert.equal(tokenOnlySave.requiresRestart, false);
+  assert.deepEqual(tokenOnlySave.restartRequiredKeys, []);
+
+  const mixedSave = runtimeConfig.saveRuntimeConfigValues({
+    values: {
+      POS_BOOTSTRAP_TOKEN: "bootstrap-runtime-two",
+      POS_PUBLIC_ORIGIN: "https://cliente-uno.example",
+    },
+  });
+  assert.equal(mixedSave.changed, true);
+  assert.equal(mixedSave.requiresRestart, true);
+  assert.deepEqual(mixedSave.restartRequiredKeys, ["POS_PUBLIC_ORIGIN"]);
+});
+
 test("explicit POS_CONFIG_PATH does not fall back to another runtime file", (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-runtime-explicit-"));
   const missingConfigPath = path.join(tempDir, "missing-runtime.json");

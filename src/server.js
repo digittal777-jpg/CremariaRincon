@@ -18,7 +18,6 @@ const {
   OWNER_SESSION_COOKIE_NAME,
   OWNER_SESSION_TTL_MS,
   PORT,
-  POS_BOOTSTRAP_TOKEN,
   POS_FORCE_HTTPS,
   POS_HTTPS_CA_B64,
   POS_HTTPS_CA_PATH,
@@ -33,6 +32,7 @@ const {
   ROOT_DIR,
   SESSION_COOKIE_SECURE,
 } = require("./config");
+const { readFreshRuntimeConfigValue } = require("./runtimeConfig");
 const {
   createDatabaseBackup,
   installDatabaseFromBuffer,
@@ -438,7 +438,7 @@ function buildAdminAuthStatus(request) {
   const session = adminAuth.getAdminSession(request, { touch: false });
   return {
     configured,
-    setupAllowed: !configured && Boolean(POS_BOOTSTRAP_TOKEN),
+    setupAllowed: !configured && Boolean(getEffectiveBootstrapToken()),
     username: adminAuth.getStoredAdminUsername(),
     authenticated: Boolean(session),
     csrfToken: session?.csrfToken || "",
@@ -470,7 +470,7 @@ function buildOwnerAuthStatus(request) {
   const session = ownerAuth.getOwnerSession(request, { touch: false });
   return {
     configured,
-    setupAllowed: !configured && Boolean(POS_BOOTSTRAP_TOKEN),
+    setupAllowed: !configured && Boolean(getEffectiveBootstrapToken()),
     username: ownerAuth.getStoredOwnerUsername(),
     authenticated: Boolean(session),
     csrfToken: session?.csrfToken || "",
@@ -482,14 +482,19 @@ function getBootstrapTokenFromRequest(request) {
   return String(request.headers[BOOTSTRAP_TOKEN_HEADER_NAME] || "").trim();
 }
 
+function getEffectiveBootstrapToken() {
+  return String(readFreshRuntimeConfigValue("POS_BOOTSTRAP_TOKEN") || "").trim();
+}
+
 function assertBootstrapSetupAllowed(request, actorLabel) {
-  if (!POS_BOOTSTRAP_TOKEN) {
+  const bootstrapToken = getEffectiveBootstrapToken();
+  if (!bootstrapToken) {
     throw Object.assign(new Error(`El setup inicial de ${actorLabel} esta bloqueado en este despliegue.`), {
       statusCode: 403,
     });
   }
 
-  if (getBootstrapTokenFromRequest(request) !== POS_BOOTSTRAP_TOKEN) {
+  if (getBootstrapTokenFromRequest(request) !== bootstrapToken) {
     throw Object.assign(new Error(`Necesitas un token de bootstrap valido para crear el acceso ${actorLabel}.`), {
       statusCode: 403,
     });
@@ -797,9 +802,10 @@ async function syncControlPlaneRuntimeConfig(reason = "poll") {
   const updatedKeys = Array.isArray(result?.runtimeConfig?.updatedKeys) ? result.runtimeConfig.updatedKeys : [];
   const clearedKeys = Array.isArray(result?.runtimeConfig?.clearedKeys) ? result.runtimeConfig.clearedKeys : [];
   if (updatedKeys.length || clearedKeys.length) {
-    console.warn(
-      `[control-plane] Variables runtime sincronizadas (${reason}). Reinicia el POS para aplicar: ${[...updatedKeys, ...clearedKeys].join(", ")}`,
-    );
+    const changedKeys = [...updatedKeys, ...clearedKeys].join(", ");
+    console.warn(result.requiresRestart
+      ? `[control-plane] Variables runtime sincronizadas (${reason}). Reinicia el POS para aplicar: ${changedKeys}`
+      : `[control-plane] Variables runtime sincronizadas y activas (${reason}): ${changedKeys}`);
     services.reportSupportHealthToControlPlane({ branch: "all" }).catch((error) => {
       console.warn(`[control-plane] No pude reportar salud despues de aplicar variables runtime (${reason}): ${error.message}`);
     });
