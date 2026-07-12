@@ -115,6 +115,11 @@ test("Railway pairing variables override stale values in the private runtime fil
   assert.equal(config.CONTROL_API_URL, "https://owner-control.example");
   assert.equal(config.CONTROL_CLIENT_SLUG, "cremeria-rincon");
   assert.equal(config.CONTROL_CLIENT_SECRET, "pos_current_secret");
+  const runtimeConfig = require("../src/runtimeConfig");
+  const urlVariable = runtimeConfig.getRuntimeConfigEditorSnapshot().variables
+    .find((variable) => variable.key === "CONTROL_API_URL");
+  assert.equal(urlVariable.value, "https://owner-control.example");
+  assert.equal(urlVariable.source, "service");
 });
 
 test("owner runtime config save preserves stored secrets when fields stay blank", (t) => {
@@ -260,6 +265,7 @@ test("config uses Railway saver defaults without explicit control polling", (t) 
     RAILWAY_SERVICE_ID: process.env.RAILWAY_SERVICE_ID,
     RAILWAY_DEPLOYMENT_ID: process.env.RAILWAY_DEPLOYMENT_ID,
     RAILWAY_COST_SAVER_MODE: process.env.RAILWAY_COST_SAVER_MODE,
+    POS_TRUST_PROXY: process.env.POS_TRUST_PROXY,
     CONTROL_CONFIG_POLL_MS: process.env.CONTROL_CONFIG_POLL_MS,
     CONTROL_CONFIG_SYNC_MAX_AGE_MS: process.env.CONTROL_CONFIG_SYNC_MAX_AGE_MS,
   };
@@ -276,6 +282,7 @@ test("config uses Railway saver defaults without explicit control polling", (t) 
   delete process.env.RAILWAY_SERVICE_ID;
   delete process.env.RAILWAY_DEPLOYMENT_ID;
   delete process.env.RAILWAY_COST_SAVER_MODE;
+  delete process.env.POS_TRUST_PROXY;
   delete process.env.CONTROL_CONFIG_POLL_MS;
   delete process.env.CONTROL_CONFIG_SYNC_MAX_AGE_MS;
   clearSrcRequireCache();
@@ -285,6 +292,92 @@ test("config uses Railway saver defaults without explicit control polling", (t) 
   assert.equal(config.RAILWAY_COST_SAVER_MODE, true);
   assert.equal(config.CONTROL_CONFIG_POLL_MS, 0);
   assert.equal(config.CONTROL_CONFIG_SYNC_MAX_AGE_MS, 300000);
+  assert.equal(config.POS_TRUST_PROXY, "100.0.0.0/8");
+});
+
+test("Railway safely merges its proxy CIDR and honors an explicit env opt-out", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-runtime-railway-proxy-"));
+  const configPath = path.join(tempDir, "runtime.json");
+  const previousEnv = {
+    POS_CONFIG_PATH: process.env.POS_CONFIG_PATH,
+    POS_TRUST_PROXY: process.env.POS_TRUST_PROXY,
+    RAILWAY_ENVIRONMENT: process.env.RAILWAY_ENVIRONMENT,
+    RAILWAY_PROJECT_ID: process.env.RAILWAY_PROJECT_ID,
+    RAILWAY_SERVICE_ID: process.env.RAILWAY_SERVICE_ID,
+    RAILWAY_DEPLOYMENT_ID: process.env.RAILWAY_DEPLOYMENT_ID,
+  };
+
+  t.after(() => {
+    restoreEnv(previousEnv);
+    clearSrcRequireCache();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  fs.writeFileSync(configPath, JSON.stringify({
+    env: {
+      POS_TRUST_PROXY: "loopback,linklocal,uniquelocal",
+    },
+  }), "utf8");
+  process.env.POS_CONFIG_PATH = configPath;
+  process.env.RAILWAY_ENVIRONMENT = "production";
+  delete process.env.RAILWAY_PROJECT_ID;
+  delete process.env.RAILWAY_SERVICE_ID;
+  delete process.env.RAILWAY_DEPLOYMENT_ID;
+  delete process.env.POS_TRUST_PROXY;
+  clearSrcRequireCache();
+
+  let config = require("../src/config");
+  assert.equal(config.POS_TRUST_PROXY, "loopback,linklocal,uniquelocal,100.0.0.0/8");
+
+  process.env.POS_TRUST_PROXY = "false";
+  clearSrcRequireCache();
+  config = require("../src/config");
+  assert.equal(config.POS_TRUST_PROXY, "false");
+  const runtimeConfig = require("../src/runtimeConfig");
+  const proxyVariable = runtimeConfig.getRuntimeConfigEditorSnapshot().variables
+    .find((variable) => variable.key === "POS_TRUST_PROXY");
+  assert.equal(proxyVariable.value, "false");
+  assert.equal(proxyVariable.source, "service");
+
+  process.env.POS_TRUST_PROXY = "true";
+  clearSrcRequireCache();
+  config = require("../src/config");
+  assert.equal(config.POS_TRUST_PROXY, "true");
+});
+
+test("non-Railway runtime does not inherit Railway proxy trust", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-runtime-local-proxy-"));
+  const configPath = path.join(tempDir, "runtime.json");
+  const previousEnv = {
+    POS_CONFIG_PATH: process.env.POS_CONFIG_PATH,
+    POS_TRUST_PROXY: process.env.POS_TRUST_PROXY,
+    RAILWAY_ENVIRONMENT: process.env.RAILWAY_ENVIRONMENT,
+    RAILWAY_PROJECT_ID: process.env.RAILWAY_PROJECT_ID,
+    RAILWAY_SERVICE_ID: process.env.RAILWAY_SERVICE_ID,
+    RAILWAY_DEPLOYMENT_ID: process.env.RAILWAY_DEPLOYMENT_ID,
+  };
+
+  t.after(() => {
+    restoreEnv(previousEnv);
+    clearSrcRequireCache();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  fs.writeFileSync(configPath, JSON.stringify({
+    env: {
+      POS_TRUST_PROXY: "loopback,linklocal,uniquelocal",
+    },
+  }), "utf8");
+  process.env.POS_CONFIG_PATH = configPath;
+  delete process.env.POS_TRUST_PROXY;
+  delete process.env.RAILWAY_ENVIRONMENT;
+  delete process.env.RAILWAY_PROJECT_ID;
+  delete process.env.RAILWAY_SERVICE_ID;
+  delete process.env.RAILWAY_DEPLOYMENT_ID;
+  clearSrcRequireCache();
+
+  const config = require("../src/config");
+  assert.equal(config.POS_TRUST_PROXY, "loopback,linklocal,uniquelocal");
 });
 
 test("explicit control polling overrides Railway saver defaults", (t) => {

@@ -32,6 +32,7 @@ const PREFER_ENV_RUNTIME_KEYS = new Set([
   "NODE_ENV",
   "PORT",
   "POS_HTTP_REDIRECT_PORT",
+  "POS_TRUST_PROXY",
   "RAILWAY_COST_SAVER_MODE",
   ...PAIRING_RUNTIME_KEYS,
 ]);
@@ -935,15 +936,17 @@ function getRuntimeConfigEditorSnapshot() {
       const hasFileValue = fileValue != null && String(fileValue).trim() !== "";
       const hasEnvValue = envValue != null && String(envValue).trim() !== "";
       const isSecret = Boolean(definition.secret);
+      const preferEnv = PREFER_ENV_RUNTIME_KEYS.has(definition.key);
+      const usesEnvValue = hasEnvValue && (preferEnv || !hasFileValue);
       const pendingRestart = definition.restartRequired
         && readCurrentEffectiveRuntimeValue(definition.key) !== readFreshEffectiveRuntimeValue(definition.key);
       return {
         ...definition,
-        value: isSecret ? "" : String(hasFileValue ? fileValue : hasEnvValue ? envValue : ""),
+        value: isSecret ? "" : String(usesEnvValue ? envValue : hasFileValue ? fileValue : ""),
         hasStoredValue: hasFileValue,
         hasEnvValue,
         pendingRestart,
-        source: hasFileValue ? "owner" : hasEnvValue ? "service" : "empty",
+        source: usesEnvValue ? "service" : hasFileValue ? "owner" : "empty",
         maskedValue: isSecret && (hasFileValue || hasEnvValue) ? "********" : "",
       };
     }),

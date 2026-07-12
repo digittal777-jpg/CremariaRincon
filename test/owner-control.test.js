@@ -600,7 +600,7 @@ test("owner-control enables signed client API requests by default when HTTPS is 
   assert.equal(signed.status, 200);
 });
 
-test("owner-control rejects insecure remote runtime URLs at save time", async (t) => {
+test("owner-control rejects POS pairing variables in managed runtime", async (t) => {
   const server = await startOwnerControlServer(t);
 
   const createResponse = await json(server.baseUrl, "/api/owner/clients", {
@@ -626,7 +626,7 @@ test("owner-control rejects insecure remote runtime URLs at save time", async (t
     }),
   });
   assert.equal(runtimeUpdate.status, 400);
-  assert.match(runtimeUpdate.body.message, /CONTROL_API_URL debe usar HTTPS fuera de localhost/i);
+  assert.match(runtimeUpdate.body.message, /CONTROL_API_URL forman el emparejamiento inicial/i);
 });
 
 test("owner-control stores its own runtime HTTPS config and marks restart pending", async (t) => {

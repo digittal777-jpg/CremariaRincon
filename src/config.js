@@ -33,6 +33,29 @@ function isRailwayRuntime() {
   ].some((value) => String(value || "").trim() !== "");
 }
 
+const RAILWAY_TRUST_PROXY_CIDR = "100.0.0.0/8";
+
+function resolvePosTrustProxyValue(rawValue, options = {}) {
+  const configuredValue = String(rawValue || "").trim();
+  if (!options.railway) {
+    return configuredValue;
+  }
+
+  const normalizedValue = configuredValue.toLowerCase();
+  if (["false", "no", "off"].includes(normalizedValue)) {
+    return configuredValue;
+  }
+  if (normalizedValue === "true" || /^\d+$/.test(configuredValue)) {
+    return configuredValue;
+  }
+
+  const configuredEntries = configuredValue
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return [...new Set([...configuredEntries, RAILWAY_TRUST_PROXY_CIDR])].join(",");
+}
+
 function isUsableSqliteFile(filePath) {
   try {
     const stats = fs.statSync(filePath);
@@ -112,7 +135,10 @@ const POS_FORCE_HTTPS = POS_FORCE_HTTPS_SETTING === "true"
     ? false
     : SESSION_COOKIE_SECURE || RUNTIME_NODE_ENV === "production" || POS_PUBLIC_ORIGIN.toLowerCase().startsWith("https://");
 const POS_HTTP_REDIRECT_PORT = Math.max(0, Number(readRuntimeConfigValue("POS_HTTP_REDIRECT_PORT", "0", { preferEnv: true }) || 0));
-const POS_TRUST_PROXY = String(readRuntimeConfigValue("POS_TRUST_PROXY") || "").trim();
+const POS_TRUST_PROXY = resolvePosTrustProxyValue(
+  readRuntimeConfigValue("POS_TRUST_PROXY", "", { preferEnv: isRailwayRuntime() }),
+  { railway: isRailwayRuntime() },
+);
 const POS_HSTS_MAX_AGE_SECONDS = Math.max(0, Number(readRuntimeConfigValue("POS_HSTS_MAX_AGE_SECONDS", "31536000") || 31536000));
 const POS_ALLOWED_ORIGINS = String(readRuntimeConfigValue("POS_ALLOWED_ORIGINS") || "")
   .split(",")
