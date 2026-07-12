@@ -4,6 +4,7 @@ const { parseWorkbookCatalog } = require("../catalogParser");
 const { DEFAULT_WORKBOOK_PATHS } = require("../config");
 const { getDb, nowIso } = require("../db");
 const {
+  ALL_BRANCHES,
   createHttpError,
   getMeasurementUnitRecord,
   getProductCategoryRecord,
@@ -640,15 +641,22 @@ function removeProduct(productId, branch = "carrizal") {
   return { id: productId, removed: true, alreadyInactive: false };
 }
 
-function listAllProductsForExport() {
+function listAllProductsForExport(options = {}) {
+  const normalizedBranch = normalizeBranch(options.branch || ALL_BRANCHES, {
+    allowAll: true,
+    fallback: ALL_BRANCHES,
+  });
+  const whereSql = normalizedBranch === ALL_BRANCHES ? "" : "WHERE p.branch = ?";
+  const params = normalizedBranch === ALL_BRANCHES ? [] : [normalizedBranch];
   return db.prepare(`
     ${getProductSelectSql()}
+    ${whereSql}
     ORDER BY
       COALESCE(pc.sort_order, 9999),
       p.active DESC,
       p.display_order,
       p.name COLLATE NOCASE
-  `).all();
+  `).all(...params);
 }
 
 module.exports = {

@@ -4,13 +4,13 @@ const {
   ADMIN_LOGIN_LOCK_MS,
   ADMIN_LOGIN_WINDOW_MS,
   ADMIN_MAX_FAILED_LOGINS,
+  CASHIER_SESSION_TTL_MS,
 } = require("../config");
 const { getDb, nowIso } = require("../db");
 const { createHttpError, normalizeText } = require("../utils/helpers");
 
 const db = getDb();
 
-const CASHIER_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const failedLoginAttempts = new Map();
 
 function getCashierTokenFromRequest(request) {

@@ -1020,7 +1020,27 @@ function completeWeightedAuditSession(sessionId, payload = {}) {
   return getWeightedAuditSessionById(sessionId);
 }
 
-function listWeightedAuditRowsForExport() {
+function listWeightedAuditRowsForExport(options = {}) {
+  const branch = normalizeBranch(options.branch || ALL_BRANCHES, {
+    allowAll: true,
+    fallback: ALL_BRANCHES,
+  });
+  const clauses = [];
+  const params = [];
+  if (branch !== ALL_BRANCHES) {
+    clauses.push("s.branch = ?");
+    params.push(branch);
+  }
+  if (options.startDateKey) {
+    clauses.push("s.audited_date_key >= ?");
+    params.push(String(options.startDateKey));
+  }
+  if (options.endDateKey) {
+    clauses.push("s.audited_date_key <= ?");
+    params.push(String(options.endDateKey));
+  }
+  const whereSql = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+
   return db.prepare(`
     SELECT
       s.id AS session_id,
@@ -1049,8 +1069,9 @@ function listWeightedAuditRowsForExport() {
       i.updated_at AS item_updated_at
     FROM weighted_audit_sessions s
     JOIN weighted_audit_items i ON i.session_id = s.id
+    ${whereSql}
     ORDER BY s.audited_date_key DESC, s.id DESC, ABS(COALESCE(i.difference, 0)) DESC, i.product_name COLLATE NOCASE
-  `).all();
+  `).all(...params);
 }
 
 module.exports = {

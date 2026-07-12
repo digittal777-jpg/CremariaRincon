@@ -2,6 +2,7 @@
 const os = require("node:os");
 const path = require("node:path");
 const fs = require("node:fs");
+const crypto = require("node:crypto");
 
 const express = require("express");
 const multer = require("multer");
@@ -108,8 +109,37 @@ const io = new Server(server, {
   },
 });
 
-// Configurar multer para uploads temporales en memoria
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
+const uploadTempDir = path.join(os.tmpdir(), "cremeria-rincon-uploads");
+const upload = multer({
+  storage: multer.diskStorage({
+    destination(_request, _file, callback) {
+      fs.mkdirSync(uploadTempDir, { recursive: true });
+      callback(null, uploadTempDir);
+    },
+    filename(_request, file, callback) {
+      const extension = path.extname(file.originalname || "").toLowerCase();
+      callback(null, `${Date.now()}-${crypto.randomUUID()}${extension}`);
+    },
+  }),
+  limits: { fileSize: 100 * 1024 * 1024 },
+});
+
+async function readUploadedFileBuffer(file) {
+  if (file?.buffer) {
+    return file.buffer;
+  }
+  if (!file?.path) {
+    return Buffer.alloc(0);
+  }
+  return fs.promises.readFile(file.path);
+}
+
+function cleanupUploadedFile(file) {
+  if (!file?.path) {
+    return;
+  }
+  fs.promises.rm(file.path, { force: true }).catch(() => {});
+}
 
 let lastCpuSnapshot = { usage: process.cpuUsage(), time: process.hrtime.bigint() };
 const adminSessions = null;
@@ -128,7 +158,7 @@ function buildPosContentSecurityPolicy() {
     "frame-ancestors 'self'",
     "object-src 'none'",
     "script-src 'self'",
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "style-src 'self' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: blob:",
     `connect-src ${[...new Set(connectSources)].join(" ")}`,
@@ -733,6 +763,7 @@ function getProcessCpuPercent() {
 }
 
 function broadcastSnapshot(snapshot = services.getDashboardSnapshot()) {
+  services.clearDashboardSnapshotCache();
   io.emit("dashboard:snapshot", {
     branch: snapshot?.store?.currentBranch || null,
     generatedAt: snapshot?.generatedAt || nowIso(),
@@ -912,8 +943,8 @@ app.get("/api/dashboard", requireAuthenticatedActor, async (request, response) =
   });
   response.json(
     canReadPrivateDashboard(request.accessContext, adminCapabilities)
-      ? services.getDashboardSnapshot(branch)
-      : services.getPublicDashboardSnapshot(branch),
+      ? services.getDashboardSnapshot(branch, { useCache: true })
+      : services.getPublicDashboardSnapshot(branch, { useCache: true }),
   );
 });
 
@@ -945,8 +976,9 @@ app.get("/api/bootstrap", async (request, response) => {
     const snapshot = canReadPrivateDashboard(accessContext, adminCapabilities)
       ? services.getDashboardSnapshot(branch, {
           includeInventoryInactive: includeInactiveInventory,
+          useCache: true,
         })
-      : services.getPublicDashboardSnapshot(branch);
+      : services.getPublicDashboardSnapshot(branch, { useCache: true });
     response.json(attachBootstrapMetadata(snapshot, accessContext, adminCapabilities));
   } catch (err) {
     console.error("Error en /api/bootstrap:", err);
@@ -975,6 +1007,7 @@ app.get("/api/admin/bootstrap", (request, response, next) => {
     );
     const snapshot = services.getDashboardSnapshot(branch, {
       includeInventoryInactive: includeInactiveInventory,
+      useCache: true,
     });
     response.json(attachBootstrapMetadata(snapshot, accessContext, adminCapabilities));
   } catch (err) {
@@ -2273,7 +2306,7 @@ app.post(
         return;
       }
 
-      const buffer = request.file.buffer;
+      const buffer = await readUploadedFileBuffer(request.file);
       const result = await installDatabaseFromBuffer(buffer);
       services.logAdminAction({
         actorName: getAdminActorName(request),
@@ -2308,6 +2341,8 @@ app.post(
       }
 
       next(error);
+    } finally {
+      cleanupUploadedFile(request.file);
     }
   },
 );
@@ -2330,7 +2365,8 @@ app.post(
         return;
       }
 
-      const result = await services.installOperationalDataFromWorkbookBuffer(request.file.buffer);
+      const buffer = await readUploadedFileBuffer(request.file);
+      const result = await services.installOperationalDataFromWorkbookBuffer(buffer);
       services.logAdminAction({
         actorName: getAdminActorName(request),
         action: "workbook_install",
@@ -2338,7 +2374,7 @@ app.post(
         entityId: request.file.originalname || "upload",
         payload: {
           fileName: request.file.originalname || null,
-          fileSize: request.file.size || request.file.buffer.length,
+          fileSize: request.file.size || buffer.length,
           branches: result.branches,
           counts: result.counts,
           backupPath: result.backupPath,
@@ -2360,6 +2396,8 @@ app.post(
       }
 
       next(error);
+    } finally {
+      cleanupUploadedFile(request.file);
     }
   },
 );

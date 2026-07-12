@@ -11,6 +11,7 @@ const {
   STORE_BRANCHES,
   getBranchLabel,
   getStoreDateKey,
+  getStoreDateRangeForKeys,
   getStoreHourLabel,
   getStoreName,
   getStorePeriodRange,
@@ -118,6 +119,8 @@ function resolveExportBaseDate(rawBaseDate, scope) {
       anchorDateKey: null,
       startDateKey: null,
       endDateKey: null,
+      startAt: null,
+      endAt: null,
     };
   }
 
@@ -138,6 +141,7 @@ function resolveExportBaseDate(rawBaseDate, scope) {
 
   if (normalizedScope === "store-week") {
     const weekRange = getStorePeriodRange("week", selectedKey);
+    const weekDateRange = getStoreDateRangeForKeys(weekRange.startDateKey, weekRange.endDateKey);
     return {
       scope: normalizedScope,
       baseDate: createStoreDateFromKey(selectedKey),
@@ -146,9 +150,12 @@ function resolveExportBaseDate(rawBaseDate, scope) {
       anchorDateKey: selectedKey,
       startDateKey: weekRange.startDateKey,
       endDateKey: weekRange.endDateKey,
+      startAt: weekDateRange.startAt,
+      endAt: weekDateRange.endAt,
     };
   }
 
+  const dayDateRange = getStoreDateRangeForKeys(selectedKey, selectedKey);
   return {
     scope: normalizedScope,
     baseDate: createStoreDateFromKey(selectedKey),
@@ -157,6 +164,8 @@ function resolveExportBaseDate(rawBaseDate, scope) {
     anchorDateKey: selectedKey,
     startDateKey: selectedKey,
     endDateKey: selectedKey,
+    startAt: dayDateRange.startAt,
+    endAt: dayDateRange.endAt,
   };
 }
 
@@ -856,16 +865,34 @@ async function exportWorkbookReport(options = {}) {
     allowAll: true,
     fallback: ALL_BRANCHES,
   });
+  const exportFilters = {
+    branch: selectedBranch,
+    startAt: scopeContext.startAt,
+    endAt: scopeContext.endAt,
+  };
+  const auditExportFilters = {
+    branch: selectedBranch,
+    startDateKey: scopeContext.startDateKey,
+    endDateKey: scopeContext.endDateKey,
+  };
+  const salesRows = listSalesForExport(exportFilters);
+  const saleIds = [...new Set(salesRows.map((row) => Number(row.id)).filter(Boolean))];
 
   const baseRows = {
-    products: listAllProductsForExport(),
-    salesRows: listSalesForExport(),
-    creditPayments: listCreditPaymentsForExport(),
-    movements: listInventoryMovementsForExport(),
-    registerEvents: listRegisterEventsForExport(),
-    weightedAuditRows: listWeightedAuditRowsForExport(),
+    products: listAllProductsForExport({ branch: selectedBranch }),
+    salesRows,
+    creditPayments: listCreditPaymentsForExport(exportFilters),
+    creditPaymentsForTotals: scopeContext.scope === "all-time"
+      ? listCreditPaymentsForExport({ branch: selectedBranch })
+      : listCreditPaymentsForExport({
+          branch: selectedBranch,
+          saleIds,
+        }),
+    movements: listInventoryMovementsForExport(exportFilters),
+    registerEvents: listRegisterEventsForExport(exportFilters),
+    weightedAuditRows: listWeightedAuditRowsForExport(auditExportFilters),
   };
-  baseRows.creditPaymentTotalsBySaleId = buildCreditPaymentTotalsBySaleId(baseRows.creditPayments);
+  baseRows.creditPaymentTotalsBySaleId = buildCreditPaymentTotalsBySaleId(baseRows.creditPaymentsForTotals);
 
   if (selectedBranch === ALL_BRANCHES) {
     STORE_BRANCHES.forEach((branchCode) => {

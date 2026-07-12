@@ -489,6 +489,14 @@ function updateRouteCartEditorState() {
 }
 
 function createClientEventId(prefix = "register") {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const values = new Uint32Array(2);
+    crypto.getRandomValues(values);
+    return `${prefix}-${Date.now()}-${values[0].toString(16)}${values[1].toString(16)}`;
+  }
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
@@ -1046,7 +1054,7 @@ function updatePaymentView() {
     refs.paymentRouteConfirmButton.disabled = refs.confirmSaleButton.disabled;
   }
 
-  refs.cashPaymentBlock.style.display = isCash || isCredit ? "block" : "none";
+  refs.cashPaymentBlock.hidden = !(isCash || isCredit);
   if (refs.paymentExactShortcutButton) {
     refs.paymentExactShortcutButton.textContent = isCredit
       ? "Sin abono"

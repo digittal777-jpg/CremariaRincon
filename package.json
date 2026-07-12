@@ -20,7 +20,7 @@
     "owner-control:start": "node ../owner-control/server.js",
     "telegram:updates": "node scripts/telegram-helper.js updates",
     "telegram:test": "node scripts/telegram-helper.js send-test",
-    "test": "node --test"
+    "test": "node scripts/run-tests-isolated.js"
   },
   "keywords": [],
   "author": "",
@@ -33,5 +33,10 @@
     "express": "^5.2.1",
     "multer": "1.4.5-lts.2",
     "socket.io": "^4.8.3"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
   }
 }

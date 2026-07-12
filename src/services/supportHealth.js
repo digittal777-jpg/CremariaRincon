@@ -19,7 +19,7 @@ const { getDb, nowIso } = require("../db");
 const {
   ALL_BRANCHES,
   getStoreDateKey,
-  isSameStoreDay,
+  getStoreDateRangeForValue,
   normalizeBranch,
   roundMoney,
   roundStock,
@@ -107,18 +107,30 @@ function getOperationalCounts(branch = ALL_BRANCHES) {
       WHERE branch = ?
     `).get(normalizedBranch);
 
-  const salesRows = normalizedBranch === ALL_BRANCHES
-    ? db.prepare("SELECT id, created_at FROM sales").all()
-    : db.prepare("SELECT id, created_at FROM sales WHERE branch = ?").all(normalizedBranch);
   const today = new Date();
+  const todayRange = getStoreDateRangeForValue(today);
+  const tickets = normalizedBranch === ALL_BRANCHES
+    ? db.prepare("SELECT COUNT(*) AS count FROM sales").get().count
+    : db.prepare("SELECT COUNT(*) AS count FROM sales WHERE branch = ?").get(normalizedBranch).count;
+  const ticketsToday = normalizedBranch === ALL_BRANCHES
+    ? db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM sales
+      WHERE created_at >= ? AND created_at < ?
+    `).get(todayRange.startAt, todayRange.endAt).count
+    : db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM sales
+      WHERE branch = ? AND created_at >= ? AND created_at < ?
+    `).get(normalizedBranch, todayRange.startAt, todayRange.endAt).count;
 
   return {
     products: Number(productRow.products || 0),
     activeProducts: Number(productRow.active_products || 0),
     missingCostProducts: Number(productRow.missing_cost_products || 0),
     negativeStockProducts: Number(productRow.negative_stock_products || 0),
-    tickets: salesRows.length,
-    ticketsToday: salesRows.filter((row) => isSameStoreDay(row.created_at, today)).length,
+    tickets: Number(tickets || 0),
+    ticketsToday: Number(ticketsToday || 0),
     todayDateKey: getStoreDateKey(today),
   };
 }

@@ -14,6 +14,7 @@ const CLONE_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "clone-business.js");
 const DEMO_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "seed-demo-instance.js");
 const PROVISION_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "provision-client.js");
 const VALIDATE_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "validate-client.js");
+const RUN_TESTS_ISOLATED_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "run-tests-isolated.js");
 const WORKBOOK_PATH = path.join(ROOT_DIR, "Queseria El rincon V1.5.xlsx");
 const ABARROTES_WORKBOOK_PATH = path.join(ROOT_DIR, "catalogos", "abarrotes-base.xlsx");
 
@@ -193,6 +194,71 @@ test("backend destructured CommonJS imports reference exported names", (t) => {
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.deepEqual(payload.missing, []);
+});
+
+test("run-tests-isolated creates an empty POS_CONFIG_PATH when none is provided", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "retail-base-test-wrapper-"));
+  const childTestPath = path.join(tempDir, "runtime-env-check.test.js");
+  fs.writeFileSync(childTestPath, `
+    const assert = require("node:assert/strict");
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+    const test = require("node:test");
+
+    test("isolated runtime path exists", () => {
+      assert.ok(process.env.POS_CONFIG_PATH);
+      assert.equal(fs.existsSync(process.env.POS_CONFIG_PATH), true);
+      assert.equal(fs.readFileSync(process.env.POS_CONFIG_PATH, "utf8").trim(), "{}");
+      const relative = path.relative(os.tmpdir(), process.env.POS_CONFIG_PATH);
+      assert.equal(relative.startsWith(".."), false);
+    });
+  `, "utf8");
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const env = { ...process.env };
+  delete env.POS_CONFIG_PATH;
+  const result = runNodeScript(RUN_TESTS_ISOLATED_SCRIPT_PATH, [childTestPath], {
+    env,
+    timeout: 30000,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+test("run-tests-isolated respects an explicit POS_CONFIG_PATH", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "retail-base-test-wrapper-explicit-"));
+  const runtimePath = path.join(tempDir, "runtime.json");
+  const childTestPath = path.join(tempDir, "runtime-explicit-check.test.js");
+  fs.writeFileSync(runtimePath, JSON.stringify({ env: { POS_PUBLIC_ORIGIN: "https://explicit.example" } }), "utf8");
+  fs.writeFileSync(childTestPath, `
+    const assert = require("node:assert/strict");
+    const fs = require("node:fs");
+    const test = require("node:test");
+
+    test("explicit runtime path is preserved", () => {
+      assert.equal(process.env.POS_CONFIG_PATH, ${JSON.stringify(runtimePath)});
+      const parsed = JSON.parse(fs.readFileSync(process.env.POS_CONFIG_PATH, "utf8"));
+      assert.equal(parsed.env.POS_PUBLIC_ORIGIN, "https://explicit.example");
+    });
+  `, "utf8");
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const result = runNodeScript(RUN_TESTS_ISOLATED_SCRIPT_PATH, [childTestPath], {
+    env: {
+      ...process.env,
+      POS_CONFIG_PATH: runtimePath,
+    },
+    timeout: 30000,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
 test("seed-business-template requires an explicit catalog path", () => {

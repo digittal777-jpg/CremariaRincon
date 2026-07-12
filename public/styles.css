@@ -1291,6 +1291,21 @@ h3 {
   box-shadow: inset 0 -6px 14px rgba(255, 255, 255, 0.18);
 }
 
+.trend-height-10 { height: 10px; }
+.trend-height-20 { height: 20px; }
+.trend-height-30 { height: 30px; }
+.trend-height-40 { height: 40px; }
+.trend-height-50 { height: 50px; }
+.trend-height-60 { height: 60px; }
+.trend-height-70 { height: 70px; }
+.trend-height-80 { height: 80px; }
+.trend-height-90 { height: 90px; }
+.trend-height-100 { height: 100px; }
+.trend-height-110 { height: 110px; }
+.trend-height-120 { height: 120px; }
+.trend-height-130 { height: 130px; }
+.trend-height-140 { height: 140px; }
+
 .trend-bar-value {
   color: var(--muted);
   font-size: 0.76rem;
@@ -3228,6 +3243,28 @@ body.administration-page #admin-modal .admin-context-pill::after {
   transition: width 0.2s ease;
 }
 
+.quick-import-progress-fill.progress-0 { width: 0; }
+.quick-import-progress-fill.progress-5 { width: 5%; }
+.quick-import-progress-fill.progress-10 { width: 10%; }
+.quick-import-progress-fill.progress-15 { width: 15%; }
+.quick-import-progress-fill.progress-20 { width: 20%; }
+.quick-import-progress-fill.progress-25 { width: 25%; }
+.quick-import-progress-fill.progress-30 { width: 30%; }
+.quick-import-progress-fill.progress-35 { width: 35%; }
+.quick-import-progress-fill.progress-40 { width: 40%; }
+.quick-import-progress-fill.progress-45 { width: 45%; }
+.quick-import-progress-fill.progress-50 { width: 50%; }
+.quick-import-progress-fill.progress-55 { width: 55%; }
+.quick-import-progress-fill.progress-60 { width: 60%; }
+.quick-import-progress-fill.progress-65 { width: 65%; }
+.quick-import-progress-fill.progress-70 { width: 70%; }
+.quick-import-progress-fill.progress-75 { width: 75%; }
+.quick-import-progress-fill.progress-80 { width: 80%; }
+.quick-import-progress-fill.progress-85 { width: 85%; }
+.quick-import-progress-fill.progress-90 { width: 90%; }
+.quick-import-progress-fill.progress-95 { width: 95%; }
+.quick-import-progress-fill.progress-100 { width: 100%; }
+
 .quick-import-summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3690,6 +3727,11 @@ body.administration-page #admin-modal .admin-context-pill::after {
   color: white;
   box-shadow: var(--shadow-md);
   animation: slideIn 0.25s ease;
+}
+
+.toast.toast-exit {
+  opacity: 0;
+  transform: translateY(8px);
 }
 
 .toast.success {

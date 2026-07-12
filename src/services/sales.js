@@ -8,11 +8,11 @@ const {
   createHttpError,
   getBranchLabel,
   getSetting,
+  getStoreDateRangeForValue,
   getStoreHourLabel,
   isAllBranches,
   isCashPaymentMethod,
   isCreditPaymentMethod,
-  isSameStoreDay,
   mapProduct,
   normalizeBranch,
   normalizePaymentMethod,
@@ -35,9 +35,45 @@ function normalizeClientSaleId(value) {
   return normalizeText(value || "", 120) || null;
 }
 
-function listStoreDaySales(baseDate = new Date(), branch = STORE_BRANCHES[0]) {
+function isSqliteConstraintError(error) {
+  return String(error?.code || "").startsWith("SQLITE_CONSTRAINT");
+}
+
+function isTicketNumberConstraintError(error) {
+  return isSqliteConstraintError(error)
+    && String(error?.message || "").includes("sales.ticket_number");
+}
+
+function getNextTicketNumber(ticketPrefix) {
+  const prefixWithSeparator = `${ticketPrefix}-`;
+  const rows = db.prepare(`
+    SELECT ticket_number
+    FROM sales
+    WHERE ticket_number LIKE ?
+  `).all(`${prefixWithSeparator}%`);
+
+  const highestSuffix = rows.reduce((highest, row) => {
+    const ticketNumber = String(row.ticket_number || "");
+    if (!ticketNumber.startsWith(prefixWithSeparator)) {
+      return highest;
+    }
+
+    const suffix = ticketNumber.slice(prefixWithSeparator.length);
+    if (!/^\d+$/.test(suffix)) {
+      return highest;
+    }
+
+    return Math.max(highest, Number(suffix));
+  }, 0);
+
+  return `${prefixWithSeparator}${String(highestSuffix + 1).padStart(4, "0")}`;
+}
+
+function listStoreDaySales(baseDate = new Date(), branch = STORE_BRANCHES[0], options = {}) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
-  const rows = normalizedBranch === ALL_BRANCHES
+  const range = getStoreDateRangeForValue(baseDate);
+  const shift = normalizeText(options.shift || "", 24) || null;
+  return normalizedBranch === ALL_BRANCHES
     ? db.prepare(`
       SELECT
         id,
@@ -52,8 +88,10 @@ function listStoreDaySales(baseDate = new Date(), branch = STORE_BRANCHES[0]) {
         item_count,
         created_at
       FROM sales
+      WHERE created_at >= ? AND created_at < ?
+        ${shift ? "AND shift = ?" : ""}
       ORDER BY created_at DESC
-    `).all()
+    `).all(...(shift ? [range.startAt, range.endAt, shift] : [range.startAt, range.endAt]))
     : db.prepare(`
       SELECT
         id,
@@ -68,16 +106,18 @@ function listStoreDaySales(baseDate = new Date(), branch = STORE_BRANCHES[0]) {
         item_count,
         created_at
       FROM sales
-      WHERE branch = ?
+      WHERE branch = ? AND created_at >= ? AND created_at < ?
+        ${shift ? "AND shift = ?" : ""}
       ORDER BY created_at DESC
-    `).all(normalizedBranch);
-
-  return rows.filter((row) => isSameStoreDay(row.created_at, baseDate));
+    `).all(...(shift
+      ? [normalizedBranch, range.startAt, range.endAt, shift]
+      : [normalizedBranch, range.startAt, range.endAt]));
 }
 
 function listStoreDaySaleItems(baseDate = new Date(), branch = STORE_BRANCHES[0]) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
-  const rows = normalizedBranch === ALL_BRANCHES
+  const range = getStoreDateRangeForValue(baseDate);
+  return normalizedBranch === ALL_BRANCHES
     ? db.prepare(`
       SELECT
         s.created_at,
@@ -88,8 +128,9 @@ function listStoreDaySaleItems(baseDate = new Date(), branch = STORE_BRANCHES[0]
         si.line_total
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
+      WHERE s.created_at >= ? AND s.created_at < ?
       ORDER BY s.created_at DESC, si.id DESC
-    `).all()
+    `).all(range.startAt, range.endAt)
     : db.prepare(`
       SELECT
         s.created_at,
@@ -100,11 +141,9 @@ function listStoreDaySaleItems(baseDate = new Date(), branch = STORE_BRANCHES[0]
         si.line_total
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
-      WHERE s.branch = ?
+      WHERE s.branch = ? AND s.created_at >= ? AND s.created_at < ?
       ORDER BY s.created_at DESC, si.id DESC
-    `).all(normalizedBranch);
-
-  return rows.filter((row) => isSameStoreDay(row.created_at, baseDate));
+    `).all(normalizedBranch, range.startAt, range.endAt);
 }
 
 function getSaleById(saleId) {
@@ -258,9 +297,11 @@ function createSale(payload) {
     throw createHttpError("Captura el nombre del cliente antes de guardar el fiado.");
   }
 
-  let saleResult;
-  try {
-    saleResult = db.transaction(() => {
+  let saleResult = null;
+  let lastTicketError = null;
+  for (let attempt = 0; attempt < 5 && !saleResult; attempt += 1) {
+    try {
+      saleResult = db.transaction(() => {
       const runningStockByProductId = new Map();
       const preparedItems = incomingItems.map((item) => {
         const productId = Number(item.productId);
@@ -377,12 +418,7 @@ function createSale(payload) {
 
       const now = nowIso();
       const ticketPrefix = buildTicketPrefix(now);
-      const ticketsToday = db.prepare(`
-        SELECT COUNT(*) AS count
-        FROM sales
-        WHERE ticket_number LIKE ?
-      `).get(`${ticketPrefix}%`).count;
-      const ticketNumber = `${ticketPrefix}-${String(Number(ticketsToday) + 1).padStart(4, "0")}`;
+      const ticketNumber = getNextTicketNumber(ticketPrefix);
 
       const saleInsert = db.prepare(`
         INSERT INTO sales (
@@ -492,16 +528,26 @@ function createSale(payload) {
       });
 
       return saleId;
-    })();
-  } catch (error) {
-    if (clientSaleId && String(error.code || "").startsWith("SQLITE_CONSTRAINT")) {
-      const existingSale = getSaleByClientSaleId(clientSaleId);
-      if (existingSale) {
-        return existingSale;
+      })();
+    } catch (error) {
+      if (clientSaleId && isSqliteConstraintError(error)) {
+        const existingSale = getSaleByClientSaleId(clientSaleId);
+        if (existingSale) {
+          return existingSale;
+        }
       }
-    }
 
-    throw error;
+      if (isTicketNumberConstraintError(error) && attempt < 4) {
+        lastTicketError = error;
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  if (!saleResult && lastTicketError) {
+    throw lastTicketError;
   }
 
   return getSaleById(saleResult);
@@ -726,7 +772,27 @@ function getRecentSales(limit = 8, branch = STORE_BRANCHES[0]) {
   }));
 }
 
-function listSalesForExport() {
+function listSalesForExport(options = {}) {
+  const normalizedBranch = normalizeBranch(options.branch || ALL_BRANCHES, {
+    allowAll: true,
+    fallback: ALL_BRANCHES,
+  });
+  const clauses = [];
+  const params = [];
+  if (normalizedBranch !== ALL_BRANCHES) {
+    clauses.push("s.branch = ?");
+    params.push(normalizedBranch);
+  }
+  if (options.startAt) {
+    clauses.push("s.created_at >= ?");
+    params.push(String(options.startAt));
+  }
+  if (options.endAt) {
+    clauses.push("s.created_at < ?");
+    params.push(String(options.endAt));
+  }
+  const whereSql = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+
   return db.prepare(`
     SELECT
       s.id,
@@ -758,8 +824,9 @@ function listSalesForExport() {
       si.stock_after
     FROM sales s
     LEFT JOIN sale_items si ON si.sale_id = s.id
+    ${whereSql}
     ORDER BY s.created_at DESC, si.id ASC
-  `).all();
+  `).all(...params);
 }
 
 module.exports = {

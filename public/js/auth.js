@@ -42,6 +42,7 @@ function clearCashierSessionState() {
   state.cashier.token = "";
   state.cashier.name = "";
   state.cashier.branch = "";
+  state.cashier.expiresAt = "";
   state.cashier.authenticated = false;
   persistCashierSession();
   clearMerchandiseRequestsForSessionChange();
@@ -210,6 +211,7 @@ function applyCashierSession(cashier, token = "") {
   state.cashier.token = String(token || "");
   state.cashier.name = String(cashier?.name || "");
   state.cashier.branch = String(cashier?.branch || "");
+  state.cashier.expiresAt = String(cashier?.expiresAt || "");
   state.cashier.authenticated = Boolean(state.cashier.name && state.cashier.branch);
   persistCashierSession();
 }
@@ -304,6 +306,7 @@ async function loginCashier() {
           id: response.cashier.id,
           name: String(response.cashier.name || name),
           branch: String(response.cashier.branch || branch),
+          expiresAt: String(response.expiresAt || ""),
         },
         String(response.token || ""),
       );

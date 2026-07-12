@@ -1334,7 +1334,7 @@ function persistCashierSession() {
       name: state.cashier.name,
       branch: state.cashier.branch,
       authenticated: state.cashier.authenticated,
-      expiresAt: new Date(Date.now() + CASHIER_SESSION_STORAGE_TTL_MS).toISOString(),
+      expiresAt: state.cashier.expiresAt || new Date(Date.now() + CASHIER_SESSION_STORAGE_TTL_MS).toISOString(),
     });
 
     writeSessionStorageText(STORAGE_KEYS.cashierSession, serializedSession);
@@ -1350,6 +1350,7 @@ function clearRestoredCashierSession() {
   state.cashier.token = "";
   state.cashier.name = "";
   state.cashier.branch = "";
+  state.cashier.expiresAt = "";
   state.cashier.authenticated = false;
   deleteSessionStorageText(STORAGE_KEYS.cashierSession);
   clearPersistedText(STORAGE_KEYS.cashierSession);
@@ -1389,6 +1390,7 @@ async function restoreCashierSession() {
     state.cashier.token = String(parsed.token || "");
     state.cashier.name = parsed.name || "";
     state.cashier.branch = parsed.branch || "";
+    state.cashier.expiresAt = parsed.expiresAt || "";
     state.cashier.authenticated = Boolean(
       parsed.authenticated
       && state.cashier.token
@@ -1438,11 +1440,23 @@ async function restoreRegisterEvents() {
     : [];
 }
 
+function createOfflineRegisterId(prefix = "offline-register") {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const values = new Uint32Array(2);
+    crypto.getRandomValues(values);
+    return `${prefix}-${Date.now()}-${values[0].toString(16)}${values[1].toString(16)}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
 // Agregar un evento de caja offline
 function addOfflineRegisterEvent(event) {
   const offlineEvent = {
-    id: `offline-register-${Date.now()}`,
-    clientEventId: event.clientEventId || `offline-register-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    id: createOfflineRegisterId(),
+    clientEventId: event.clientEventId || createOfflineRegisterId("register"),
     ...event,
     createdAt: new Date().toISOString(),
     synced: false,

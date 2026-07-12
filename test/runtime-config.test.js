@@ -19,6 +19,16 @@ function clearSrcRequireCache() {
     });
 }
 
+function restoreEnv(previousEnv) {
+  Object.entries(previousEnv).forEach(([key, value]) => {
+    if (value == null) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  });
+}
+
 test("config reads POS runtime values from a private local file", (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-runtime-config-"));
   const configPath = path.join(tempDir, "runtime.json");
@@ -203,6 +213,72 @@ test("explicit POS_CONFIG_PATH does not fall back to another runtime file", (t) 
   assert.equal(config.RUNTIME_CONFIG_STATUS.sourcePath, missingConfigPath);
   assert.equal(config.DB_PATH, dbPath);
   assert.equal(config.CONTROL_API_URL, "http://owner-control-env.example");
+});
+
+test("config uses Railway saver defaults without explicit control polling", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-runtime-railway-saver-"));
+  const previousEnv = {
+    POS_CONFIG_PATH: process.env.POS_CONFIG_PATH,
+    RAILWAY_ENVIRONMENT: process.env.RAILWAY_ENVIRONMENT,
+    RAILWAY_PROJECT_ID: process.env.RAILWAY_PROJECT_ID,
+    RAILWAY_SERVICE_ID: process.env.RAILWAY_SERVICE_ID,
+    RAILWAY_DEPLOYMENT_ID: process.env.RAILWAY_DEPLOYMENT_ID,
+    RAILWAY_COST_SAVER_MODE: process.env.RAILWAY_COST_SAVER_MODE,
+    CONTROL_CONFIG_POLL_MS: process.env.CONTROL_CONFIG_POLL_MS,
+    CONTROL_CONFIG_SYNC_MAX_AGE_MS: process.env.CONTROL_CONFIG_SYNC_MAX_AGE_MS,
+  };
+
+  t.after(() => {
+    restoreEnv(previousEnv);
+    clearSrcRequireCache();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  process.env.POS_CONFIG_PATH = path.join(tempDir, "missing-runtime.json");
+  process.env.RAILWAY_ENVIRONMENT = "production";
+  delete process.env.RAILWAY_PROJECT_ID;
+  delete process.env.RAILWAY_SERVICE_ID;
+  delete process.env.RAILWAY_DEPLOYMENT_ID;
+  delete process.env.RAILWAY_COST_SAVER_MODE;
+  delete process.env.CONTROL_CONFIG_POLL_MS;
+  delete process.env.CONTROL_CONFIG_SYNC_MAX_AGE_MS;
+  clearSrcRequireCache();
+
+  const config = require("../src/config");
+
+  assert.equal(config.RAILWAY_COST_SAVER_MODE, true);
+  assert.equal(config.CONTROL_CONFIG_POLL_MS, 0);
+  assert.equal(config.CONTROL_CONFIG_SYNC_MAX_AGE_MS, 300000);
+});
+
+test("explicit control polling overrides Railway saver defaults", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-runtime-railway-explicit-"));
+  const previousEnv = {
+    POS_CONFIG_PATH: process.env.POS_CONFIG_PATH,
+    RAILWAY_ENVIRONMENT: process.env.RAILWAY_ENVIRONMENT,
+    RAILWAY_COST_SAVER_MODE: process.env.RAILWAY_COST_SAVER_MODE,
+    CONTROL_CONFIG_POLL_MS: process.env.CONTROL_CONFIG_POLL_MS,
+    CONTROL_CONFIG_SYNC_MAX_AGE_MS: process.env.CONTROL_CONFIG_SYNC_MAX_AGE_MS,
+  };
+
+  t.after(() => {
+    restoreEnv(previousEnv);
+    clearSrcRequireCache();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  process.env.POS_CONFIG_PATH = path.join(tempDir, "missing-runtime.json");
+  process.env.RAILWAY_ENVIRONMENT = "production";
+  delete process.env.RAILWAY_COST_SAVER_MODE;
+  process.env.CONTROL_CONFIG_POLL_MS = "120000";
+  process.env.CONTROL_CONFIG_SYNC_MAX_AGE_MS = "600000";
+  clearSrcRequireCache();
+
+  const config = require("../src/config");
+
+  assert.equal(config.RAILWAY_COST_SAVER_MODE, true);
+  assert.equal(config.CONTROL_CONFIG_POLL_MS, 120000);
+  assert.equal(config.CONTROL_CONFIG_SYNC_MAX_AGE_MS, 600000);
 });
 
 test("runtime config save rejects insecure remote control URLs", (t) => {

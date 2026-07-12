@@ -8,6 +8,31 @@ const DEFAULT_DATA_DIR = path.join(ROOT_DIR, "data");
 const LEGACY_DB_PATH = path.join(DEFAULT_DATA_DIR, "cremaria-rincon.sqlite");
 const SQLITE_HEADER = Buffer.from("SQLite format 3\u0000", "utf8");
 
+function readBooleanRuntimeFlag(key, defaultValue = false, options = {}) {
+  const rawValue = String(readRuntimeConfigValue(key, defaultValue ? "true" : "false", options) || "").trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(rawValue)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(rawValue)) {
+    return false;
+  }
+  return Boolean(defaultValue);
+}
+
+function readMillisecondsRuntimeValue(key, defaultValue, minValue = 0) {
+  const numericValue = Number(readRuntimeConfigValue(key, String(defaultValue)));
+  return Number.isFinite(numericValue) ? Math.max(minValue, numericValue) : defaultValue;
+}
+
+function isRailwayRuntime() {
+  return [
+    process.env.RAILWAY_ENVIRONMENT,
+    process.env.RAILWAY_PROJECT_ID,
+    process.env.RAILWAY_SERVICE_ID,
+    process.env.RAILWAY_DEPLOYMENT_ID,
+  ].some((value) => String(value || "").trim() !== "");
+}
+
 function isUsableSqliteFile(filePath) {
   try {
     const stats = fs.statSync(filePath);
@@ -53,6 +78,10 @@ const OWNER_SESSION_COOKIE_NAME = "cremeria_owner_session";
 const OWNER_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const BOOTSTRAP_TOKEN_HEADER_NAME = "x-bootstrap-token";
 const POS_BOOTSTRAP_TOKEN = String(readRuntimeConfigValue("POS_BOOTSTRAP_TOKEN") || "").trim();
+const CASHIER_SESSION_TTL_MS = Math.max(
+  60_000,
+  Number(readRuntimeConfigValue("POS_CASHIER_SESSION_TTL_MS", String(1000 * 60 * 60 * 24 * 7)) || 1000 * 60 * 60 * 24 * 7),
+);
 const ADMIN_MAX_FAILED_LOGINS = Math.max(3, Number(readRuntimeConfigValue("POS_ADMIN_MAX_FAILED_LOGINS", "5") || 5));
 const ADMIN_LOGIN_WINDOW_MS = Math.max(60_000, Number(readRuntimeConfigValue("POS_ADMIN_LOGIN_WINDOW_MS", String(1000 * 60 * 15)) || 1000 * 60 * 15));
 const ADMIN_LOGIN_LOCK_MS = Math.max(60_000, Number(readRuntimeConfigValue("POS_ADMIN_LOGIN_LOCK_MS", String(1000 * 60 * 15)) || 1000 * 60 * 15));
@@ -193,9 +222,12 @@ const CONTROL_REQUIRE_HTTPS = CONTROL_REQUIRE_HTTPS_SETTING === "false"
 const CONTROL_API_URL = String(readRuntimeConfigValue("CONTROL_API_URL") || "").trim().replace(/\/+$/g, "");
 const CONTROL_CLIENT_SLUG = String(readRuntimeConfigValue("CONTROL_CLIENT_SLUG") || "").trim();
 const CONTROL_CLIENT_SECRET = String(readRuntimeConfigValue("CONTROL_CLIENT_SECRET") || "").trim();
-const CONTROL_SYNC_TIMEOUT_MS = Math.max(1000, Number(readRuntimeConfigValue("CONTROL_SYNC_TIMEOUT_MS", "8000") || 8000));
-const CONTROL_CONFIG_POLL_MS = Math.max(0, Number(readRuntimeConfigValue("CONTROL_CONFIG_POLL_MS", "30000") || 30000));
-const CONTROL_CONFIG_SYNC_MAX_AGE_MS = Math.max(1000, Number(readRuntimeConfigValue("CONTROL_CONFIG_SYNC_MAX_AGE_MS", "15000") || 15000));
+const RAILWAY_COST_SAVER_MODE = readBooleanRuntimeFlag("RAILWAY_COST_SAVER_MODE", isRailwayRuntime(), { preferEnv: true });
+const CONTROL_CONFIG_POLL_DEFAULT_MS = RAILWAY_COST_SAVER_MODE ? 0 : 30000;
+const CONTROL_CONFIG_SYNC_MAX_AGE_DEFAULT_MS = RAILWAY_COST_SAVER_MODE ? 300000 : 15000;
+const CONTROL_SYNC_TIMEOUT_MS = readMillisecondsRuntimeValue("CONTROL_SYNC_TIMEOUT_MS", 8000, 1000);
+const CONTROL_CONFIG_POLL_MS = readMillisecondsRuntimeValue("CONTROL_CONFIG_POLL_MS", CONTROL_CONFIG_POLL_DEFAULT_MS, 0);
+const CONTROL_CONFIG_SYNC_MAX_AGE_MS = readMillisecondsRuntimeValue("CONTROL_CONFIG_SYNC_MAX_AGE_MS", CONTROL_CONFIG_SYNC_MAX_AGE_DEFAULT_MS, 1000);
 
 module.exports = {
   ROOT_DIR,
@@ -215,6 +247,7 @@ module.exports = {
   OWNER_SESSION_TTL_MS,
   BOOTSTRAP_TOKEN_HEADER_NAME,
   POS_BOOTSTRAP_TOKEN,
+  CASHIER_SESSION_TTL_MS,
   ADMIN_MAX_FAILED_LOGINS,
   ADMIN_LOGIN_WINDOW_MS,
   ADMIN_LOGIN_LOCK_MS,
@@ -256,6 +289,7 @@ module.exports = {
   CONTROL_REQUIRE_HTTPS,
   CONTROL_CLIENT_SLUG,
   CONTROL_CLIENT_SECRET,
+  RAILWAY_COST_SAVER_MODE,
   CONTROL_CONFIG_POLL_MS,
   CONTROL_CONFIG_SYNC_MAX_AGE_MS,
   CONTROL_SYNC_TIMEOUT_MS,

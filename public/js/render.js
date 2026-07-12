@@ -10,8 +10,7 @@ function showToast(message, type = "info") {
   refs.toastRegion.appendChild(toast);
 
   window.setTimeout(() => {
-    toast.style.opacity = "0";
-    toast.style.transform = "translateY(8px)";
+    toast.classList.add("toast-exit");
     window.setTimeout(() => toast.remove(), 220);
   }, 2600);
 }
@@ -621,9 +620,10 @@ function renderTrendChart() {
   refs.trendChart.innerHTML = bars
     .map((bar) => {
       const height = Math.max(12, Math.round((bar.total / maxValue) * 140));
+      const heightClass = `trend-height-${Math.min(140, Math.max(10, Math.round(height / 10) * 10))}`;
       return `
         <div class="trend-bar">
-          <div class="trend-bar-fill" style="height:${height}px"></div>
+          <div class="trend-bar-fill ${heightClass}"></div>
           <div class="trend-bar-value">${formatCurrency(bar.total)}</div>
           <div class="trend-bar-label">${escapeHtml(bar.label)}</div>
         </div>
@@ -706,7 +706,7 @@ function renderInventorySingle() {
     ? state.admin.inventoryProducts
     : [];
   
-  if (singleWrapper) singleWrapper.style.display = "";
+  if (singleWrapper) singleWrapper.hidden = false;
   if (comparisonWrapper) comparisonWrapper.hidden = true;
 
   refs.inventoryBody.innerHTML = inventoryProducts
@@ -762,7 +762,7 @@ function renderInventoryComparison() {
   const singleWrapper = document.getElementById("inventory-single-table");
   const comparisonWrapper = document.getElementById("inventory-comparison-wrapper");
   
-  if (singleWrapper) singleWrapper.style.display = "none";
+  if (singleWrapper) singleWrapper.hidden = true;
   if (comparisonWrapper) comparisonWrapper.hidden = false;
 
   const comparison = state.admin.inventoryComparison;
@@ -1122,7 +1122,7 @@ function renderInventorySingle() {
     : [];
   const filteredProducts = filterAdminInventoryProducts(inventoryProducts);
 
-  if (singleWrapper) singleWrapper.style.display = "";
+  if (singleWrapper) singleWrapper.hidden = false;
   if (comparisonWrapper) comparisonWrapper.hidden = true;
 
   renderAdminInventoryFilterChips(inventoryProducts);
@@ -1145,7 +1145,7 @@ function renderInventoryComparison() {
   const singleWrapper = document.getElementById("inventory-single-table");
   const comparisonWrapper = document.getElementById("inventory-comparison-wrapper");
 
-  if (singleWrapper) singleWrapper.style.display = "none";
+  if (singleWrapper) singleWrapper.hidden = true;
   if (comparisonWrapper) comparisonWrapper.hidden = false;
 
   const comparison = state.admin.inventoryComparison;

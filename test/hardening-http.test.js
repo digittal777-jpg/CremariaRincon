@@ -36,6 +36,7 @@ const ISOLATED_SERVER_ENV_KEYS = [
   "CONTROL_CONFIG_POLL_MS",
   "CONTROL_SYNC_TIMEOUT_MS",
   "CONTROL_CONFIG_SYNC_MAX_AGE_MS",
+  "RAILWAY_COST_SAVER_MODE",
   "RAILWAY_PUBLIC_DOMAIN",
   "RAILWAY_STATIC_URL",
 ];
@@ -475,7 +476,8 @@ test("POS emits browser hardening headers for api and shell responses", async (t
   assert.equal(shell.status, 200);
   assert.equal(String(shell.headers["cache-control"] || ""), "no-store");
   assert.match(String(shell.headers["content-security-policy"] || ""), /script-src 'self'/i);
-  assert.match(String(shell.headers["content-security-policy"] || ""), /style-src 'self' 'unsafe-inline' https:\/\/fonts\.googleapis\.com/i);
+  assert.match(String(shell.headers["content-security-policy"] || ""), /style-src 'self' https:\/\/fonts\.googleapis\.com/i);
+  assert.doesNotMatch(String(shell.headers["content-security-policy"] || ""), /unsafe-inline/i);
   assert.match(String(shell.headers["content-security-policy"] || ""), /font-src 'self' https:\/\/fonts\.gstatic\.com/i);
   assert.match(String(shell.headers["content-security-policy"] || ""), /upgrade-insecure-requests/i);
 

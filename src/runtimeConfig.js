@@ -32,6 +32,7 @@ const PREFER_ENV_RUNTIME_KEYS = new Set([
   "NODE_ENV",
   "PORT",
   "POS_HTTP_REDIRECT_PORT",
+  "RAILWAY_COST_SAVER_MODE",
 ]);
 const TRUST_PROXY_RUNTIME_KEYS = new Set([
   "POS_TRUST_PROXY",
@@ -224,6 +225,14 @@ const RUNTIME_VARIABLE_DEFINITIONS = [
     restartRequired: true,
   },
   {
+    key: "POS_CASHIER_SESSION_TTL_MS",
+    group: "Seguridad",
+    label: "TTL sesion cajero",
+    description: "Milisegundos que dura una sesion de cajero antes de requerir nuevo login.",
+    placeholder: "604800000",
+    restartRequired: true,
+  },
+  {
     key: "POS_ADMIN_LOGIN_WINDOW_MS",
     group: "Seguridad",
     label: "Ventana login admin",
@@ -278,8 +287,8 @@ const RUNTIME_VARIABLE_DEFINITIONS = [
     key: "CONTROL_CONFIG_POLL_MS",
     group: "Owner-control",
     label: "Polling config",
-    description: "Milisegundos entre consultas automaticas de config central.",
-    placeholder: "30000",
+    description: "Milisegundos entre consultas automaticas de config central. En Railway ahorro usa 0 para permitir sleep.",
+    placeholder: "0 en Railway, 30000 local",
     restartRequired: true,
   },
   {
@@ -294,8 +303,8 @@ const RUNTIME_VARIABLE_DEFINITIONS = [
     key: "CONTROL_CONFIG_SYNC_MAX_AGE_MS",
     group: "Owner-control",
     label: "Edad cache config",
-    description: "Tiempo maximo para considerar fresca la configuracion central.",
-    placeholder: "15000",
+    description: "Tiempo maximo para considerar fresca la configuracion central; en Railway conviene una ventana mas amplia.",
+    placeholder: "300000 en Railway, 15000 local",
     restartRequired: true,
   },
   {
@@ -446,6 +455,16 @@ const RUNTIME_VARIABLE_DEFINITIONS = [
     label: "Resend API URL",
     description: "Endpoint de envio de correos.",
     placeholder: "https://api.resend.com/emails",
+    restartRequired: true,
+  },
+  {
+    key: "RAILWAY_COST_SAVER_MODE",
+    group: "Compatibilidad",
+    label: "Ahorro Railway",
+    description: "Activa defaults de bajo consumo: sin polling saliente automatico hacia owner-control salvo configuracion explicita.",
+    placeholder: "true",
+    type: "select",
+    options: ["", "true", "false"],
     restartRequired: true,
   },
   {

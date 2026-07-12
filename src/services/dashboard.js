@@ -28,10 +28,35 @@ const { getRecentInventoryMovements } = require("./inventory");
 const { getRecentRegisterEvents, getRegisterSummary } = require("./register");
 const { listRecentCreditPayments } = require("./receivables");
 
-function getSummary(branch = listConfiguredBranches({ includeInactive: true })[0]?.code) {
+const DASHBOARD_SNAPSHOT_CACHE_MS = 1500;
+const dashboardSnapshotCache = new Map();
+
+function cloneSnapshot(snapshot) {
+  if (typeof structuredClone === "function") {
+    return structuredClone(snapshot);
+  }
+  return JSON.parse(JSON.stringify(snapshot));
+}
+
+function getDashboardCacheKey(branch, options = {}) {
+  return [
+    normalizeBranch(branch, { allowAll: true }),
+    options.includeInventoryInactive === true ? "inactive" : "active",
+  ].join(":");
+}
+
+function clearDashboardSnapshotCache() {
+  dashboardSnapshotCache.clear();
+}
+
+function getSummary(branch = listConfiguredBranches({ includeInactive: true })[0]?.code, options = {}) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
-  const todaySales = listStoreDaySales(new Date(), branch);
-  const todaySaleItems = listStoreDaySaleItems(new Date(), branch);
+  const todaySales = Array.isArray(options.todaySales)
+    ? options.todaySales
+    : listStoreDaySales(new Date(), branch);
+  const todaySaleItems = Array.isArray(options.todaySaleItems)
+    ? options.todaySaleItems
+    : listStoreDaySaleItems(new Date(), branch);
 
   const inventoryTotals = normalizedBranch === ALL_BRANCHES
     ? db.prepare(`
@@ -139,10 +164,13 @@ function getLowStockProducts(branch = "carrizal", limit = 8) {
   return rows.map(mapProduct);
 }
 
-function getSalesByHour(branch = listConfiguredBranches({ includeInactive: true })[0]?.code) {
+function getSalesByHour(branch = listConfiguredBranches({ includeInactive: true })[0]?.code, options = {}) {
   const salesByHourMap = new Map();
+  const todaySales = Array.isArray(options.todaySales)
+    ? options.todaySales
+    : listStoreDaySales(new Date(), branch);
 
-  listStoreDaySales(new Date(), branch).forEach((sale) => {
+  todaySales.forEach((sale) => {
     const hourSlot = getStoreHourLabel(sale.created_at);
     const currentValue = salesByHourMap.get(hourSlot) || 0;
     salesByHourMap.set(hourSlot, roundMoney(currentValue + roundMoney(sale.total)));
@@ -160,10 +188,13 @@ function getSalesByHour(branch = listConfiguredBranches({ includeInactive: true 
   return slots;
 }
 
-function getShiftSummary(branch = listConfiguredBranches({ includeInactive: true })[0]?.code) {
+function getShiftSummary(branch = listConfiguredBranches({ includeInactive: true })[0]?.code, options = {}) {
   const rowMap = new Map();
+  const todaySales = Array.isArray(options.todaySales)
+    ? options.todaySales
+    : listStoreDaySales(new Date(), branch);
 
-  listStoreDaySales(new Date(), branch).forEach((sale) => {
+  todaySales.forEach((sale) => {
     const currentValue = rowMap.get(sale.shift) || {
       shift: sale.shift,
       tickets: 0,
@@ -276,6 +307,16 @@ function getDashboardSnapshot(
 ) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
   const includeInventoryInactive = options.includeInventoryInactive === true;
+  const cacheKey = getDashboardCacheKey(normalizedBranch, options);
+  if (options.useCache === true) {
+    const cached = dashboardSnapshotCache.get(cacheKey);
+    if (cached && Date.now() - cached.createdAt < DASHBOARD_SNAPSHOT_CACHE_MS) {
+      return cloneSnapshot(cached.snapshot);
+    }
+  }
+  const today = new Date();
+  const todaySales = listStoreDaySales(today, normalizedBranch);
+  const todaySaleItems = listStoreDaySaleItems(today, normalizedBranch);
   const activeBranches = listConfiguredBranches({ includeInactive: false });
   const profile = getBusinessProfile();
   const categories = listProductCategories({ includeInactive: false });
@@ -334,14 +375,14 @@ function getDashboardSnapshot(
         endHour: SALES_PULSE_END_HOUR,
       },
     },
-    summary: getSummary(normalizedBranch),
+    summary: getSummary(normalizedBranch, { todaySales, todaySaleItems }),
     products: activeProducts,
     inventoryProducts,
     lowStock: getLowStockProducts(normalizedBranch),
     recentSales: getRecentSales(8, normalizedBranch),
     recentActivity: getRecentActivity(18, normalizedBranch),
-    salesByHour: getSalesByHour(normalizedBranch),
-    shiftSummary: getShiftSummary(normalizedBranch),
+    salesByHour: getSalesByHour(normalizedBranch, { todaySales }),
+    shiftSummary: getShiftSummary(normalizedBranch, { todaySales }),
     generatedAt: nowIso(),
   };
 
@@ -357,6 +398,13 @@ function getDashboardSnapshot(
         }),
       })),
     };
+  }
+
+  if (options.useCache === true) {
+    dashboardSnapshotCache.set(cacheKey, {
+      createdAt: Date.now(),
+      snapshot: cloneSnapshot(snapshot),
+    });
   }
 
   return snapshot;
@@ -399,8 +447,8 @@ function getPublicDashboardSummary(products = []) {
   };
 }
 
-function getPublicDashboardSnapshot(branch = listConfiguredBranches({ includeInactive: true })[0]?.code) {
-  const fullSnapshot = getDashboardSnapshot(branch);
+function getPublicDashboardSnapshot(branch = listConfiguredBranches({ includeInactive: true })[0]?.code, options = {}) {
+  const fullSnapshot = getDashboardSnapshot(branch, options);
   const products = sanitizePublicProductList(fullSnapshot.products);
   const inventoryProducts = sanitizePublicProductList(fullSnapshot.inventoryProducts);
   const inventoryComparison = Array.isArray(fullSnapshot.inventoryComparison?.branches)
@@ -427,6 +475,7 @@ function getPublicDashboardSnapshot(branch = listConfiguredBranches({ includeIna
 }
 
 module.exports = {
+  clearDashboardSnapshotCache,
   getDashboardSnapshot,
   getLowStockProducts,
   getPublicDashboardSnapshot,

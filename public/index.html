@@ -1017,9 +1017,7 @@
                 <label class="field admin-toolbar-filter-field">
                   <span>Sucursal</span>
                   <select id="admin-branch-select">
-                    <option value="all">Todas las sucursales</option>
-                    <option value="carrizal">Carrizal</option>
-                    <option value="miradores">Miradores</option>
+                    <option value="">Cargando sucursales...</option>
                   </select>
                 </label>
               </div>
@@ -1066,11 +1064,11 @@
                     <button class="secondary-button" id="install-db-button" type="button" title="Cargar una base SQLite desde este equipo">
                       Instalar base local
                     </button>
-                    <input type="file" id="install-db-input" accept=".sqlite,.sqlite3,.db" style="display: none;" />
+                    <input type="file" id="install-db-input" accept=".sqlite,.sqlite3,.db" hidden />
                     <button class="secondary-button" id="install-workbook-button" type="button" title="Restaurar datos desde el Excel exportado por este sistema">
                       Instalar Excel
                     </button>
-                    <input type="file" id="install-workbook-input" accept=".xlsx" style="display: none;" />
+                    <input type="file" id="install-workbook-input" accept=".xlsx" hidden />
                   </div>
                 </section>
 
@@ -1682,8 +1680,7 @@
                   <label class="field">
                     <span>Sucursal</span>
                     <select id="admin-cashier-branch">
-                      <option value="carrizal">Carrizal</option>
-                      <option value="miradores">Miradores</option>
+                      <option value="">Cargando sucursales...</option>
                     </select>
                   </label>
 
@@ -2157,8 +2154,7 @@
           <label class="field">
             <span>Sucursal</span>
             <select id="cashier-auth-branch">
-              <option value="carrizal">Carrizal</option>
-              <option value="miradores">Miradores</option>
+              <option value="">Cargando sucursales...</option>
             </select>
           </label>
 

@@ -29,6 +29,7 @@ const PAYMENT_METHOD_OPTIONS = [
 ];
 const formattersByTimeZone = new Map();
 const datePartsFormattersByTimeZone = new Map();
+const dateTimePartsFormattersByTimeZone = new Map();
 
 function createHttpError(message, statusCode = 400) {
   const error = new Error(message);
@@ -350,6 +351,23 @@ function getDatePartsFormatterForTimeZone(timeZone = getStoreTimeZone()) {
   return datePartsFormattersByTimeZone.get(timeZone);
 }
 
+function getDateTimePartsFormatterForTimeZone(timeZone = getStoreTimeZone()) {
+  if (!dateTimePartsFormattersByTimeZone.has(timeZone)) {
+    dateTimePartsFormattersByTimeZone.set(timeZone, new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }));
+  }
+
+  return dateTimePartsFormattersByTimeZone.get(timeZone);
+}
+
 function getStoreDateParts(value = new Date()) {
   return Object.fromEntries(
     getDatePartsFormatterForTimeZone(getStoreTimeZone())
@@ -357,6 +375,28 @@ function getStoreDateParts(value = new Date()) {
       .filter((part) => part.type !== "literal")
       .map((part) => [part.type, part.value]),
   );
+}
+
+function getDateTimePartsForTimeZone(value = new Date(), timeZone = getStoreTimeZone()) {
+  return Object.fromEntries(
+    getDateTimePartsFormatterForTimeZone(timeZone)
+      .formatToParts(new Date(value))
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, Number(part.value)]),
+  );
+}
+
+function getTimeZoneOffsetMs(value = new Date(), timeZone = getStoreTimeZone()) {
+  const parts = getDateTimePartsForTimeZone(value, timeZone);
+  const asUtc = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second,
+  );
+  return asUtc - new Date(value).getTime();
 }
 
 function getStoreDateKey(value = new Date()) {
@@ -383,6 +423,45 @@ function createStoreDateFromKey(dateKey) {
   const parsed = validateStoreDateKey(dateKey);
   const [year, month, day] = parsed.split("-").map((fragment) => Number(fragment));
   return new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+}
+
+function createUtcDateFromStoreDateTime(dateKey, options = {}) {
+  const parsed = validateStoreDateKey(dateKey);
+  const [year, month, day] = parsed.split("-").map((fragment) => Number(fragment));
+  const hour = Math.max(0, Math.min(23, Number(options.hour || 0)));
+  const minute = Math.max(0, Math.min(59, Number(options.minute || 0)));
+  const second = Math.max(0, Math.min(59, Number(options.second || 0)));
+  const millisecond = Math.max(0, Math.min(999, Number(options.millisecond || 0)));
+  const timeZone = options.timeZone || getStoreTimeZone();
+  const localAsUtc = Date.UTC(year, month - 1, day, hour, minute, second, millisecond);
+  let utcMs = localAsUtc - getTimeZoneOffsetMs(new Date(localAsUtc), timeZone);
+  const adjustedUtcMs = localAsUtc - getTimeZoneOffsetMs(new Date(utcMs), timeZone);
+  if (adjustedUtcMs !== utcMs) {
+    utcMs = adjustedUtcMs;
+  }
+  return new Date(utcMs);
+}
+
+function getStoreDateRangeForKeys(startDateKey, endDateKey = startDateKey) {
+  const safeStartDateKey = validateStoreDateKey(startDateKey);
+  const safeEndDateKey = validateStoreDateKey(endDateKey);
+  if (safeStartDateKey > safeEndDateKey) {
+    throw createHttpError("La fecha inicial no puede ser mayor a la fecha final.", 400);
+  }
+  const exclusiveEndDateKey = shiftStoreDateKey(safeEndDateKey, 1);
+  return {
+    startDateKey: safeStartDateKey,
+    endDateKey: safeEndDateKey,
+    startAt: createUtcDateFromStoreDateTime(safeStartDateKey).toISOString(),
+    endAt: createUtcDateFromStoreDateTime(exclusiveEndDateKey).toISOString(),
+  };
+}
+
+function getStoreDateRangeForValue(value = new Date()) {
+  const dateKey = typeof value === "string"
+    ? validateStoreDateKey(value)
+    : getStoreDateKey(value);
+  return getStoreDateRangeForKeys(dateKey, dateKey);
 }
 
 function formatStoreDateKeyFromUtcDate(value) {
@@ -909,6 +988,8 @@ module.exports = {
   getSetting,
   getStockStatus,
   getStoreDateKey,
+  getStoreDateRangeForKeys,
+  getStoreDateRangeForValue,
   getStoreMonthRange,
   getStoreDateParts,
   getStorePeriodRange,

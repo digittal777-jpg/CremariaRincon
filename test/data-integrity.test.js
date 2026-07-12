@@ -169,6 +169,155 @@ test("renaming a branch keeps credit payments aligned with register summary", ()
   assert.equal(payload.syncReports.count, 0);
 });
 
+test("renaming a branch also moves stored period closures", () => {
+  const payload = runIsolatedProjectScript(`
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-period-rename-"));
+    const dbPath = path.join(tempDir, "test.sqlite");
+    process.env.POS_DB_PATH = dbPath;
+
+    const { getDb, nowIso } = require("./src/db");
+    const branches = require("./src/services/branches");
+
+    const db = getDb();
+    const now = nowIso();
+    db.prepare(\`
+      INSERT INTO period_closures (
+        branch,
+        period_type,
+        period_start_date_key,
+        period_end_date_key,
+        notes,
+        snapshot_json,
+        created_by,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    \`).run("carrizal", "week", "2026-07-06", "2026-07-12", "audit", "{}", "audit", now, now);
+
+    branches.updateBranch("carrizal", { code: "sur", name: "Sucursal Sur" });
+    const rows = db.prepare("SELECT branch, COUNT(*) AS count FROM period_closures GROUP BY branch ORDER BY branch").all();
+    console.log(JSON.stringify({ rows }));
+  `);
+
+  assert.deepEqual(payload.rows, [{ branch: "sur", count: 1 }]);
+});
+
+test("sale ticket generation skips gaps instead of reusing existing ticket numbers", () => {
+  const payload = runIsolatedProjectScript(`
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-ticket-gap-"));
+    const dbPath = path.join(tempDir, "test.sqlite");
+    process.env.POS_DB_PATH = dbPath;
+
+    const { getDb, nowIso } = require("./src/db");
+    const sales = require("./src/services/sales");
+    const { buildTicketPrefix } = require("./src/utils/helpers");
+
+    const db = getDb();
+    const now = nowIso();
+    db.prepare(\`
+      INSERT INTO products (
+        name, price, cost, category, unit, category_id, unit_id, stock, min_stock, stock_initialized, active, display_order, branch, created_at, updated_at
+      ) VALUES (?, ?, 0, 'general', 'pza', 4, 2, 30, 0, 1, 1, 0, ?, ?, ?)
+    \`).run("Producto Folio", 10, "carrizal", now, now);
+
+    const product = db.prepare("SELECT id, name, price FROM products WHERE branch = 'carrizal' LIMIT 1").get();
+    const ticketPrefix = buildTicketPrefix(new Date());
+    db.prepare(\`
+      INSERT INTO sales (
+        ticket_number,
+        shift,
+        cashier,
+        branch,
+        payment_method,
+        subtotal,
+        total,
+        received_amount,
+        change_amount,
+        item_count,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    \`).run(\`\${ticketPrefix}-0002\`, "Tarde", "Ana", "carrizal", "Efectivo", 10, 10, 10, 0, 1, now);
+
+    const sale = sales.createSale({
+      shift: "Tarde",
+      cashier: "Ana",
+      branch: "carrizal",
+      paymentMethod: "Efectivo",
+      receivedAmount: 10,
+      items: [{
+        productId: product.id,
+        productName: product.name,
+        quantity: 1,
+        unitPrice: product.price,
+        lineTotal: product.price,
+      }],
+    });
+
+    const tickets = db.prepare("SELECT ticket_number FROM sales ORDER BY ticket_number").all();
+    console.log(JSON.stringify({ ticketNumber: sale.ticketNumber, tickets }));
+  `);
+
+  assert.match(payload.ticketNumber, /-0003$/);
+  assert.deepEqual(payload.tickets.map((row) => row.ticket_number), [
+    payload.ticketNumber.replace(/-0003$/, "-0002"),
+    payload.ticketNumber,
+  ]);
+});
+
+test("quick inventory import refuses ambiguous name-only writes", () => {
+  const payload = runIsolatedProjectScript(`
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-quick-import-id-"));
+    const dbPath = path.join(tempDir, "test.sqlite");
+    process.env.POS_DB_PATH = dbPath;
+
+    const { getDb, nowIso } = require("./src/db");
+    const inventory = require("./src/services/inventory");
+
+    const db = getDb();
+    const now = nowIso();
+    const insertProduct = db.prepare(\`
+      INSERT INTO products (
+        name, price, cost, category, unit, category_id, unit_id, stock, min_stock, stock_initialized, active, display_order, branch, created_at, updated_at
+      ) VALUES (?, ?, 0, 'general', 'pza', 4, 2, ?, 0, 1, 1, 0, ?, ?, ?)
+    \`);
+    insertProduct.run("Queso Oaxaca", 10, 10, "carrizal", now, now);
+    insertProduct.run("Queso Oaxaca Grande", 20, 20, "carrizal", now, now);
+
+    let message = "";
+    try {
+      inventory.applyQuickInventoryEntry({
+        productName: "Oaxaca",
+        branch: "carrizal",
+        mode: "receive",
+        quantity: 1,
+      });
+    } catch (error) {
+      message = error.message;
+    }
+
+    const rows = db.prepare("SELECT name, stock FROM products ORDER BY id").all();
+    console.log(JSON.stringify({ message, rows }));
+  `);
+
+  assert.equal(payload.message, "Selecciona un producto valido para la captura rapida.");
+  assert.deepEqual(payload.rows, [
+    { name: "Queso Oaxaca", stock: 10 },
+    { name: "Queso Oaxaca Grande", stock: 20 },
+  ]);
+});
+
 test("receivables separate duplicate names unless the same customer key is reused intentionally", () => {
   const payload = runIsolatedProjectScript(`
     const fs = require("node:fs");

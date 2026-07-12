@@ -334,8 +334,20 @@ function handleCashierSessionAuthFailure(options = {}) {
   return true;
 }
 
+function buildClientRandomId(prefix = "client") {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const values = new Uint32Array(2);
+    crypto.getRandomValues(values);
+    return `${prefix}-${Date.now()}-${values[0].toString(16)}${values[1].toString(16)}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
 function buildQueuedOperationId() {
-  return `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  return buildClientRandomId("queue");
 }
 
 function inferQueuedOperationKind(operation = {}) {
@@ -393,8 +405,11 @@ let lastSyncHealthSignature = "";
 let connectionRecoveryTimerId = null;
 let connectionRecoveryAttempt = 0;
 let connectionRecoveryPromise = null;
+let hiddenSocketPauseTimerId = null;
+let socketPausedForHiddenTab = false;
 const CONNECTION_RECOVERY_BASE_DELAY_MS = 2500;
 const CONNECTION_RECOVERY_MAX_DELAY_MS = 15000;
+const SOCKET_HIDDEN_IDLE_DISCONNECT_MS = 2 * 60 * 1000;
 
 function getClientSyncHealthHeaders() {
   return {
@@ -412,9 +427,7 @@ function getLocalDeviceId() {
     return deviceId;
   }
 
-  deviceId = typeof crypto?.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `device-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  deviceId = buildClientRandomId("device");
   if (typeof persistText === "function") {
     persistText(STORAGE_KEYS.deviceId, deviceId);
   }
@@ -491,6 +504,60 @@ function clearConnectionRecoveryTimer() {
 function resetConnectionRecoveryState() {
   clearConnectionRecoveryTimer();
   connectionRecoveryAttempt = 0;
+}
+
+function clearHiddenSocketPauseTimer() {
+  if (!hiddenSocketPauseTimerId || typeof window === "undefined") {
+    return;
+  }
+
+  window.clearTimeout(hiddenSocketPauseTimerId);
+  hiddenSocketPauseTimerId = null;
+}
+
+function isDocumentHidden() {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+function hasPendingOfflineWork() {
+  return state.pendingQueue.length > 0 || state.register.events.some((event) => !event?.synced);
+}
+
+function scheduleHiddenSocketPause() {
+  if (
+    typeof window === "undefined"
+    || !isDocumentHidden()
+    || !state.socket?.connected
+    || hasPendingOfflineWork()
+  ) {
+    return;
+  }
+
+  clearHiddenSocketPauseTimer();
+  hiddenSocketPauseTimerId = window.setTimeout(() => {
+    hiddenSocketPauseTimerId = null;
+    if (!isDocumentHidden() || !state.socket?.connected || hasPendingOfflineWork()) {
+      return;
+    }
+
+    socketPausedForHiddenTab = true;
+    state.socket.disconnect();
+    if (refs.socketStatus) {
+      refs.socketStatus.textContent = "Pausado";
+    }
+  }, SOCKET_HIDDEN_IDLE_DISCONNECT_MS);
+}
+
+function resumeHiddenSocketPause(reason = "visibility-change") {
+  clearHiddenSocketPauseTimer();
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return;
+  }
+
+  if (socketPausedForHiddenTab || !state.socket?.connected) {
+    socketPausedForHiddenTab = false;
+    scheduleConnectionRecovery(reason, { immediate: true });
+  }
 }
 
 function scheduleConnectionRecovery(reason = "retry", options = {}) {
@@ -805,6 +872,7 @@ async function loadCashierAuthStatus() {
     state.cashier.id = Number(response.cashier.id || 0) || null;
     state.cashier.name = String(response.cashier.name || "");
     state.cashier.branch = String(response.cashier.branch || "");
+    state.cashier.expiresAt = String(response.expiresAt || "");
     state.cashier.authenticated = Boolean(
       state.cashier.token
       && state.cashier.name
@@ -827,6 +895,7 @@ async function loadCashierAuthStatus() {
     state.cashier.token = "";
     state.cashier.name = "";
     state.cashier.branch = "";
+    state.cashier.expiresAt = "";
     state.cashier.authenticated = false;
     persistCashierSession();
   }
@@ -1550,6 +1619,10 @@ function registerConnectionEvents() {
     if (typeof renderCashierSession === "function") {
       renderCashierSession();
     }
+    if (isDocumentHidden()) {
+      scheduleHiddenSocketPause();
+      return;
+    }
     scheduleConnectionRecovery("browser-online", { immediate: true });
   });
 
@@ -1564,18 +1637,24 @@ function registerConnectionEvents() {
       (typeof navigator === "undefined" || navigator.onLine !== false)
       && (!state.online || !state.socket?.connected)
     ) {
-      scheduleConnectionRecovery("window-focus", { immediate: true });
+      resumeHiddenSocketPause("window-focus");
     }
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (
-      document.visibilityState === "visible"
-      && (typeof navigator === "undefined" || navigator.onLine !== false)
-      && (!state.online || !state.socket?.connected)
-    ) {
-      scheduleConnectionRecovery("visibility-change", { immediate: true });
+    if (document.visibilityState === "visible") {
+      if (
+        (typeof navigator === "undefined" || navigator.onLine !== false)
+        && (!state.online || !state.socket?.connected)
+      ) {
+        resumeHiddenSocketPause("visibility-change");
+      } else {
+        clearHiddenSocketPauseTimer();
+      }
+      return;
     }
+
+    scheduleHiddenSocketPause();
   });
 }
 
@@ -1601,6 +1680,8 @@ function connectSocket() {
       || state.pendingQueue.length > 0
       || state.register.events.length > 0,
     );
+    socketPausedForHiddenTab = false;
+    clearHiddenSocketPauseTimer();
     resetConnectionRecoveryState();
     refs.socketStatus.textContent = "En vivo";
     state.online = true;
@@ -1614,6 +1695,13 @@ function connectSocket() {
   });
 
   state.socket.on("disconnect", () => {
+    if (socketPausedForHiddenTab && isDocumentHidden()) {
+      if (refs.socketStatus) {
+        refs.socketStatus.textContent = "Pausado";
+      }
+      return;
+    }
+
     refs.socketStatus.textContent = state.online ? "Reconectando..." : "Sin conexion";
     if (typeof navigator === "undefined" || navigator.onLine !== false) {
       scheduleConnectionRecovery("socket-disconnect");

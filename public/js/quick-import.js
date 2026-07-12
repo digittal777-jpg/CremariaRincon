@@ -433,7 +433,8 @@ function renderQuickImportSummary() {
   refs.quickImportProgressNote.textContent = hasItems
     ? `${summary.saved} guardados · ${summary.skipped} saltados · ${summary.editing} en edicion`
     : "Abre una sucursal y carga productos para empezar.";
-  refs.quickImportProgressFill.style.width = `${Math.max(progressPercent, hasItems ? 8 : 0)}%`;
+  const progressStep = Math.min(100, Math.max(0, Math.round(Math.max(progressPercent, hasItems ? 8 : 0) / 5) * 5));
+  refs.quickImportProgressFill.className = `quick-import-progress-fill progress-${progressStep}`;
 
   refs.quickImportTotalCount.textContent = formatQuantity(summary.total || 0);
   refs.quickImportPendingCount.textContent = formatQuantity(summary.pending || 0);

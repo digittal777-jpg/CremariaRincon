@@ -2153,7 +2153,7 @@ async function bootstrap() {
   
   if (refs.openAdminButton) {
     refs.openAdminButton.disabled = false;
-    refs.openAdminButton.style.opacity = "1";
+    refs.openAdminButton.classList.add("ready");
   }
 
   if (isAdministrationRoute()) {

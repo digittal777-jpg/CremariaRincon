@@ -21,6 +21,7 @@ const ADMIN_WORKSPACE_TTLS_MS = {
   weightedAudit: 15000,
   periodClosures: 15000,
 };
+const ADMIN_METRICS_POLL_MS = 60000;
 const ADMIN_WORKSPACE_SECTION_KEYS = [
   "snapshot",
   "editorData",
@@ -524,6 +525,7 @@ function syncAuthStateFromSnapshot(snapshotAuth) {
     state.cashier.id = Number(snapshotAuth.cashier?.id || 0) || state.cashier.id || null;
     state.cashier.name = String(snapshotAuth.cashier?.name || state.cashier.name || "");
     state.cashier.branch = String(snapshotAuth.cashier?.branch || state.cashier.branch || "");
+    state.cashier.expiresAt = String(snapshotAuth.cashier?.expiresAt || state.cashier.expiresAt || "");
     state.cashier.authenticated = Boolean(
       state.cashier.token
       && state.cashier.name
@@ -536,6 +538,7 @@ function syncAuthStateFromSnapshot(snapshotAuth) {
     state.cashier.token = "";
     state.cashier.name = "";
     state.cashier.branch = "";
+    state.cashier.expiresAt = "";
     state.cashier.authenticated = false;
     if (typeof persistCashierSession === "function") {
       persistCashierSession();
@@ -702,6 +705,7 @@ function clearClientBusinessResetState(options = {}) {
     state.cashier.token = "";
     state.cashier.name = "";
     state.cashier.branch = "";
+    state.cashier.expiresAt = "";
     state.cashier.authenticated = false;
     if (typeof persistCashierSession === "function") {
       persistCashierSession();
@@ -2436,7 +2440,7 @@ function startAdminMetricsPolling() {
   void loadAdminMetrics();
   state.admin.pollTimerId = window.setInterval(() => {
     void loadAdminMetrics();
-  }, 15000);
+  }, ADMIN_METRICS_POLL_MS);
 }
 
 function setAdminInventoryMode(mode, options = {}) {

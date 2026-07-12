@@ -9,8 +9,8 @@ const {
   createHttpError,
   getSalePendingAmount,
   getSaleReceivedPaymentMethod,
+  getStoreDateRangeForValue,
   isCreditPaymentMethod,
-  isSameStoreDay,
   normalizeBranch,
   normalizeReceivedPaymentMethod,
   normalizeText,
@@ -407,6 +407,8 @@ function getReceivableCustomerDetail(customerKey, branch = STORE_BRANCHES[0]) {
 
 function listCreditPaymentsForStoreDay(baseDate = new Date(), branch = STORE_BRANCHES[0], options = {}) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const range = getStoreDateRangeForValue(baseDate);
+  const shift = normalizeText(options.shift || "", 24) || null;
   const rows = normalizedBranch === ALL_BRANCHES
     ? db.prepare(`
       SELECT
@@ -425,8 +427,10 @@ function listCreditPaymentsForStoreDay(baseDate = new Date(), branch = STORE_BRA
         s.ticket_number
       FROM credit_payments cp
       JOIN sales s ON s.id = cp.sale_id
+      WHERE cp.created_at >= ? AND cp.created_at < ?
+        ${shift ? "AND cp.shift = ?" : ""}
       ORDER BY cp.created_at DESC, cp.id DESC
-    `).all()
+    `).all(...(shift ? [range.startAt, range.endAt, shift] : [range.startAt, range.endAt]))
     : db.prepare(`
       SELECT
         cp.id,
@@ -444,15 +448,14 @@ function listCreditPaymentsForStoreDay(baseDate = new Date(), branch = STORE_BRA
         s.ticket_number
       FROM credit_payments cp
       JOIN sales s ON s.id = cp.sale_id
-      WHERE cp.branch = ?
+      WHERE cp.branch = ? AND cp.created_at >= ? AND cp.created_at < ?
+        ${shift ? "AND cp.shift = ?" : ""}
       ORDER BY cp.created_at DESC, cp.id DESC
-    `).all(normalizedBranch);
+    `).all(...(shift
+      ? [normalizedBranch, range.startAt, range.endAt, shift]
+      : [normalizedBranch, range.startAt, range.endAt]));
 
-  const shift = normalizeText(options.shift || "", 24) || null;
-  return rows
-    .filter((row) => isSameStoreDay(row.created_at, baseDate))
-    .filter((row) => !shift || row.shift === shift)
-    .map(mapCreditPaymentRow);
+  return rows.map(mapCreditPaymentRow);
 }
 
 function listRecentCreditPayments(limit = 8, branch = STORE_BRANCHES[0]) {
@@ -503,7 +506,37 @@ function listRecentCreditPayments(limit = 8, branch = STORE_BRANCHES[0]) {
   return rows.map(mapCreditPaymentRow);
 }
 
-function listCreditPaymentsForExport() {
+function listCreditPaymentsForExport(options = {}) {
+  const normalizedBranch = normalizeBranch(options.branch || ALL_BRANCHES, {
+    allowAll: true,
+    fallback: ALL_BRANCHES,
+  });
+  const saleIds = Array.isArray(options.saleIds)
+    ? [...new Set(options.saleIds.map((id) => Number(id)).filter(Boolean))]
+    : null;
+  if (saleIds && saleIds.length === 0) {
+    return [];
+  }
+  const clauses = [];
+  const params = [];
+  if (normalizedBranch !== ALL_BRANCHES) {
+    clauses.push("cp.branch = ?");
+    params.push(normalizedBranch);
+  }
+  if (options.startAt) {
+    clauses.push("cp.created_at >= ?");
+    params.push(String(options.startAt));
+  }
+  if (options.endAt) {
+    clauses.push("cp.created_at < ?");
+    params.push(String(options.endAt));
+  }
+  if (saleIds) {
+    clauses.push(`cp.sale_id IN (${saleIds.map(() => "?").join(", ")})`);
+    params.push(...saleIds);
+  }
+  const whereSql = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+
   return db.prepare(`
     SELECT
       cp.id,
@@ -523,8 +556,9 @@ function listCreditPaymentsForExport() {
       s.created_at AS sale_created_at
     FROM credit_payments cp
     JOIN sales s ON s.id = cp.sale_id
+    ${whereSql}
     ORDER BY cp.created_at DESC, cp.id DESC
-  `).all();
+  `).all(...params);
 }
 
 function createReceivablePayment(payload = {}) {

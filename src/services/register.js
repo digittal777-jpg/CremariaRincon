@@ -8,8 +8,8 @@ const {
   getSalePendingAmount,
   getSaleReceivedPaymentMethod,
   getStoreDateKey,
+  getStoreDateRangeForValue,
   isCreditPaymentMethod,
-  isSameStoreDay,
   normalizeBranch,
   normalizeText,
   roundMoney,
@@ -40,7 +40,8 @@ function getCollectedTodayByMethod(sale, method) {
 
 function getRegisterEventsForStoreDay(shift, baseDate = new Date(), branch = STORE_BRANCHES[0]) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
-  const rows = normalizedBranch === ALL_BRANCHES
+  const range = getStoreDateRangeForValue(baseDate);
+  return normalizedBranch === ALL_BRANCHES
     ? db.prepare(`
       SELECT
         id,
@@ -61,9 +62,9 @@ function getRegisterEventsForStoreDay(shift, baseDate = new Date(), branch = STO
         notes,
         created_at
       FROM register_events
-      WHERE shift = ?
+      WHERE shift = ? AND created_at >= ? AND created_at < ?
       ORDER BY created_at DESC, id DESC
-    `).all(shift)
+    `).all(shift, range.startAt, range.endAt)
     : db.prepare(`
       SELECT
         id,
@@ -84,11 +85,9 @@ function getRegisterEventsForStoreDay(shift, baseDate = new Date(), branch = STO
         notes,
         created_at
       FROM register_events
-      WHERE shift = ? AND branch = ?
+      WHERE shift = ? AND branch = ? AND created_at >= ? AND created_at < ?
       ORDER BY created_at DESC, id DESC
-    `).all(shift, normalizedBranch);
-
-  return rows.filter((row) => isSameStoreDay(row.created_at, baseDate));
+    `).all(shift, normalizedBranch, range.startAt, range.endAt);
 }
 
 function getCashierFinalCutForStoreDay(shift, branch, cashier, baseDate = new Date()) {
@@ -99,25 +98,24 @@ function getCashierFinalCutForStoreDay(shift, branch, cashier, baseDate = new Da
     return null;
   }
 
-  const rows = safeBranch === ALL_BRANCHES
+  const range = getStoreDateRangeForValue(baseDate);
+  return safeBranch === ALL_BRANCHES
     ? db.prepare(`
       SELECT
         id,
         created_at
       FROM register_events
-      WHERE shift = ? AND cashier = ? AND event_type = 'final_cut'
+      WHERE shift = ? AND cashier = ? AND event_type = 'final_cut' AND created_at >= ? AND created_at < ?
       ORDER BY created_at DESC, id DESC
-    `).all(safeShift, safeCashier)
+    `).all(safeShift, safeCashier, range.startAt, range.endAt)[0] || null
     : db.prepare(`
       SELECT
         id,
         created_at
       FROM register_events
-      WHERE shift = ? AND branch = ? AND cashier = ? AND event_type = 'final_cut'
+      WHERE shift = ? AND branch = ? AND cashier = ? AND event_type = 'final_cut' AND created_at >= ? AND created_at < ?
       ORDER BY created_at DESC, id DESC
-    `).all(safeShift, safeBranch, safeCashier);
-
-  return rows.find((row) => isSameStoreDay(row.created_at, baseDate)) || null;
+    `).all(safeShift, safeBranch, safeCashier, range.startAt, range.endAt)[0] || null;
 }
 
 function assertCashierCanOperate({ shift, branch, cashier, errorMessage }) {
@@ -147,7 +145,7 @@ function getRegisterSummary(shift, branch = STORE_BRANCHES[0], options = {}) {
   const { listStoreDaySales } = require("./sales");
   const { decorateSalesWithCreditPayments, listCreditPaymentsForStoreDay } = require("./receivables");
   const sales = decorateSalesWithCreditPayments(
-    listStoreDaySales(new Date(), normalizedBranch).filter((sale) => sale.shift === normalizedShift),
+    listStoreDaySales(new Date(), normalizedBranch, { shift: normalizedShift }),
     { includePayments: false },
   );
   const creditPayments = listCreditPaymentsForStoreDay(new Date(), normalizedBranch, {
@@ -560,7 +558,27 @@ function getRecentRegisterEvents(limit = 16, branch = STORE_BRANCHES[0]) {
   }));
 }
 
-function listRegisterEventsForExport() {
+function listRegisterEventsForExport(options = {}) {
+  const normalizedBranch = normalizeBranch(options.branch || ALL_BRANCHES, {
+    allowAll: true,
+    fallback: ALL_BRANCHES,
+  });
+  const clauses = [];
+  const params = [];
+  if (normalizedBranch !== ALL_BRANCHES) {
+    clauses.push("branch = ?");
+    params.push(normalizedBranch);
+  }
+  if (options.startAt) {
+    clauses.push("created_at >= ?");
+    params.push(String(options.startAt));
+  }
+  if (options.endAt) {
+    clauses.push("created_at < ?");
+    params.push(String(options.endAt));
+  }
+  const whereSql = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+
   return db.prepare(`
     SELECT
       id,
@@ -581,8 +599,9 @@ function listRegisterEventsForExport() {
       notes,
       created_at
     FROM register_events
+    ${whereSql}
     ORDER BY created_at DESC, id DESC
-  `).all();
+  `).all(...params);
 }
 
 function updateRegisterEventAdmin(eventId, payload) {

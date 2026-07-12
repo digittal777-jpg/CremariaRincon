@@ -98,6 +98,7 @@ function renameBranchReferences(currentCode, nextCode) {
     "UPDATE merchandise_requests SET branch = ? WHERE branch = ?",
     "UPDATE admin_audit_logs SET branch = ? WHERE branch = ?",
     "UPDATE client_sync_reports SET branch = ? WHERE branch = ?",
+    "UPDATE period_closures SET branch = ? WHERE branch = ?",
   ];
 
   statements.forEach((statement) => {

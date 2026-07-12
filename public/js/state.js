@@ -278,6 +278,7 @@ const state = {
     token: "",
     name: "",
     branch: "",
+    expiresAt: "",
     authenticated: false,
   },
   cashierAuth: {

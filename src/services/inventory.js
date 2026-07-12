@@ -78,9 +78,8 @@ function getQuickImportProductId(payload) {
 
 function findQuickImportProduct(payload, branch = "carrizal") {
   const normalizedBranch = normalizeBranch(branch);
-  
-  // 1. Intentar por ID (varios nombres posibles)
-  let productId = getQuickImportProductId(payload);
+
+  const productId = getQuickImportProductId(payload);
   if (productId) {
     const byId = db.prepare(`
       SELECT id, name, stock, active, branch FROM products WHERE id = ? AND branch = ?
@@ -90,7 +89,6 @@ function findQuickImportProduct(payload, branch = "carrizal") {
     }
   }
 
-  // 2. Intentar por nombre (ultra tolerante)
   const rawName = String(
     payload.productName || payload.name || payload.product_name || ""
   ).trim();
@@ -99,24 +97,10 @@ function findQuickImportProduct(payload, branch = "carrizal") {
     return null;
   }
 
-  // Búsqueda exacta
-  let product = db.prepare(`
+  const product = db.prepare(`
     SELECT id, name, stock, active, branch
     FROM products
     WHERE active = 1 AND branch = ? AND UPPER(TRIM(name)) = UPPER(TRIM(?))
-    LIMIT 1
-  `).get(normalizedBranch, rawName);
-
-  if (product) {
-    return product;
-  }
-
-  // Búsqueda parcial (último recurso)
-  product = db.prepare(`
-    SELECT id, name, stock, active, branch
-    FROM products
-    WHERE active = 1 AND branch = ? AND UPPER(TRIM(name)) LIKE '%' || UPPER(TRIM(?)) || '%'
-    ORDER BY LENGTH(name) ASC, id ASC
     LIMIT 1
   `).get(normalizedBranch, rawName);
 
@@ -130,7 +114,8 @@ function findQuickImportProduct(payload, branch = "carrizal") {
 function applyQuickInventoryEntry(payload) {
   const mode = normalizeText(payload.mode || "receive", 24).toLowerCase();
   const branch = normalizeBranch(payload.branch);
-  const current = findQuickImportProduct(payload, branch);
+  const productId = getQuickImportProductId(payload);
+  const current = productId ? findQuickImportProduct({ productId }, branch) : null;
 
   assertBranchIsActive(branch, "Selecciona una sucursal activa para mover inventario.");
 
@@ -146,7 +131,7 @@ function applyQuickInventoryEntry(payload) {
     throw createHttpError("El producto ya no esta disponible para inventario.", 404);
   }
 
-  const productId = current.id;
+  const resolvedProductId = current.id;
   const stockBefore = roundStock(current.stock);
   const supplierName = normalizeText(payload.supplierName || "", 60);
   const customNote = normalizeText(payload.note || "", 120);
@@ -190,7 +175,7 @@ function applyQuickInventoryEntry(payload) {
       UPDATE products
       SET stock = ?, stock_initialized = 1, updated_at = ?
       WHERE id = ? AND branch = ?
-    `).run(stockAfter, now, productId, branch);
+    `).run(stockAfter, now, resolvedProductId, branch);
 
     db.prepare(`
       INSERT INTO inventory_movements (
@@ -206,7 +191,7 @@ function applyQuickInventoryEntry(payload) {
         created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      productId,
+      resolvedProductId,
       movementType,
       branch,
       quantityDelta,
@@ -220,7 +205,7 @@ function applyQuickInventoryEntry(payload) {
   })();
 
   const { getProductById } = require("./products");
-  return getProductById(productId, branch);
+  return getProductById(resolvedProductId, branch);
 }
 
 function getInventoryMovementById(movementId) {
@@ -384,7 +369,27 @@ function updateInventoryMovementAdmin(movementId, payload) {
   return getInventoryMovementById(movementId);
 }
 
-function listInventoryMovementsForExport() {
+function listInventoryMovementsForExport(options = {}) {
+  const normalizedBranch = normalizeBranch(options.branch || ALL_BRANCHES, {
+    allowAll: true,
+    fallback: ALL_BRANCHES,
+  });
+  const clauses = [];
+  const params = [];
+  if (normalizedBranch !== ALL_BRANCHES) {
+    clauses.push("im.branch = ?");
+    params.push(normalizedBranch);
+  }
+  if (options.startAt) {
+    clauses.push("im.created_at >= ?");
+    params.push(String(options.startAt));
+  }
+  if (options.endAt) {
+    clauses.push("im.created_at < ?");
+    params.push(String(options.endAt));
+  }
+  const whereSql = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+
   return db.prepare(`
     SELECT
       im.id,
@@ -401,8 +406,9 @@ function listInventoryMovementsForExport() {
       im.created_at
     FROM inventory_movements im
     JOIN products p ON p.id = im.product_id
+    ${whereSql}
     ORDER BY im.created_at DESC, im.id DESC
-  `).all();
+  `).all(...params);
 }
 
 module.exports = {

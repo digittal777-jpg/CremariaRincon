@@ -11,6 +11,7 @@ const {
   SELF_SIGNED_CERT_B64,
   SELF_SIGNED_KEY_B64,
 } = require("../support/self-signed-tls");
+const Database = require("better-sqlite3");
 
 const { createApp } = require("../../owner-control/src/app");
 const { createControlStore } = require("../../owner-control/src/store");
@@ -39,7 +40,7 @@ async function startOwnerControlServer(t, appOptions = {}) {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  return { baseUrl, port: address.port };
+  return { app, baseUrl, port: address.port };
 }
 
 async function stopProcess(child) {
@@ -253,6 +254,71 @@ function signedClientHeaders(slug, apiKey, method, pathname, body = "") {
     "X-Client-Signature": crypto.createHmac("sha256", apiKey).update(payload).digest("hex"),
   };
 }
+
+test("owner-control prunes rate limit buckets beyond the configured cap", async (t) => {
+  const server = await startOwnerControlServer(t, {
+    apiRateLimitBucketLimit: 2,
+  });
+
+  for (let index = 0; index < 6; index += 1) {
+    const response = await json(server.baseUrl, `/api/audit-bucket/${index}`);
+    assert.equal(response.status, 404);
+  }
+
+  assert.ok(server.app.locals.rateLimitBuckets.size <= 2);
+});
+
+test("owner-control prunes health and validation reports per client", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "owner-control-retention-"));
+  const dbPath = path.join(tempDir, "owner-control.sqlite");
+  const store = createControlStore({
+    dbPath,
+    healthReportRetentionLimit: 3,
+    validationReportRetentionLimit: 2,
+  });
+
+  const { client } = store.createClient({
+    slug: "cliente-retencion",
+    businessName: "Cliente Retencion",
+    baseUrl: "https://retencion.example.com",
+  });
+
+  for (let index = 0; index < 6; index += 1) {
+    store.receiveHealthReport(client, {
+      health: {
+        status: index % 2 === 0 ? "ok" : "risk",
+        semaphore: {
+          status: index % 2 === 0 ? "ok" : "risk",
+          reasons: [`reason-${index}`],
+          actions: [],
+        },
+      },
+      reportedAt: new Date(Date.UTC(2026, 6, 1, 12, index)).toISOString(),
+    });
+  }
+
+  for (let index = 0; index < 5; index += 1) {
+    store.receiveValidationReport(client, {
+      status: index % 2 === 0 ? "ok" : "warning",
+      url: `https://retencion.example.com/${index}`,
+      checks: [{ name: `check-${index}`, ok: index % 2 === 0 }],
+      reportedAt: new Date(Date.UTC(2026, 6, 1, 13, index)).toISOString(),
+    });
+  }
+
+  const db = new Database(dbPath, { readonly: true });
+
+  t.after(() => {
+    db.close();
+    store.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const healthCount = db.prepare("SELECT COUNT(*) AS count FROM health_reports WHERE client_slug = ?").get(client.slug);
+  const validationCount = db.prepare("SELECT COUNT(*) AS count FROM validation_reports WHERE client_slug = ?").get(client.slug);
+  assert.equal(healthCount.count, 3);
+  assert.equal(validationCount.count, 2);
+});
 
 test("owner-control owner API fails closed when no owner token is configured", async (t) => {
   const server = await startOwnerControlServer(t, {
@@ -478,7 +544,8 @@ test("owner-control emits browser hardening headers and keeps html out of cache"
   const shell = await rawHttpRequest(server.port, "/");
   assert.equal(shell.status, 200);
   assert.match(String(shell.headers["content-security-policy"] || ""), /script-src 'self'/i);
-  assert.match(String(shell.headers["content-security-policy"] || ""), /style-src 'self' 'unsafe-inline'/i);
+  assert.match(String(shell.headers["content-security-policy"] || ""), /style-src 'self'/i);
+  assert.doesNotMatch(String(shell.headers["content-security-policy"] || ""), /unsafe-inline/i);
   assert.equal(String(shell.headers["cache-control"] || ""), "no-store");
 
   const directShell = await rawHttpRequest(server.port, "/index.html");

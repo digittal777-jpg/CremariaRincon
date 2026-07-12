@@ -5,8 +5,8 @@ const {
   getStoreDateKey,
   getStoreMonthRange,
   getStorePeriodRange,
+  getStoreDateRangeForKeys,
   getStoreWeekRange,
-  isStoreDateKeyInRange,
   normalizeBranch,
   normalizeText,
   roundMoney,
@@ -86,7 +86,8 @@ function resolveProfitabilityRange(options = {}) {
 
 function listProfitabilitySaleRows(branch, range) {
   const normalizedBranch = normalizeBranch(branch, { allowAll: true });
-  const rows = normalizedBranch === ALL_BRANCHES
+  const dateRange = getStoreDateRangeForKeys(range.startDateKey, range.endDateKey);
+  return normalizedBranch === ALL_BRANCHES
     ? db.prepare(`
       SELECT
         s.id AS sale_id,
@@ -105,8 +106,9 @@ function listProfitabilitySaleRows(branch, range) {
         si.cost_status
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
+      WHERE s.created_at >= ? AND s.created_at < ?
       ORDER BY s.created_at DESC, si.id DESC
-    `).all()
+    `).all(dateRange.startAt, dateRange.endAt)
     : db.prepare(`
       SELECT
         s.id AS sale_id,
@@ -125,14 +127,9 @@ function listProfitabilitySaleRows(branch, range) {
         si.cost_status
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
-      WHERE s.branch = ?
+      WHERE s.branch = ? AND s.created_at >= ? AND s.created_at < ?
       ORDER BY s.created_at DESC, si.id DESC
-    `).all(normalizedBranch);
-
-  return rows.filter((row) => {
-    const rowDateKey = getStoreDateKey(row.created_at);
-    return isStoreDateKeyInRange(rowDateKey, range.startDateKey, range.endDateKey);
-  });
+    `).all(normalizedBranch, dateRange.startAt, dateRange.endAt);
 }
 
 function getInventoryValuation(branch = ALL_BRANCHES) {
