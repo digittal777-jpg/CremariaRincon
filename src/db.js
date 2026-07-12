@@ -596,6 +596,18 @@ function initializeSchema(db) {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS business_branding_logo (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      content BLOB NOT NULL,
+      mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg')),
+      width INTEGER NOT NULL,
+      height INTEGER NOT NULL,
+      byte_size INTEGER NOT NULL,
+      version TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS product_categories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       code TEXT NOT NULL UNIQUE,

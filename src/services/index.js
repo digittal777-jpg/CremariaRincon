@@ -24,6 +24,7 @@ const supportHealth = require("./supportHealth");
 const { assertModuleEnabled } = require("../utils/helpers");
 const ownerConsole = require("./ownerConsole");
 const ownerOperations = require("./ownerOperations");
+const businessBranding = require("./businessBranding");
 
 module.exports = {
   ...products,
@@ -51,5 +52,6 @@ module.exports = {
   ...supportHealth,
   ...ownerConsole,
   ...ownerOperations,
+  ...businessBranding,
   assertModuleEnabled,
 };

@@ -744,6 +744,12 @@ async function bootstrap() {
   refs.configAllowNegativeStock = $("config-allow-negative-stock");
   refs.configBusinessName = $("config-business-name");
   refs.configShortName = $("config-short-name");
+  refs.configLogoInput = $("config-logo-input");
+  refs.configLogoPreview = $("config-logo-preview");
+  refs.configLogoPreviewFallback = $("config-logo-preview-fallback");
+  refs.configLogoFileStatus = $("config-logo-file-status");
+  refs.uploadConfigLogoButton = $("upload-config-logo-button");
+  refs.removeConfigLogoButton = $("remove-config-logo-button");
   refs.configSlug = $("config-slug");
   refs.configTimezone = $("config-timezone");
   refs.configLocale = $("config-locale");
@@ -1852,6 +1858,28 @@ async function bootstrap() {
   refs.resetAdminBranchButton?.addEventListener("click", resetAdminBranchForm);
   refs.saveAdminCashierButton.addEventListener("click", submitAdminCashier);
   refs.saveAdminConfigButton.addEventListener("click", submitAdminConfig);
+  [
+    [refs.configBusinessName, "businessName"],
+    [refs.configShortName, "shortName"],
+    [refs.configSlug, "slug"],
+    [refs.configTimezone, "timezone"],
+    [refs.configLocale, "locale"],
+    [refs.configCurrencyCode, "currencyCode"],
+    [refs.configTicketPrefix, "ticketPrefix"],
+  ].forEach(([input, field]) => input?.addEventListener("input", () => {
+    markAdminConfigDirty("businessProfile", field);
+  }));
+  refs.configAllowNegativeStock?.addEventListener("change", () => {
+    markAdminConfigDirty("settings", "sales.allow_negative_stock");
+  });
+  refs.configModulesWrap?.addEventListener("change", (event) => {
+    if (event.target.closest('input[type="checkbox"][data-module-code]')) {
+      markAdminConfigDirty("enabledModules");
+    }
+  });
+  refs.configLogoInput?.addEventListener("change", selectAdminBrandingLogo);
+  refs.uploadConfigLogoButton?.addEventListener("click", uploadAdminBrandingLogo);
+  refs.removeConfigLogoButton?.addEventListener("click", removeAdminBrandingLogo);
   refs.applyAdminTemplateButton?.addEventListener("click", applyAdminBusinessTemplate);
   refs.saveConfigCategoryButton?.addEventListener("click", createAdminCategory);
   refs.saveConfigUnitButton?.addEventListener("click", createAdminUnit);

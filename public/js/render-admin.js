@@ -817,13 +817,33 @@ function renderAdminConfigPanel() {
   }
 
   const profile = getStoreProfile();
-  if (refs.configBusinessName) refs.configBusinessName.value = profile.businessName || "";
-  if (refs.configShortName) refs.configShortName.value = profile.shortName || "";
-  if (refs.configSlug) refs.configSlug.value = profile.slug || "";
-  if (refs.configTimezone) refs.configTimezone.value = profile.timezone || state.store.timezone || "America/Mexico_City";
-  if (refs.configLocale) refs.configLocale.value = profile.locale || "es-MX";
-  if (refs.configCurrencyCode) refs.configCurrencyCode.value = profile.currencyCode || "MXN";
-  if (refs.configTicketPrefix) refs.configTicketPrefix.value = profile.ticketPrefix || "";
+  if (refs.saveAdminConfigButton) {
+    refs.saveAdminConfigButton.disabled = Boolean(state.admin.configSaving);
+    refs.saveAdminConfigButton.textContent = state.admin.configSaving
+      ? "Guardando..."
+      : "Guardar configuraciones";
+  }
+  if (refs.configBusinessName && !isAdminConfigFieldDirty("businessProfile", "businessName")) {
+    refs.configBusinessName.value = profile.businessName || "";
+  }
+  if (refs.configShortName && !isAdminConfigFieldDirty("businessProfile", "shortName")) {
+    refs.configShortName.value = profile.shortName || "";
+  }
+  if (refs.configSlug && !isAdminConfigFieldDirty("businessProfile", "slug")) {
+    refs.configSlug.value = profile.slug || "";
+  }
+  if (refs.configTimezone && !isAdminConfigFieldDirty("businessProfile", "timezone")) {
+    refs.configTimezone.value = profile.timezone || state.store.timezone || "America/Mexico_City";
+  }
+  if (refs.configLocale && !isAdminConfigFieldDirty("businessProfile", "locale")) {
+    refs.configLocale.value = profile.locale || "es-MX";
+  }
+  if (refs.configCurrencyCode && !isAdminConfigFieldDirty("businessProfile", "currencyCode")) {
+    refs.configCurrencyCode.value = profile.currencyCode || "MXN";
+  }
+  if (refs.configTicketPrefix && !isAdminConfigFieldDirty("businessProfile", "ticketPrefix")) {
+    refs.configTicketPrefix.value = profile.ticketPrefix || "";
+  }
 
   if (refs.configTemplateSelect) {
     setSelectOptions(
@@ -836,7 +856,7 @@ function renderAdminConfigPanel() {
     );
   }
 
-  if (refs.configModulesWrap) {
+  if (refs.configModulesWrap && !isAdminConfigFieldDirty("enabledModules")) {
     refs.configModulesWrap.innerHTML = ADMIN_AVAILABLE_MODULES
       .map((module) => `
         <label class="admin-module-chip">
@@ -850,6 +870,8 @@ function renderAdminConfigPanel() {
       `)
       .join("");
   }
+
+  renderAdminBrandingEditor();
 
   if (refs.configCategoriesList) {
     refs.configCategoriesList.innerHTML = state.categories.length
@@ -1407,6 +1429,52 @@ function renderOwnerAuthModal() {
   refs.ownerAuthConfirmPassword.disabled = state.ownerAuth.loading || isBlocked;
   if (refs.ownerAuthBootstrapToken) {
     refs.ownerAuthBootstrapToken.disabled = state.ownerAuth.loading || isBlocked || !isSetup || !state.owner.setupAllowed;
+  }
+}
+
+function renderAdminBrandingEditor() {
+  const brandingState = state.admin.brandingLogo || {};
+  const branding = state.profile?.branding || {};
+  const uploadedLogoUrl = String(branding.uploadedLogo?.url || "").trim();
+  const savedLogoUrl = uploadedLogoUrl || branding.logo192 || branding.logo512 || branding.logo || "";
+  const previewUrl = brandingState.previewUrl || savedLogoUrl;
+  const isBusy = Boolean(brandingState.uploading || brandingState.removing);
+
+  if (refs.configLogoPreview) {
+    refs.configLogoPreview.hidden = !previewUrl;
+    if (previewUrl) {
+      refs.configLogoPreview.src = previewUrl;
+    } else {
+      refs.configLogoPreview.removeAttribute("src");
+    }
+  }
+  if (refs.configLogoPreviewFallback) {
+    refs.configLogoPreviewFallback.hidden = Boolean(previewUrl);
+    refs.configLogoPreviewFallback.textContent = String(
+      state.profile?.shortName || state.profile?.businessName || "POS",
+    ).slice(0, 3).toUpperCase();
+  }
+  if (refs.configLogoInput) {
+    refs.configLogoInput.disabled = isBusy;
+  }
+  if (refs.uploadConfigLogoButton) {
+    refs.uploadConfigLogoButton.disabled = isBusy || !brandingState.file;
+    refs.uploadConfigLogoButton.textContent = brandingState.uploading ? "Subiendo..." : "Subir logo";
+  }
+  if (refs.removeConfigLogoButton) {
+    refs.removeConfigLogoButton.disabled = isBusy || !uploadedLogoUrl;
+    refs.removeConfigLogoButton.textContent = brandingState.removing ? "Quitando..." : "Quitar logo";
+  }
+  if (refs.configLogoFileStatus) {
+    refs.configLogoFileStatus.textContent = brandingState.uploading
+      ? "Guardando logo..."
+      : brandingState.removing
+        ? "Quitando logo personalizado..."
+        : brandingState.file
+          ? `${brandingState.file.name} - ${(brandingState.file.size / 1024).toFixed(0)} KiB`
+          : uploadedLogoUrl
+            ? "Logo personalizado activo. PNG o JPEG, maximo 2 MiB."
+            : "PNG o JPEG, maximo 2 MiB.";
   }
 }
 

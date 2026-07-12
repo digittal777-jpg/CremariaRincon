@@ -123,6 +123,27 @@ const upload = multer({
   }),
   limits: { fileSize: 100 * 1024 * 1024 },
 });
+const brandingLogoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    files: 1,
+    fileSize: services.BRANDING_LOGO_MAX_BYTES,
+  },
+});
+
+function parseBrandingLogoUpload(request, response, next) {
+  brandingLogoUpload.single("logo")(request, response, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+    error.statusCode = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+    error.message = error.code === "LIMIT_FILE_SIZE"
+      ? "El logotipo no puede superar 2 MiB."
+      : "No pude procesar el archivo del logotipo.";
+    next(error);
+  });
+}
 
 async function readUploadedFileBuffer(file) {
   if (file?.buffer) {
@@ -523,30 +544,40 @@ function buildManifestPayload() {
   const businessName = profile.businessName || "Punto de Venta";
   const shortName = profile.shortName || "POS";
   const branding = profile.branding || {};
+  const uploadedLogo = branding.uploadedLogo && typeof branding.uploadedLogo === "object"
+    ? branding.uploadedLogo
+    : null;
   const iconCandidates = [
-    branding.logo192,
-    branding.logo512,
-    branding.logo,
-    "/assets/branding/retail-base-badge.svg",
+    uploadedLogo?.url
+      ? {
+        src: uploadedLogo.url,
+        sizes: `${Number(uploadedLogo.width) || 512}x${Number(uploadedLogo.height) || 512}`,
+        type: uploadedLogo.mimeType || getManifestMimeType(uploadedLogo.url),
+        purpose: "any",
+      }
+      : null,
+    branding.logo192 ? { src: branding.logo192, sizes: "192x192", type: getManifestMimeType(branding.logo192) } : null,
+    branding.logo512 ? { src: branding.logo512, sizes: "512x512", type: getManifestMimeType(branding.logo512) } : null,
+    branding.logo ? { src: branding.logo, sizes: "512x512", type: getManifestMimeType(branding.logo) } : null,
+    {
+      src: "/assets/branding/retail-base-badge.svg",
+      sizes: "any",
+      type: "image/svg+xml",
+      purpose: "any maskable",
+    },
   ].filter(Boolean);
   const seenIcons = new Set();
-  const icons = iconCandidates.reduce((entries, iconPath) => {
-    if (seenIcons.has(iconPath)) {
+  const icons = iconCandidates.reduce((entries, icon) => {
+    if (seenIcons.has(icon.src)) {
       return entries;
     }
 
-    seenIcons.add(iconPath);
+    seenIcons.add(icon.src);
     entries.push({
-      src: iconPath,
-      sizes: String(iconPath).endsWith(".svg")
-        ? "any"
-        : iconPath === branding.logo192
-          ? "192x192"
-          : iconPath === branding.logo512
-            ? "512x512"
-            : "512x512",
-      type: getManifestMimeType(iconPath),
-      purpose: "any maskable",
+      src: icon.src,
+      sizes: icon.sizes,
+      type: icon.type,
+      purpose: icon.purpose || "any maskable",
     });
     return entries;
   }, []);
@@ -925,6 +956,24 @@ app.set("trust proxy", TRUST_PROXY_SETTING);
 app.use(applySecurityHeaders);
 app.use(express.json({ limit: "1mb" }));
 
+app.get("/api/branding/logo/:version", (request, response) => {
+  const logo = services.getBusinessLogo(request.params.version);
+  if (!logo) {
+    response.status(404).json({ message: "Logotipo no encontrado." });
+    return;
+  }
+  response.setHeader("Content-Type", logo.mimeType);
+  response.setHeader("Content-Length", String(logo.byteSize));
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("ETag", logo.etag);
+  response.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  if (String(request.headers["if-none-match"] || "").split(",").map((value) => value.trim()).includes(logo.etag)) {
+    response.status(304).end();
+    return;
+  }
+  response.status(200).end(logo.content);
+});
+
 app.get("/manifest.webmanifest", (_request, response) => {
   response.type("application/manifest+json");
   response.setHeader("Cache-Control", "no-store");
@@ -1247,6 +1296,55 @@ app.patch("/api/admin/settings", (request, response, next) => {
     units: listMeasurementUnits({ includeInactive: true }),
     productAttributeDefinitions: listProductAttributeDefinitions({ includeInactive: true }),
   });
+});
+
+app.post("/api/admin/branding/logo", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, parseBrandingLogoUpload, (request, response, next) => {
+  try {
+    const result = services.saveBusinessLogo(request.file);
+    const uploadedLogo = result.businessProfile?.branding?.uploadedLogo || {};
+    services.logAdminAction({
+      actorName: getAdminActorName(request),
+      action: "business_logo_update",
+      entityType: "business_profile",
+      entityId: "1",
+      payload: {
+        version: uploadedLogo.version,
+        mimeType: uploadedLogo.mimeType,
+        width: uploadedLogo.width,
+        height: uploadedLogo.height,
+        byteSize: uploadedLogo.byteSize,
+      },
+    });
+    broadcastSnapshot(services.getDashboardSnapshot("all"));
+    response.status(201).json({ businessProfile: result.businessProfile });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/admin/branding/logo", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("business_config")(request, response, next);
+}, (request, response, next) => {
+  try {
+    const result = services.deleteBusinessLogo();
+    services.logAdminAction({
+      actorName: getAdminActorName(request),
+      action: "business_logo_delete",
+      entityType: "business_profile",
+      entityId: "1",
+      payload: {},
+    });
+    broadcastSnapshot(services.getDashboardSnapshot("all"));
+    response.json({ businessProfile: result.businessProfile });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/api/admin/templates", (request, response, next) => {

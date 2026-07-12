@@ -117,7 +117,7 @@ test("service worker precaches the administration route", async () => {
   });
 
   await installPromise;
-  assert.equal(Boolean(caches.stores.get("retail-base-static-v15")?.has("/administracion")), true);
+  assert.equal(Boolean(caches.stores.get("retail-base-static-v16")?.has("/administracion")), true);
 });
 
 test("navigation caching only stores successful html responses", async () => {
@@ -147,15 +147,15 @@ test("navigation caching only stores successful html responses", async () => {
   });
 
   await context.handleNavigationRequest(new Request("https://pos.test/"));
-  assert.equal(Boolean(caches.stores.get("retail-base-static-v15")?.has("/index.html")), false);
+  assert.equal(Boolean(caches.stores.get("retail-base-static-v16")?.has("/index.html")), false);
 
   fetchMode = "ok-html-no-store";
   await context.handleNavigationRequest(new Request("https://pos.test/"));
-  assert.equal(Boolean(caches.stores.get("retail-base-static-v15")?.has("/index.html")), false);
+  assert.equal(Boolean(caches.stores.get("retail-base-static-v16")?.has("/index.html")), false);
 
   fetchMode = "ok-html";
   await context.handleNavigationRequest(new Request("https://pos.test/"));
-  assert.equal(Boolean(caches.stores.get("retail-base-static-v15")?.has("/index.html")), true);
+  assert.equal(Boolean(caches.stores.get("retail-base-static-v16")?.has("/index.html")), true);
 });
 
 test("static caching skips no-store responses", async () => {
@@ -169,5 +169,38 @@ test("static caching skips no-store responses", async () => {
     }));
 
   await context.handleStaticRequest(new Request("https://pos.test/index.html"));
-  assert.equal(Boolean(caches.stores.get("retail-base-static-v15")?.has("https://pos.test/index.html")), false);
+  assert.equal(Boolean(caches.stores.get("retail-base-static-v16")?.has("https://pos.test/index.html")), false);
+});
+
+test("versioned branding logos use the static cache and remain available offline", async () => {
+  let online = true;
+  const logoHash = "a".repeat(64);
+  const logoUrl = `https://pos.test/api/branding/logo/${logoHash}`;
+  const { listeners, caches } = loadServiceWorkerContext(async () => {
+    if (!online) throw new Error("offline");
+    return new Response("png-content", {
+      status: 200,
+      headers: {
+        "content-type": "image/png",
+        "cache-control": "public, max-age=31536000, immutable",
+      },
+    });
+  });
+
+  const fetchThroughWorker = async () => {
+    let responsePromise = null;
+    listeners.get("fetch")({
+      request: new Request(logoUrl),
+      respondWith(promise) { responsePromise = promise; },
+    });
+    return responsePromise;
+  };
+
+  const onlineResponse = await fetchThroughWorker();
+  assert.equal(await onlineResponse.text(), "png-content");
+  assert.equal(Boolean(caches.stores.get("retail-base-static-v16")?.has(logoUrl)), true);
+
+  online = false;
+  const offlineResponse = await fetchThroughWorker();
+  assert.equal(await offlineResponse.text(), "png-content");
 });

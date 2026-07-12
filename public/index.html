@@ -1714,6 +1714,31 @@
                     <span>Nombre corto</span>
                     <input id="config-short-name" type="text" maxlength="60" />
                   </label>
+                  <div class="admin-branding-editor">
+                    <div class="admin-branding-preview" aria-live="polite">
+                      <img id="config-logo-preview" alt="Vista previa del logo del negocio" hidden />
+                      <span id="config-logo-preview-fallback">POS</span>
+                    </div>
+                    <div class="admin-branding-controls">
+                      <label class="field">
+                        <span>Logo del negocio</span>
+                        <input
+                          id="config-logo-input"
+                          type="file"
+                          accept="image/png,image/jpeg,.png,.jpg,.jpeg"
+                        />
+                      </label>
+                      <small id="config-logo-file-status">PNG o JPEG, maximo 2 MiB.</small>
+                      <div class="admin-record-actions">
+                        <button class="secondary-button compact-button" id="upload-config-logo-button" type="button" disabled>
+                          Subir logo
+                        </button>
+                        <button class="ghost-button compact-button danger-button" id="remove-config-logo-button" type="button">
+                          Quitar logo
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                   <label class="field">
                     <span>Slug</span>
                     <input id="config-slug" type="text" maxlength="64" />

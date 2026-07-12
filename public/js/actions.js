@@ -232,6 +232,9 @@ function resetAdminSensitiveWorkspaceData() {
   state.admin.capabilitiesResolved = false;
   state.admin.metricsLoading = false;
   state.admin.configLoading = false;
+  state.admin.configSaving = false;
+  resetAdminConfigDirtyRevisions();
+  resetAdminBrandingLogoDraft({ render: false });
   state.admin.weightedAudit.sessions = [];
   state.admin.weightedAudit.currentSession = null;
   state.admin.weightedAudit.loading = false;
@@ -432,8 +435,9 @@ function applyBusinessBranding() {
     "heroCopy",
     "Caja rapida, inventario vivo y seguimiento inmediato de cada venta.",
   );
-  const logoPath = profile.branding?.logo192 || profile.branding?.logo || "";
-  const iconPath = profile.branding?.logo192 || profile.branding?.logo || "/assets/branding/retail-base-badge.svg";
+  const uploadedLogoPath = String(profile.branding?.uploadedLogo?.url || "").trim();
+  const logoPath = uploadedLogoPath || profile.branding?.logo192 || profile.branding?.logo512 || profile.branding?.logo || "";
+  const iconPath = logoPath || "/assets/branding/retail-base-badge.svg";
 
   document.title = `${businessName} | Punto de Venta`;
 
@@ -1316,9 +1320,19 @@ async function loadAdminAuditLogs(branch = getAdminBranch()) {
 }
 
 async function loadAdminConfig() {
+  const isInitialConfigLoad = !state.admin.workspaceLoadedAt?.config;
+  const requestId = Number(state.admin.configLoadRequestId || 0) + 1;
+  const mutationGeneration = Number(state.admin.configMutationGeneration || 0);
+  state.admin.configLoadRequestId = requestId;
   state.admin.configLoading = true;
   try {
     const response = await requestAdminJson("/api/admin/settings");
+    if (
+      requestId !== state.admin.configLoadRequestId
+      || mutationGeneration !== state.admin.configMutationGeneration
+    ) {
+      return { ignored: true };
+    }
     const settings = response.settings || {};
     state.profile = response.businessProfile || state.profile;
     state.enabledModules = Array.isArray(response.enabledModules) ? response.enabledModules : state.enabledModules;
@@ -1333,7 +1347,12 @@ async function loadAdminConfig() {
     state.productAttributeDefinitions = Array.isArray(response.productAttributeDefinitions)
       ? response.productAttributeDefinitions.filter((definition) => definition.active !== false)
       : state.productAttributeDefinitions;
-    refs.configAllowNegativeStock.checked = settings["sales.allow_negative_stock"] === "true";
+    if (!isAdminConfigFieldDirty("settings", "sales.allow_negative_stock")) {
+      refs.configAllowNegativeStock.checked = settings["sales.allow_negative_stock"] === "true";
+    }
+    if (isInitialConfigLoad && !state.admin.configDirty) {
+      resetAdminConfigDirtyRevisions();
+    }
     applyBusinessBranding();
     updateModuleVisibility();
     renderCategoryFilters();
@@ -1345,11 +1364,19 @@ async function loadAdminConfig() {
     }
     markAdminWorkspaceLoaded("config");
   } catch (error) {
+    if (
+      requestId !== state.admin.configLoadRequestId
+      || mutationGeneration !== state.admin.configMutationGeneration
+    ) {
+      return { ignored: true };
+    }
     if (error.statusCode !== 403) {
       showToast("Error al cargar configuraciones.", "error");
     }
   } finally {
-    state.admin.configLoading = false;
+    if (requestId === state.admin.configLoadRequestId) {
+      state.admin.configLoading = false;
+    }
   }
 }
 
@@ -3248,6 +3275,343 @@ async function throwAdminResponseError(response, fallbackMessage) {
   throw error;
 }
 
+const ADMIN_CONFIG_PROFILE_REF_KEYS = {
+  businessName: "configBusinessName",
+  shortName: "configShortName",
+  slug: "configSlug",
+  timezone: "configTimezone",
+  locale: "configLocale",
+  currencyCode: "configCurrencyCode",
+  ticketPrefix: "configTicketPrefix",
+};
+
+function getAdminConfigDirtyRevisions() {
+  if (!state.admin.configDirtyRevisions || typeof state.admin.configDirtyRevisions !== "object") {
+    state.admin.configDirtyRevisions = {
+      businessProfile: {},
+      settings: {},
+      enabledModules: 0,
+    };
+  }
+  state.admin.configDirtyRevisions.businessProfile ||= {};
+  state.admin.configDirtyRevisions.settings ||= {};
+  state.admin.configDirtyRevisions.enabledModules = Number(
+    state.admin.configDirtyRevisions.enabledModules || 0,
+  );
+  return state.admin.configDirtyRevisions;
+}
+
+function syncAdminConfigDirtyFlag() {
+  const dirty = getAdminConfigDirtyRevisions();
+  state.admin.configDirty = Boolean(
+    Object.keys(dirty.businessProfile).length
+    || Object.keys(dirty.settings).length
+    || dirty.enabledModules,
+  );
+  return state.admin.configDirty;
+}
+
+function resetAdminConfigDirtyRevisions() {
+  const dirty = getAdminConfigDirtyRevisions();
+  dirty.businessProfile = {};
+  dirty.settings = {};
+  dirty.enabledModules = 0;
+  state.admin.configDirty = false;
+}
+
+function markAdminConfigDirty(section, field = "") {
+  const dirty = getAdminConfigDirtyRevisions();
+  const revision = Number(state.admin.configEditRevision || 0) + 1;
+  state.admin.configEditRevision = revision;
+  if (section === "businessProfile" && Object.hasOwn(ADMIN_CONFIG_PROFILE_REF_KEYS, field)) {
+    dirty.businessProfile[field] = revision;
+  } else if (section === "settings" && field) {
+    dirty.settings[field] = revision;
+  } else if (section === "enabledModules") {
+    dirty.enabledModules = revision;
+  } else {
+    return false;
+  }
+  state.admin.configDirty = true;
+  return true;
+}
+
+function isAdminConfigFieldDirty(section, field = "") {
+  const dirty = getAdminConfigDirtyRevisions();
+  if (section === "enabledModules") {
+    return Boolean(dirty.enabledModules);
+  }
+  return Boolean(dirty[section]?.[field]);
+}
+
+function captureAdminConfigDirtyRevisions() {
+  const dirty = getAdminConfigDirtyRevisions();
+  return {
+    businessProfile: { ...dirty.businessProfile },
+    settings: { ...dirty.settings },
+    enabledModules: dirty.enabledModules,
+  };
+}
+
+function clearSavedAdminConfigRevisions(savedRevisions) {
+  const dirty = getAdminConfigDirtyRevisions();
+  Object.entries(savedRevisions.businessProfile || {}).forEach(([field, revision]) => {
+    if (dirty.businessProfile[field] === revision) {
+      delete dirty.businessProfile[field];
+    }
+  });
+  Object.entries(savedRevisions.settings || {}).forEach(([field, revision]) => {
+    if (dirty.settings[field] === revision) {
+      delete dirty.settings[field];
+    }
+  });
+  if (savedRevisions.enabledModules && dirty.enabledModules === savedRevisions.enabledModules) {
+    dirty.enabledModules = 0;
+  }
+  syncAdminConfigDirtyFlag();
+}
+
+function buildAdminConfigPatchPayload(savedRevisions = captureAdminConfigDirtyRevisions()) {
+  const payload = {};
+  const businessProfile = {};
+  Object.keys(savedRevisions.businessProfile || {}).forEach((field) => {
+    const refKey = ADMIN_CONFIG_PROFILE_REF_KEYS[field];
+    if (refKey && refs[refKey]) {
+      businessProfile[field] = String(refs[refKey].value || "").trim();
+    }
+  });
+  if (Object.keys(businessProfile).length) {
+    payload.businessProfile = businessProfile;
+  }
+
+  const settings = {};
+  if (savedRevisions.settings?.["sales.allow_negative_stock"]) {
+    settings["sales.allow_negative_stock"] = refs.configAllowNegativeStock?.checked ? "true" : "false";
+  }
+  if (Object.keys(settings).length) {
+    payload.settings = settings;
+  }
+  if (savedRevisions.enabledModules) {
+    payload.enabledModules = getAdminSelectedModules();
+  }
+  return payload;
+}
+
+function beginAdminConfigMutation() {
+  state.admin.configMutationGeneration = Number(state.admin.configMutationGeneration || 0) + 1;
+  return state.admin.configMutationGeneration;
+}
+
+function getAdminBrandingLogoState() {
+  if (!state.admin.brandingLogo || typeof state.admin.brandingLogo !== "object") {
+    state.admin.brandingLogo = {
+      file: null,
+      previewUrl: "",
+      uploading: false,
+      removing: false,
+    };
+  }
+  return state.admin.brandingLogo;
+}
+
+function revokeAdminBrandingLogoPreview() {
+  const brandingState = getAdminBrandingLogoState();
+  if (brandingState.previewUrl) {
+    URL.revokeObjectURL(brandingState.previewUrl);
+    brandingState.previewUrl = "";
+  }
+}
+
+function resetAdminBrandingLogoDraft(options = {}) {
+  const brandingState = getAdminBrandingLogoState();
+  revokeAdminBrandingLogoPreview();
+  brandingState.file = null;
+  brandingState.uploading = false;
+  brandingState.removing = false;
+  if (refs.configLogoInput) {
+    refs.configLogoInput.value = "";
+  }
+  if (options.render !== false && typeof renderAdminBrandingEditor === "function") {
+    renderAdminBrandingEditor();
+  }
+}
+
+function selectAdminBrandingLogo(event) {
+  const input = event?.target || refs.configLogoInput;
+  const file = input?.files?.[0] || null;
+  if (!file) {
+    resetAdminBrandingLogoDraft();
+    return;
+  }
+
+  const allowedTypes = new Set(["image/png", "image/jpeg"]);
+  const maxLogoBytes = 2 * 1024 * 1024;
+  if (!allowedTypes.has(String(file.type || "").toLowerCase())) {
+    resetAdminBrandingLogoDraft();
+    showToast("Selecciona una imagen PNG o JPEG.", "error");
+    return;
+  }
+  if (Number(file.size || 0) > maxLogoBytes) {
+    resetAdminBrandingLogoDraft();
+    showToast("El logo no puede superar 2 MiB.", "error");
+    return;
+  }
+
+  const brandingState = getAdminBrandingLogoState();
+  revokeAdminBrandingLogoPreview();
+  brandingState.file = file;
+  brandingState.previewUrl = URL.createObjectURL(file);
+  if (typeof renderAdminBrandingEditor === "function") {
+    renderAdminBrandingEditor();
+  }
+}
+
+function createAdminMultipartRequestController(externalSignal, timeoutMs) {
+  if (typeof createRequestController === "function") {
+    return createRequestController(externalSignal, timeoutMs);
+  }
+
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeoutId = null;
+  const onExternalAbort = () => controller.abort(externalSignal?.reason);
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      onExternalAbort();
+    } else {
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+    }
+  }
+  if (timeoutMs > 0) {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  }
+  return {
+    signal: controller.signal,
+    didTimeout: () => timedOut,
+    cleanup() {
+      if (timeoutId) clearTimeout(timeoutId);
+      externalSignal?.removeEventListener?.("abort", onExternalAbort);
+    },
+  };
+}
+
+async function requestAdminMultipartJson(url, formData, options = {}) {
+  const defaultTimeoutMs = typeof ADMIN_REQUEST_TIMEOUT_MS === "number"
+    ? ADMIN_REQUEST_TIMEOUT_MS
+    : 10000;
+  const effectiveTimeoutMs = Number(options.timeoutMs || options.timeout || defaultTimeoutMs);
+  const requestController = createAdminMultipartRequestController(options.signal, effectiveTimeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: getAdminAuthHeaders(),
+      credentials: "same-origin",
+      body: formData,
+      signal: requestController.signal,
+    });
+    if (!response.ok) {
+      await throwAdminResponseError(response, "No fue posible guardar el logo.");
+    }
+    return response.json().catch(() => ({}));
+  } catch (error) {
+    const normalizedError = requestController.didTimeout()
+      ? typeof createTimeoutError === "function"
+        ? createTimeoutError(effectiveTimeoutMs)
+        : Object.assign(new Error("Tiempo de espera agotado al guardar el logo."), { name: "AbortError" })
+      : error;
+    if (
+      typeof isNetworkError === "function"
+      && isNetworkError(normalizedError)
+      && typeof markConnectionOffline === "function"
+    ) {
+      markConnectionOffline();
+    }
+    throw normalizedError;
+  } finally {
+    requestController.cleanup();
+  }
+}
+
+function applyAdminBrandingResponse(response) {
+  const responseProfile = response?.businessProfile || response?.profile || response?.snapshot?.profile;
+  if (responseProfile && typeof responseProfile === "object") {
+    state.profile = responseProfile;
+    return;
+  }
+  if (response?.branding && typeof response.branding === "object") {
+    state.profile = {
+      ...state.profile,
+      branding: response.branding,
+    };
+  }
+}
+
+async function uploadAdminBrandingLogo() {
+  if (!await ensureAdminActionAccess("business_config", "La configuracion del negocio esta bloqueada por el owner.")) {
+    return;
+  }
+  const brandingState = getAdminBrandingLogoState();
+  if (!brandingState.file || brandingState.uploading || brandingState.removing) {
+    if (!brandingState.file) {
+      showToast("Selecciona primero un logo PNG o JPEG.", "error");
+    }
+    return;
+  }
+
+  beginAdminConfigMutation();
+  brandingState.uploading = true;
+  renderAdminBrandingEditor();
+  try {
+    const formData = new FormData();
+    formData.append("logo", brandingState.file, brandingState.file.name);
+    const response = await requestAdminMultipartJson("/api/admin/branding/logo", formData);
+    applyAdminBrandingResponse(response);
+    resetAdminBrandingLogoDraft({ render: false });
+    applyBusinessBranding();
+    renderAdminBrandingEditor();
+    showToast("Logo actualizado.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    brandingState.uploading = false;
+    renderAdminBrandingEditor();
+  }
+}
+
+async function removeAdminBrandingLogo() {
+  if (!await ensureAdminActionAccess("business_config", "La configuracion del negocio esta bloqueada por el owner.")) {
+    return;
+  }
+  const brandingState = getAdminBrandingLogoState();
+  const uploadedLogoUrl = String(state.profile?.branding?.uploadedLogo?.url || "").trim();
+  if (!uploadedLogoUrl || brandingState.uploading || brandingState.removing) {
+    return;
+  }
+  if (!window.confirm("Quitar el logo personalizado del negocio?")) {
+    return;
+  }
+
+  beginAdminConfigMutation();
+  brandingState.removing = true;
+  renderAdminBrandingEditor();
+  try {
+    const response = await requestAdminJson("/api/admin/branding/logo", { method: "DELETE" });
+    applyAdminBrandingResponse(response);
+    resetAdminBrandingLogoDraft({ render: false });
+    applyBusinessBranding();
+    renderAdminBrandingEditor();
+    showToast("Logo personalizado eliminado.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    brandingState.removing = false;
+    renderAdminBrandingEditor();
+  }
+}
+
 async function downloadDatabase() {
   if (!await ensureAdminActionAccess("backups", "La descarga de base de datos esta bloqueada por el owner.")) {
     return;
@@ -4001,27 +4365,29 @@ function resetAdminProductForm() {
 }
 
 async function submitAdminConfig() {
-  const payload = {
-    settings: {
-      "sales.allow_negative_stock": refs.configAllowNegativeStock.checked ? "true" : "false",
-    },
-    businessProfile: {
-      businessName: refs.configBusinessName?.value.trim(),
-      shortName: refs.configShortName?.value.trim(),
-      slug: refs.configSlug?.value.trim(),
-      timezone: refs.configTimezone?.value.trim(),
-      locale: refs.configLocale?.value.trim(),
-      currencyCode: refs.configCurrencyCode?.value.trim(),
-      ticketPrefix: refs.configTicketPrefix?.value.trim(),
-    },
-    enabledModules: getAdminSelectedModules(),
-  };
+  if (state.admin.configSaving) {
+    return;
+  }
+  const savedRevisions = captureAdminConfigDirtyRevisions();
+  const payload = buildAdminConfigPatchPayload(savedRevisions);
+  if (!Object.keys(payload).length) {
+    showToast("No hay cambios de configuracion por guardar.", "info");
+    return;
+  }
 
+  const mutationGeneration = beginAdminConfigMutation();
+  state.admin.configSaving = true;
+  if (typeof renderAdminConfigPanel === "function") {
+    renderAdminConfigPanel();
+  }
   try {
     const response = await requestAdminJson("/api/admin/settings", {
       method: "PATCH",
       body: JSON.stringify(payload),
     });
+    if (mutationGeneration !== state.admin.configMutationGeneration) {
+      return { ignored: true };
+    }
     state.profile = response.businessProfile || state.profile;
     state.enabledModules = Array.isArray(response.enabledModules) ? response.enabledModules : state.enabledModules;
     state.adminCapabilities = Array.isArray(response.adminCapabilities) ? response.adminCapabilities : state.adminCapabilities;
@@ -4034,6 +4400,7 @@ async function submitAdminConfig() {
     state.productAttributeDefinitions = Array.isArray(response.productAttributeDefinitions)
       ? response.productAttributeDefinitions.filter((definition) => definition.active !== false)
       : state.productAttributeDefinitions;
+    clearSavedAdminConfigRevisions(savedRevisions);
     applyBusinessBranding();
     updateModuleVisibility();
     if (typeof syncAdminProductCatalogs === "function") {
@@ -4044,7 +4411,14 @@ async function submitAdminConfig() {
     }
     showToast("Configuraciones guardadas.", "success");
   } catch (error) {
-    showToast(error.message, "error");
+    if (mutationGeneration === state.admin.configMutationGeneration) {
+      showToast(error.message, "error");
+    }
+  } finally {
+    state.admin.configSaving = false;
+    if (typeof renderAdminConfigPanel === "function") {
+      renderAdminConfigPanel();
+    }
   }
 }
 
@@ -4059,6 +4433,7 @@ async function applyAdminBusinessTemplate() {
     return;
   }
 
+  beginAdminConfigMutation();
   try {
     const response = await requestAdminJson(`/api/admin/templates/${encodeURIComponent(templateKey)}/apply`, {
       method: "POST",
@@ -4078,6 +4453,7 @@ async function applyAdminBusinessTemplate() {
     state.productAttributeDefinitions = Array.isArray(response.productAttributeDefinitions)
       ? response.productAttributeDefinitions.filter((definition) => definition.active !== false)
       : state.productAttributeDefinitions;
+    resetAdminConfigDirtyRevisions();
     resetAdminProductForm();
     await refreshCurrentSnapshot();
     await refreshAdminWorkspace({ ...getAdminWorkspaceFullOptions("all", true), force: true });
@@ -4098,6 +4474,7 @@ async function createAdminCategory() {
     return;
   }
 
+  beginAdminConfigMutation();
   try {
     await requestAdminJson("/api/admin/categories", {
       method: "POST",
@@ -4115,6 +4492,7 @@ async function createAdminCategory() {
 }
 
 async function deactivateAdminCategory(categoryId) {
+  beginAdminConfigMutation();
   try {
     await requestAdminJson(`/api/admin/categories/${categoryId}`, { method: "DELETE" });
     await loadAdminConfig();
@@ -4139,6 +4517,7 @@ async function createAdminUnit() {
     return;
   }
 
+  beginAdminConfigMutation();
   try {
     await requestAdminJson("/api/admin/units", {
       method: "POST",
@@ -4158,6 +4537,7 @@ async function createAdminUnit() {
 }
 
 async function deactivateAdminUnit(unitId) {
+  beginAdminConfigMutation();
   try {
     await requestAdminJson(`/api/admin/units/${unitId}`, { method: "DELETE" });
     await loadAdminConfig();
@@ -4186,6 +4566,7 @@ async function createAdminProductAttribute() {
     return;
   }
 
+  beginAdminConfigMutation();
   try {
     await requestAdminJson("/api/admin/product-attributes", {
       method: "POST",
@@ -4204,6 +4585,7 @@ async function createAdminProductAttribute() {
 }
 
 async function deactivateAdminProductAttribute(attributeId) {
+  beginAdminConfigMutation();
   try {
     await requestAdminJson(`/api/admin/product-attributes/${attributeId}`, { method: "DELETE" });
     await loadAdminConfig();

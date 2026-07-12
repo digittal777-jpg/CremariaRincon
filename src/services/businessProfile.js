@@ -581,7 +581,10 @@ function applyBusinessTemplate(template, options = {}) {
     visibleTexts: template.visibleTexts || {},
     modules: Array.isArray(template.modules) ? template.modules : [],
   };
-  updateBusinessProfile(profilePayload);
+  db.transaction(() => {
+    db.prepare("DELETE FROM business_branding_logo WHERE id = 1").run();
+    updateBusinessProfile(profilePayload);
+  })();
 
   if (Array.isArray(template.categories)) {
     db.prepare("DELETE FROM product_categories").run();

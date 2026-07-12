@@ -229,6 +229,22 @@ const state = {
       periodClosures: 0,
     },
     configLoading: false,
+    configSaving: false,
+    configDirty: false,
+    configEditRevision: 0,
+    configMutationGeneration: 0,
+    configLoadRequestId: 0,
+    configDirtyRevisions: {
+      businessProfile: {},
+      settings: {},
+      enabledModules: 0,
+    },
+    brandingLogo: {
+      file: null,
+      previewUrl: "",
+      uploading: false,
+      removing: false,
+    },
   },
   adminAuth: {
     mode: "login",

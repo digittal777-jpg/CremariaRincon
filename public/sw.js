@@ -1,5 +1,5 @@
-const STATIC_CACHE_NAME = "retail-base-static-v15";
-const API_CACHE_NAME = "retail-base-api-v15";
+const STATIC_CACHE_NAME = "retail-base-static-v16";
+const API_CACHE_NAME = "retail-base-api-v16";
 const APP_SHELL = [
   "/",
   "/administracion",
@@ -56,6 +56,11 @@ self.addEventListener("fetch", (event) => {
 
   if (isBootstrapApiRequest(requestUrl)) {
     event.respondWith(handleBootstrapRequest(event.request));
+    return;
+  }
+
+  if (isVersionedBrandingLogoRequest(requestUrl)) {
+    event.respondWith(handleStaticRequest(event.request));
     return;
   }
 
@@ -136,6 +141,11 @@ async function handleNavigationRequest(request) {
 
 function isBootstrapApiRequest(requestUrl) {
   return requestUrl.origin === self.location.origin && requestUrl.pathname === "/api/bootstrap";
+}
+
+function isVersionedBrandingLogoRequest(requestUrl) {
+  return requestUrl.origin === self.location.origin
+    && /^\/api\/branding\/logo\/[a-f0-9]{64}$/.test(requestUrl.pathname);
 }
 
 function isNetworkOnlyApiRequest(requestUrl) {
