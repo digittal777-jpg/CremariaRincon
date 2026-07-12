@@ -695,8 +695,19 @@ function buildHttpsRedirectUrl(request) {
   return new URL(request.originalUrl || request.url || "/", publicOrigin).toString();
 }
 
+function isRailwayHealthcheckRequest(request) {
+  const hostname = String(request.headers.host || "")
+    .trim()
+    .toLowerCase()
+    .replace(/:\d+$/, "");
+  return ["GET", "HEAD"].includes(request.method)
+    && request.path === "/api/health"
+    && hostname === "healthcheck.railway.app";
+}
+
 function shouldRejectInsecureRequest(request) {
   return POS_FORCE_HTTPS
+    && !isRailwayHealthcheckRequest(request)
     && !isHttpsRequest(request)
     && !isLoopbackRequest(request);
 }

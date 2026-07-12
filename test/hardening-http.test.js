@@ -350,6 +350,24 @@ test("POS blocks non-local HTTP APIs when HTTPS is forced", async (t) => {
   const remoteHost = getNonLoopbackIpv4();
   assert.ok(remoteHost, "No encontre una IPv4 local para probar trafico HTTP no-loopback.");
 
+  const railwayHealthcheck = await rawHttpRequest(server.port, "/api/health", {
+    host: remoteHost,
+    headers: {
+      Host: "healthcheck.railway.app",
+    },
+  });
+  assert.equal(railwayHealthcheck.status, 200);
+  assert.equal(railwayHealthcheck.body.ok, true);
+
+  const railwayProtectedApi = await rawHttpRequest(server.port, "/api/admin/auth/status", {
+    host: remoteHost,
+    headers: {
+      Host: "healthcheck.railway.app",
+    },
+  });
+  assert.equal(railwayProtectedApi.status, 426);
+  assert.match(railwayProtectedApi.body.message, /HTTPS requerido/i);
+
   const insecureApi = await rawHttpRequest(server.port, "/api/health", {
     host: remoteHost,
     headers: {
