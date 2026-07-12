@@ -832,10 +832,17 @@ async function syncControlPlaneConfigAndBroadcast(reason = "poll") {
 }
 
 function startControlPlanePolling() {
-  if (CONTROL_CONFIG_POLL_MS <= 0 || !services.getControlPlaneStatus().usable) {
+  if (!services.getControlPlaneStatus().usable) {
     return;
   }
-  if (controlPlaneConfigPollTimer) {
+  syncControlPlaneRuntimeConfig("startup").catch((error) => {
+    console.warn(`[control-plane] No pude sincronizar variables runtime iniciales: ${error.message}`);
+  });
+  syncControlPlaneConfigAndBroadcast("startup").catch((error) => {
+    console.warn(`[control-plane] No pude sincronizar configuracion inicial: ${error.message}`);
+  });
+
+  if (CONTROL_CONFIG_POLL_MS <= 0 || controlPlaneConfigPollTimer) {
     return;
   }
 
@@ -850,12 +857,6 @@ function startControlPlanePolling() {
   if (typeof controlPlaneConfigPollTimer.unref === "function") {
     controlPlaneConfigPollTimer.unref();
   }
-  syncControlPlaneRuntimeConfig("startup").catch((error) => {
-    console.warn(`[control-plane] No pude sincronizar variables runtime iniciales: ${error.message}`);
-  });
-  syncControlPlaneConfigAndBroadcast("startup").catch((error) => {
-    console.warn(`[control-plane] No pude sincronizar configuracion inicial: ${error.message}`);
-  });
 }
 
 function broadcastMerchandiseRequestUpdate(requestRecord) {

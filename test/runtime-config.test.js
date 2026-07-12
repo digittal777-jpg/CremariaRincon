@@ -81,6 +81,42 @@ test("config reads POS runtime values from a private local file", (t) => {
   assert.ok(config.RUNTIME_CONFIG_STATUS.secretKeys.includes("CONTROL_CLIENT_SECRET"));
 });
 
+test("Railway pairing variables override stale values in the private runtime file", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-runtime-pairing-env-"));
+  const configPath = path.join(tempDir, "runtime.json");
+  const previousEnv = {
+    POS_CONFIG_PATH: process.env.POS_CONFIG_PATH,
+    CONTROL_API_URL: process.env.CONTROL_API_URL,
+    CONTROL_CLIENT_SLUG: process.env.CONTROL_CLIENT_SLUG,
+    CONTROL_CLIENT_SECRET: process.env.CONTROL_CLIENT_SECRET,
+  };
+
+  t.after(() => {
+    restoreEnv(previousEnv);
+    clearSrcRequireCache();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  fs.writeFileSync(configPath, JSON.stringify({
+    env: {
+      CONTROL_API_URL: "http://127.0.0.1:3200",
+      CONTROL_CLIENT_SLUG: "cliente-antiguo",
+      CONTROL_CLIENT_SECRET: "pos_old_secret",
+    },
+  }), "utf8");
+  process.env.POS_CONFIG_PATH = configPath;
+  process.env.CONTROL_API_URL = "https://owner-control.example";
+  process.env.CONTROL_CLIENT_SLUG = "cremeria-rincon";
+  process.env.CONTROL_CLIENT_SECRET = "pos_current_secret";
+  clearSrcRequireCache();
+
+  const config = require("../src/config");
+
+  assert.equal(config.CONTROL_API_URL, "https://owner-control.example");
+  assert.equal(config.CONTROL_CLIENT_SLUG, "cremeria-rincon");
+  assert.equal(config.CONTROL_CLIENT_SECRET, "pos_current_secret");
+});
+
 test("owner runtime config save preserves stored secrets when fields stay blank", (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-runtime-save-"));
   const configPath = path.join(tempDir, "runtime.json");

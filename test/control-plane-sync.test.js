@@ -571,6 +571,90 @@ test("POS completes signed owner-control roundtrip for subscription config runti
   assert.equal(centralDetail.body.healthReports.length, 1);
 });
 
+test("POS performs initial control-plane sync when background polling is disabled", async (t) => {
+  const ownerBaseUrl = await startOwnerControlServer(t, {
+    requireClientSignature: true,
+  });
+  const slug = "startup-sync";
+
+  const createResponse = await json(ownerBaseUrl, "/api/owner/clients", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Owner-Control-Token": "owner-sync-token",
+    },
+    body: JSON.stringify({
+      slug,
+      businessName: "Startup Sync",
+      baseUrl: "http://localhost:3100",
+      planCode: "beta",
+      monthlyAmount: 0,
+    }),
+  });
+  assert.equal(createResponse.status, 201);
+
+  const configResponse = await json(ownerBaseUrl, `/api/owner/clients/${slug}/config`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Owner-Control-Token": "owner-sync-token",
+    },
+    body: JSON.stringify({
+      enabledModules: ["weighted_audit"],
+      adminCapabilities: ["daily_flow"],
+    }),
+  });
+  assert.equal(configResponse.status, 200);
+
+  const runtimeResponse = await json(ownerBaseUrl, `/api/owner/clients/${slug}/runtime-config`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Owner-Control-Token": "owner-sync-token",
+    },
+    body: JSON.stringify({
+      values: {
+        POS_PUBLIC_ORIGIN: "https://startup-sync.example",
+      },
+    }),
+  });
+  assert.equal(runtimeResponse.status, 200);
+
+  const posServer = await startPosServer(t, {
+    CONTROL_API_URL: ownerBaseUrl,
+    CONTROL_CLIENT_SLUG: slug,
+    CONTROL_CLIENT_SECRET: createResponse.body.apiKey,
+    CONTROL_CONFIG_POLL_MS: "0",
+  });
+
+  let centralDetail = null;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    centralDetail = await json(ownerBaseUrl, `/api/owner/clients/${slug}`, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-Owner-Control-Token": "owner-sync-token",
+      },
+    });
+    if (
+      centralDetail.body?.client?.config?.sync?.status === "applied"
+      && centralDetail.body?.client?.runtimeConfig?.sync?.status === "applied"
+    ) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  assert.equal(centralDetail.status, 200);
+  assert.equal(centralDetail.body.client.config.sync.status, "applied");
+  assert.equal(centralDetail.body.client.config.sync.inSync, true);
+  assert.equal(centralDetail.body.client.runtimeConfig.sync.status, "applied");
+  assert.equal(centralDetail.body.client.runtimeConfig.sync.inSync, true);
+
+  const savedRuntime = JSON.parse(fs.readFileSync(posServer.runtimePath, "utf8"));
+  assert.equal(savedRuntime.env.POS_PUBLIC_ORIGIN, "https://startup-sync.example");
+  assert.equal(Object.prototype.hasOwnProperty.call(savedRuntime.env, "CONTROL_CLIENT_SECRET"), false);
+});
+
 test("POS admin HTTP endpoints sync subscription config runtime and health with owner-control", async (t) => {
   const ownerBaseUrl = await startOwnerControlServer(t, {
     requireClientSignature: true,
@@ -707,7 +791,6 @@ test("POS admin HTTP endpoints sync subscription config runtime and health with 
   });
   assert.equal(runtimeSync.status, 200);
   assert.equal(runtimeSync.body.runtimeConfig.saved, true);
-  assert.equal(runtimeSync.body.runtimeConfig.updatedKeys.includes("POS_PUBLIC_ORIGIN"), true);
   assert.equal(runtimeSync.body.runtimeConfigSyncReport.runtimeConfigSync.status, "applied");
   assert.equal(runtimeSync.body.runtimeConfigSyncReport.runtimeConfigSync.inSync, true);
   assert.equal(runtimeSync.body.healthReport.remoteClient.slug, "cremeria-rincon");

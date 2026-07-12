@@ -219,9 +219,9 @@ const CONTROL_REQUIRE_HTTPS = CONTROL_REQUIRE_HTTPS_SETTING === "false"
   : CONTROL_REQUIRE_HTTPS_SETTING === "true"
     ? true
     : POS_FORCE_HTTPS || RUNTIME_NODE_ENV === "production";
-const CONTROL_API_URL = String(readRuntimeConfigValue("CONTROL_API_URL") || "").trim().replace(/\/+$/g, "");
-const CONTROL_CLIENT_SLUG = String(readRuntimeConfigValue("CONTROL_CLIENT_SLUG") || "").trim();
-const CONTROL_CLIENT_SECRET = String(readRuntimeConfigValue("CONTROL_CLIENT_SECRET") || "").trim();
+const CONTROL_API_URL = String(readRuntimeConfigValue("CONTROL_API_URL", "", { preferEnv: true }) || "").trim().replace(/\/+$/g, "");
+const CONTROL_CLIENT_SLUG = String(readRuntimeConfigValue("CONTROL_CLIENT_SLUG", "", { preferEnv: true }) || "").trim();
+const CONTROL_CLIENT_SECRET = String(readRuntimeConfigValue("CONTROL_CLIENT_SECRET", "", { preferEnv: true }) || "").trim();
 const RAILWAY_COST_SAVER_MODE = readBooleanRuntimeFlag("RAILWAY_COST_SAVER_MODE", isRailwayRuntime(), { preferEnv: true });
 const CONTROL_CONFIG_POLL_DEFAULT_MS = RAILWAY_COST_SAVER_MODE ? 0 : 30000;
 const CONTROL_CONFIG_SYNC_MAX_AGE_DEFAULT_MS = RAILWAY_COST_SAVER_MODE ? 300000 : 15000;
