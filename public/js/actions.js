@@ -2457,6 +2457,17 @@ function stopAdminMetricsPolling() {
   }
 }
 
+function handleAdminMetricsVisibilityChange() {
+  if (typeof document !== "undefined" && document.hidden) {
+    stopAdminMetricsPolling();
+    return;
+  }
+
+  if (refs.adminModal?.classList.contains("open")) {
+    startAdminMetricsPolling();
+  }
+}
+
 function startAdminMetricsPolling() {
   stopAdminMetricsPolling();
   if (!hasAdminCapability("support_tools")) {
@@ -2464,10 +2475,17 @@ function startAdminMetricsPolling() {
     renderAdminModal();
     return;
   }
+  if (typeof document !== "undefined" && document.hidden) {
+    return;
+  }
   void loadAdminMetrics();
   state.admin.pollTimerId = window.setInterval(() => {
     void loadAdminMetrics();
   }, ADMIN_METRICS_POLL_MS);
+}
+
+if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+  document.addEventListener("visibilitychange", handleAdminMetricsVisibilityChange);
 }
 
 function setAdminInventoryMode(mode, options = {}) {
