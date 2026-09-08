@@ -130,7 +130,7 @@ function main() {
         cwd: ROOT_DIR,
         env: {
           ...process.env,
-          POS_DB_PATH: path.join(targetDir, "data", "retail-base-pos.sqlite"),
+          POS_DB_PATH: path.join(targetDir, "data", "merxalia-pos.sqlite"),
         },
         stdio: "inherit",
       },

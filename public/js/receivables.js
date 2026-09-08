@@ -624,6 +624,170 @@ function buildReceivablesStatusMarkup() {
   `;
 }
 
+function formatReceivableStatementDate(value) {
+  const date = value ? new Date(value) : new Date();
+  return Number.isNaN(date.getTime()) ? "" : dateTimeFormatter.format(date);
+}
+
+function buildReceivableStatementText(customer = state.receivables.detailCustomer) {
+  if (!customer) {
+    return "";
+  }
+
+  const sales = Array.isArray(customer.sales) ? customer.sales : [];
+  const lines = [
+    `Estado de cuenta - ${getStoreName()}`,
+    `Cliente: ${customer.customerName || "Cliente"}`,
+    `Sucursal: ${customer.branch || getReceivablesBranch()}`,
+    `Emitido: ${formatReceivableStatementDate(new Date())}`,
+    "",
+    `Pendiente: ${formatCurrency(customer.pendingAmount || 0)}`,
+    `Pagado acumulado: ${formatCurrency(customer.paidAmount || 0)}`,
+    `Tickets abiertos: ${customer.openSalesCount || sales.length || 0}`,
+  ];
+
+  if (customer.localSaleCount > 0 || customer.localPaymentCount > 0 || !state.online) {
+    const localNotes = [];
+    if (!state.online) {
+      localNotes.push("generado con datos guardados en este dispositivo");
+    }
+    if (customer.localSaleCount > 0) {
+      localNotes.push(`${customer.localSaleCount} ticket(s) offline`);
+    }
+    if (customer.localPaymentCount > 0) {
+      localNotes.push(`${customer.localPaymentCount} abono(s) pendiente(s) de sincronizar`);
+    }
+    lines.push(`Nota: ${localNotes.join("; ")}.`);
+  }
+
+  if (sales.length > 0) {
+    lines.push("", "Detalle:");
+  }
+
+  sales.forEach((sale) => {
+    const saleDate = formatReceivableStatementDate(sale.createdAt);
+    const saleTags = [];
+    if (sale.isLocalOnly) {
+      saleTags.push("offline");
+    }
+    if (sale.pendingSyncPaymentsCount > 0) {
+      saleTags.push(`${sale.pendingSyncPaymentsCount} abono(s) pendiente(s)`);
+    }
+
+    lines.push(
+      `- ${sale.ticketNumber || "Ticket"}${saleDate ? ` | ${saleDate}` : ""}`,
+      `  Total ${formatCurrency(sale.total || 0)} | Pagado ${formatCurrency(sale.paidAmount || 0)} | Pendiente ${formatCurrency(sale.pendingAmount || 0)}`,
+    );
+
+    if (saleTags.length > 0) {
+      lines.push(`  Estado: ${saleTags.join(", ")}`);
+    }
+    if (sale.notes) {
+      lines.push(`  Nota: ${sale.notes}`);
+    }
+    if (Array.isArray(sale.payments) && sale.payments.length > 0) {
+      sale.payments.forEach((payment) => {
+        const paymentDate = payment.pendingSync ? "abono offline" : formatReceivableStatementDate(payment.createdAt);
+        lines.push(
+          `  Abono: ${paymentDate || "sin fecha"} | ${formatCurrency(payment.amount || 0)} | ${payment.paymentMethod || "Efectivo"}${payment.pendingSync ? " | pendiente" : ""}`,
+        );
+      });
+    }
+  });
+
+  lines.push("", `Total pendiente: ${formatCurrency(customer.pendingAmount || 0)}`);
+  return lines.join("\n");
+}
+
+function buildReceivableStatementPrintHtml(customer = state.receivables.detailCustomer) {
+  const statementText = buildReceivableStatementText(customer);
+  const customerName = customer?.customerName || "Cliente";
+
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Estado de cuenta - ${escapeHtml(customerName)}</title>
+  <style>
+    @page { size: 80mm auto; margin: 4mm; }
+    * { box-sizing: border-box; }
+    body {
+      width: 72mm;
+      margin: 0;
+      color: #111;
+      font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    @media print {
+      button { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <pre>${escapeHtml(statementText)}</pre>
+  <script>
+    window.addEventListener("load", () => {
+      window.focus();
+      window.print();
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function printReceivableStatement(customer = state.receivables.detailCustomer) {
+  if (!customer) {
+    showToast("Selecciona un cliente para imprimir su estado de cuenta.", "error");
+    return false;
+  }
+
+  if (typeof window === "undefined" || typeof window.open !== "function") {
+    showToast("Este navegador no permite abrir la impresion.", "error");
+    return false;
+  }
+
+  const printWindow = window.open("", "_blank", "width=420,height=720");
+  if (!printWindow || !printWindow.document) {
+    showToast("Permite ventanas emergentes para imprimir el estado de cuenta.", "error");
+    return false;
+  }
+
+  printWindow.document.open();
+  printWindow.document.write(buildReceivableStatementPrintHtml(customer));
+  printWindow.document.close();
+  showToast("Estado de cuenta listo para imprimir.", "success");
+  return true;
+}
+
+function shareReceivableStatementViaWhatsApp(customer = state.receivables.detailCustomer) {
+  if (!customer) {
+    showToast("Selecciona un cliente para compartir su estado de cuenta.", "error");
+    return false;
+  }
+
+  const statementText = buildReceivableStatementText(customer);
+  const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(statementText)}`;
+  if (typeof window !== "undefined" && typeof window.open === "function") {
+    window.open(whatsappUrl, "_blank", "noopener,noreferrer");
+    showToast("Estado de cuenta abierto para enviar por WhatsApp.", "success");
+    return true;
+  }
+
+  if (typeof window !== "undefined" && window.location) {
+    window.location.href = whatsappUrl;
+    return true;
+  }
+
+  showToast("No pude abrir WhatsApp en este navegador.", "error");
+  return false;
+}
+
 function resetReceivablePaymentDraft() {
   state.receivables.paymentLoading = false;
   state.receivables.paymentSaleId = null;
@@ -786,6 +950,14 @@ function renderReceivablesModal() {
     <article class="receivables-summary-card">
       <h4>${escapeHtml(customer.customerName)}</h4>
       ${summaryMarkup}
+      <div class="receivables-statement-actions">
+        <button class="secondary-button compact-button" data-action="print-receivable-statement" type="button">
+          Imprimir estado
+        </button>
+        <button class="ghost-button compact-button" data-action="share-receivable-statement" type="button">
+          WhatsApp
+        </button>
+      </div>
       <div class="admin-record-list">
         ${(customer.sales || [])
           .map((sale) => `

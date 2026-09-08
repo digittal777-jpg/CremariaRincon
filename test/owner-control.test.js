@@ -1169,6 +1169,7 @@ test("owner-control separates owner billing from client POS sync", async (t) => 
   const rotated = await json(server.baseUrl, "/api/owner/clients/cremeria-rincon/rotate-key", {
     method: "POST",
     headers: ownerHeaders(),
+    body: JSON.stringify({ graceMinutes: 0 }),
   });
   assert.equal(rotated.status, 200);
   assert.match(rotated.body.apiKey, /^pos_/);

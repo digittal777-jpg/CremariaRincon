@@ -1,0 +1,52 @@
+{
+  "description": "Plantilla base para ferreteria simple, herramienta, fijacion y material electrico.",
+  "businessName": "Ferreteria Base",
+  "shortName": "Ferreteria POS",
+  "slug": "ferreteria-base",
+  "currencyCode": "MXN",
+  "locale": "es-MX",
+  "timezone": "America/Mexico_City",
+  "ticketPrefix": "FER",
+  "modules": ["merchandise_requests", "weighted_audit"],
+  "branding": {
+    "logo": "",
+    "logo192": "",
+    "logo512": ""
+  },
+  "visibleTexts": {
+    "eyebrow": "Caja para ferreteria",
+    "heroCopy": "Control por pieza, metro, kilo, paquete y rollo para mostrador ferretero."
+  },
+  "branches": [
+    {
+      "code": "principal",
+      "name": "Sucursal principal",
+      "timezone": "America/Mexico_City",
+      "active": true,
+      "sortOrder": 0
+    }
+  ],
+  "categories": [
+    { "code": "herramienta", "label": "Herramienta", "sortOrder": 0 },
+    { "code": "fijacion", "label": "Tornilleria y fijacion", "sortOrder": 1 },
+    { "code": "electricidad", "label": "Electricidad", "sortOrder": 2 },
+    { "code": "plomeria", "label": "Plomeria", "sortOrder": 3 },
+    { "code": "pintura", "label": "Pintura", "sortOrder": 4 },
+    { "code": "seguridad", "label": "Seguridad", "sortOrder": 5 },
+    { "code": "general", "label": "General", "sortOrder": 6 }
+  ],
+  "units": [
+    { "code": "pza", "label": "Pza", "allowDecimals": false, "step": 1, "sortOrder": 0 },
+    { "code": "metro", "label": "Metro", "allowDecimals": true, "step": 0.5, "sortOrder": 1 },
+    { "code": "kg", "label": "Kg", "allowDecimals": true, "step": 0.25, "sortOrder": 2 },
+    { "code": "lt", "label": "Lt", "allowDecimals": true, "step": 0.25, "sortOrder": 3 },
+    { "code": "paq", "label": "Paquete", "allowDecimals": false, "step": 1, "sortOrder": 4 },
+    { "code": "caja", "label": "Caja", "allowDecimals": false, "step": 1, "sortOrder": 5 },
+    { "code": "rollo", "label": "Rollo", "allowDecimals": false, "step": 1, "sortOrder": 6 }
+  ],
+  "productAttributes": [
+    { "key": "marca", "label": "Marca", "valueType": "text", "required": false, "sortOrder": 0 },
+    { "key": "medida", "label": "Medida", "valueType": "text", "required": false, "sortOrder": 1 },
+    { "key": "material", "label": "Material", "valueType": "text", "required": false, "sortOrder": 2 }
+  ]
+}

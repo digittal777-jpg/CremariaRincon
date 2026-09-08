@@ -1,0 +1,51 @@
+{
+  "description": "Plantilla base para tienda de limpieza, hogar, jarcieria y desechables.",
+  "businessName": "Limpieza Base",
+  "shortName": "Limpieza POS",
+  "slug": "limpieza-base",
+  "currencyCode": "MXN",
+  "locale": "es-MX",
+  "timezone": "America/Mexico_City",
+  "ticketPrefix": "LIM",
+  "modules": ["merchandise_requests"],
+  "branding": {
+    "logo": "",
+    "logo192": "",
+    "logo512": ""
+  },
+  "visibleTexts": {
+    "eyebrow": "Control para limpieza",
+    "heroCopy": "Inventario por pieza, litro, paquete y caja para limpieza, hogar y jarcieria."
+  },
+  "branches": [
+    {
+      "code": "principal",
+      "name": "Sucursal principal",
+      "timezone": "America/Mexico_City",
+      "active": true,
+      "sortOrder": 0
+    }
+  ],
+  "categories": [
+    { "code": "quimicos", "label": "Quimicos", "sortOrder": 0 },
+    { "code": "jarceria", "label": "Jarcieria", "sortOrder": 1 },
+    { "code": "papel", "label": "Papel e higiene", "sortOrder": 2 },
+    { "code": "desechables", "label": "Desechables", "sortOrder": 3 },
+    { "code": "hogar", "label": "Hogar", "sortOrder": 4 },
+    { "code": "general", "label": "General", "sortOrder": 5 }
+  ],
+  "units": [
+    { "code": "pza", "label": "Pza", "allowDecimals": false, "step": 1, "sortOrder": 0 },
+    { "code": "lt", "label": "Lt", "allowDecimals": true, "step": 0.25, "sortOrder": 1 },
+    { "code": "kg", "label": "Kg", "allowDecimals": true, "step": 0.25, "sortOrder": 2 },
+    { "code": "metro", "label": "Metro", "allowDecimals": true, "step": 0.5, "sortOrder": 3 },
+    { "code": "paq", "label": "Paquete", "allowDecimals": false, "step": 1, "sortOrder": 4 },
+    { "code": "caja", "label": "Caja", "allowDecimals": false, "step": 1, "sortOrder": 5 },
+    { "code": "rollo", "label": "Rollo", "allowDecimals": false, "step": 1, "sortOrder": 6 }
+  ],
+  "productAttributes": [
+    { "key": "marca", "label": "Marca", "valueType": "text", "required": false, "sortOrder": 0 },
+    { "key": "aroma", "label": "Aroma", "valueType": "text", "required": false, "sortOrder": 1 },
+    { "key": "contenido", "label": "Contenido", "valueType": "text", "required": false, "sortOrder": 2 }
+  ]
+}

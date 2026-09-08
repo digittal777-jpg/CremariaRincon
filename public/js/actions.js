@@ -13,6 +13,8 @@ let pendingAdminWorkspaceOptions = null;
 const ADMIN_WORKSPACE_TTLS_MS = {
   snapshot: 5000,
   editorData: 8000,
+  receivableDuplicates: 12000,
+  productDuplicates: 12000,
   auditLogs: 60000,
   branches: 60000,
   cashiers: 60000,
@@ -25,6 +27,8 @@ const ADMIN_METRICS_POLL_MS = 60000;
 const ADMIN_WORKSPACE_SECTION_KEYS = [
   "snapshot",
   "editorData",
+  "receivableDuplicates",
+  "productDuplicates",
   "auditLogs",
   "branches",
   "cashiers",
@@ -49,8 +53,10 @@ const ADMIN_SECTION_WORKSPACE_OPTIONS = {
     snapshot: true,
   },
   operations: {
-    editorData: true,
-    requests: true,
+      editorData: true,
+      receivableDuplicates: true,
+      productDuplicates: true,
+      requests: true,
   },
   closures: {
     weightedAudit: true,
@@ -71,6 +77,8 @@ function getAdminWorkspaceProfile(profile = "full") {
     return {
       snapshot: true,
       editorData: true,
+      receivableDuplicates: true,
+      productDuplicates: true,
       auditLogs: false,
       branches: false,
       cashiers: false,
@@ -84,6 +92,8 @@ function getAdminWorkspaceProfile(profile = "full") {
   return {
     snapshot: true,
     editorData: true,
+    receivableDuplicates: true,
+    productDuplicates: true,
     auditLogs: true,
     branches: true,
     cashiers: true,
@@ -92,6 +102,74 @@ function getAdminWorkspaceProfile(profile = "full") {
     weightedAudit: true,
     periodClosures: true,
   };
+}
+
+function buildSupportDiagnosticMessage() {
+  const branchLabel = typeof getBranchLabel === "function"
+    ? getBranchLabel(typeof getActiveCashierBranch === "function" ? getActiveCashierBranch() : state.store?.currentBranch)
+    : String(state.store?.currentBranchLabel || state.store?.currentBranch || "");
+  const role = state.cashier?.authenticated
+    ? "cajero"
+    : state.admin?.authenticated
+      ? "admin"
+      : state.owner?.authenticated
+        ? "owner"
+        : "sin sesion";
+  const pendingSummary = typeof getOfflineOperationStatusSummary === "function"
+    ? getOfflineOperationStatusSummary()
+    : null;
+  const pendingCount = Math.max(
+    0,
+    Number(pendingSummary?.outstanding || state.pendingQueue?.length || 0),
+  );
+  const reviewCount = Math.max(
+    0,
+    Number(pendingSummary?.requiresReview || 0),
+  );
+  const firstBlockedOperation = typeof getFirstBlockedPendingOperation === "function"
+    ? getFirstBlockedPendingOperation()
+    : null;
+  const lastError = String(firstBlockedOperation?.lastSyncError || "").trim();
+  const screen = typeof window !== "undefined" && window.location
+    ? `${window.location.pathname || "/"}${window.location.hash || ""}`
+    : "/";
+  const lines = [
+    `Negocio: ${state.profile?.businessName || "Merxalia POS"}`,
+    `Pantalla: ${screen}`,
+    `Rol: ${role}`,
+    `Sucursal: ${branchLabel || "sin lectura"}`,
+    `Conexion: ${state.online ? "online" : "offline"}`,
+    `Pendientes offline: ${pendingCount}`,
+    `Requieren revision: ${reviewCount}`,
+  ];
+  if (lastError) {
+    lines.push(`Ultimo bloqueo: ${lastError}`);
+  }
+  return lines.join("\n");
+}
+
+function buildSupportContactUrl(rawUrl) {
+  const supportUrl = String(rawUrl || "").trim();
+  if (!supportUrl) {
+    return "";
+  }
+  try {
+    const baseOrigin = typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "http://localhost";
+    const url = new URL(supportUrl, baseOrigin);
+    const host = url.hostname.toLowerCase();
+    const isWhatsApp = host === "wa.me"
+      || host.endsWith(".wa.me")
+      || host === "api.whatsapp.com"
+      || host.endsWith(".whatsapp.com");
+    if (isWhatsApp && !url.searchParams.has("text")) {
+      url.searchParams.set("text", buildSupportDiagnosticMessage());
+    }
+    return url.toString();
+  } catch (_error) {
+    return supportUrl;
+  }
 }
 
 function getAdminWorkspaceFullOptions(branch = getAdminBranch(), force = true) {
@@ -180,6 +258,7 @@ function getAdminWorkspaceBranchSwitchOptions(branch = getAdminBranch()) {
     force: true,
     snapshot: true,
     editorData: true,
+    receivableDuplicates: true,
     auditLogs: true,
     branches: false,
     cashiers: true,
@@ -214,6 +293,13 @@ function resetAdminSensitiveWorkspaceData() {
   state.admin.snapshot = null;
   state.admin.inventoryProducts = [];
   state.admin.inventoryComparison = null;
+  state.admin.inventoryPage = {
+    limit: 120,
+    offset: 0,
+    total: 0,
+    hasMore: false,
+    loading: false,
+  };
   state.admin.metrics = null;
   state.admin.profitability = null;
   state.admin.subscription = null;
@@ -228,6 +314,14 @@ function resetAdminSensitiveWorkspaceData() {
   state.admin.editorData.sales = [];
   state.admin.editorData.registerEvents = [];
   state.admin.editorData.inventoryMovements = [];
+  state.admin.receivableDuplicates = [];
+  state.admin.receivableDuplicateSearch = "";
+  state.admin.receivableDuplicatesLoading = false;
+  state.admin.receivableDuplicateMerging = false;
+  state.admin.productDuplicates = [];
+  state.admin.productDuplicateSearch = "";
+  state.admin.productDuplicatesLoading = false;
+  state.admin.productDuplicateMerging = false;
   state.admin.workspaceLoadedAt = {};
   state.admin.capabilitiesResolved = false;
   state.admin.metricsLoading = false;
@@ -307,6 +401,8 @@ function normalizeAdminWorkspaceOptions(options = {}) {
     ? {
         snapshot: false,
         editorData: false,
+        receivableDuplicates: false,
+        productDuplicates: false,
         auditLogs: false,
         branches: false,
         cashiers: false,
@@ -323,6 +419,12 @@ function normalizeAdminWorkspaceOptions(options = {}) {
     ignoreFresh: options.ignoreFresh === true,
     snapshot: options.snapshot === undefined ? profileDefaults.snapshot : options.snapshot !== false,
     editorData: options.editorData === undefined ? profileDefaults.editorData : options.editorData !== false,
+    receivableDuplicates: options.receivableDuplicates === undefined
+      ? profileDefaults.receivableDuplicates
+      : options.receivableDuplicates !== false,
+    productDuplicates: options.productDuplicates === undefined
+      ? profileDefaults.productDuplicates
+      : options.productDuplicates !== false,
     auditLogs: options.auditLogs === undefined ? profileDefaults.auditLogs : options.auditLogs !== false,
     branches: options.branches === undefined ? profileDefaults.branches : options.branches !== false,
     cashiers: options.cashiers === undefined ? profileDefaults.cashiers : options.cashiers !== false,
@@ -347,6 +449,8 @@ function mergeAdminWorkspaceOptions(baseOptions, nextOptions) {
     ignoreFresh: base.ignoreFresh || next.ignoreFresh,
     snapshot: base.snapshot || next.snapshot,
     editorData: base.editorData || next.editorData,
+    receivableDuplicates: base.receivableDuplicates || next.receivableDuplicates,
+    productDuplicates: base.productDuplicates || next.productDuplicates,
     auditLogs: base.auditLogs || next.auditLogs,
     branches: base.branches || next.branches,
     cashiers: base.cashiers || next.cashiers,
@@ -370,6 +474,20 @@ function getAdminWorkspaceTasks(options = {}) {
     && shouldRefreshAdminWorkspaceSection("editorData", normalized)
   ) {
     tasks.push(loadAdminEditorData(normalized.branch));
+  }
+  if (
+    normalized.receivableDuplicates
+    && hasAdminCapability("quick_edit")
+    && shouldRefreshAdminWorkspaceSection("receivableDuplicates", normalized)
+  ) {
+    tasks.push(loadAdminReceivableDuplicates(normalized.branch));
+  }
+  if (
+    normalized.productDuplicates
+    && hasAdminCapability("quick_edit")
+    && shouldRefreshAdminWorkspaceSection("productDuplicates", normalized)
+  ) {
+    tasks.push(loadAdminProductDuplicates(normalized.branch));
   }
   if (
     normalized.auditLogs
@@ -437,7 +555,7 @@ function applyBusinessBranding() {
   );
   const uploadedLogoPath = String(profile.branding?.uploadedLogo?.url || "").trim();
   const logoPath = uploadedLogoPath || profile.branding?.logo192 || profile.branding?.logo512 || profile.branding?.logo || "";
-  const iconPath = logoPath || "/assets/branding/retail-base-badge.svg";
+  const iconPath = logoPath || "/assets/branding/merxalia-badge.svg";
 
   document.title = `${businessName} | Punto de Venta`;
 
@@ -469,6 +587,13 @@ function applyBusinessBranding() {
   }
   if (refs.storeAppleTouchIcon) {
     refs.storeAppleTouchIcon.href = iconPath;
+  }
+  if (refs.headerSupportLink) {
+    const support = state.support || {};
+    const supportUrl = buildSupportContactUrl(support.whatsappUrl);
+    refs.headerSupportLink.hidden = !supportUrl;
+    refs.headerSupportLink.href = supportUrl || "#";
+    refs.headerSupportLink.textContent = support.label || "Soporte";
   }
 }
 
@@ -575,6 +700,7 @@ function applySnapshot(snapshot, options = {}) {
   );
   state.store = effectiveSnapshot.store || state.store;
   state.profile = effectiveSnapshot.profile || state.profile;
+  state.support = effectiveSnapshot.support || state.support;
   state.enabledModules = Array.isArray(effectiveSnapshot.enabledModules) ? effectiveSnapshot.enabledModules : state.enabledModules;
   if (snapshotAdminCapabilities) {
     state.admin.capabilitiesResolved = Boolean(
@@ -1110,6 +1236,7 @@ function syncAdminSharedState(snapshot) {
     state.store = nextStore;
   }
   state.profile = effectiveSnapshot.profile || state.profile;
+  state.support = effectiveSnapshot.support || state.support;
   state.enabledModules = Array.isArray(effectiveSnapshot.enabledModules) ? effectiveSnapshot.enabledModules : state.enabledModules;
   if (snapshotAdminCapabilities) {
     state.adminCapabilities = snapshotAdminCapabilities;
@@ -1161,8 +1288,9 @@ function syncAdminSharedState(snapshot) {
   }
 }
 
-function applyAdminSnapshot(snapshot) {
+function applyAdminSnapshot(snapshot, options = {}) {
   const { effectiveSnapshot } = normalizeSnapshotForAdminAccess(snapshot);
+  const requestedBranch = String(options.branch || "").trim();
   syncAdminSharedState(effectiveSnapshot);
   state.admin.snapshot = effectiveSnapshot || null;
   state.admin.inventoryProducts = Array.isArray(effectiveSnapshot?.inventoryProducts)
@@ -1171,7 +1299,9 @@ function applyAdminSnapshot(snapshot) {
       ? effectiveSnapshot.products
       : [];
   state.admin.inventoryComparison = effectiveSnapshot?.inventoryComparison || null;
-  if (effectiveSnapshot?.store?.currentBranch) {
+  if (requestedBranch) {
+    state.admin.branch = requestedBranch;
+  } else if (!state.admin.branch && effectiveSnapshot?.store?.currentBranch) {
     state.admin.branch = effectiveSnapshot.store.currentBranch;
   }
   if (refs.adminModal?.classList.contains("open") && state.admin.inventoryExpanded) {
@@ -1182,12 +1312,83 @@ function applyAdminSnapshot(snapshot) {
 
 async function loadAdminSnapshot(branch = getAdminBranch()) {
   const snapshot = await requestAdminJson(
-    `/api/admin/bootstrap?branch=${encodeURIComponent(branch)}&includeInactiveInventory=1`,
+    `/api/admin/bootstrap?branch=${encodeURIComponent(branch)}`,
   );
-  applyAdminSnapshot(snapshot);
+  applyAdminSnapshot(snapshot, { branch });
   state.admin.capabilitiesResolved = Array.isArray(snapshot.adminCapabilities);
   markAdminWorkspaceLoaded("snapshot");
   return snapshot;
+}
+
+function buildInventoryComparisonFromProducts(products = []) {
+  const grouped = new Map();
+  (Array.isArray(products) ? products : []).forEach((product) => {
+    const branch = product.branch || getAdminActionBranch();
+    if (!grouped.has(branch)) {
+      grouped.set(branch, {
+        value: branch,
+        label: getBranchLabel(branch),
+        active: true,
+        products: [],
+      });
+    }
+    grouped.get(branch).products.push(product);
+  });
+  return { branches: [...grouped.values()] };
+}
+
+async function loadAdminInventoryProducts(options = {}) {
+  if (!state.admin.authenticated || !hasAdminCapability("inventory")) {
+    return;
+  }
+
+  const reset = options.reset !== false;
+  const pageState = state.admin.inventoryPage || {};
+  const limit = Number(pageState.limit || 120);
+  const offset = reset ? 0 : Number(pageState.offset || 0) + Number(pageState.limit || 120);
+  const query = new URLSearchParams({
+    branch: getAdminBranch(),
+    limit: String(limit),
+    offset: String(offset),
+    search: state.admin.inventorySearch || "",
+    filter: normalizeAdminInventoryFilterKey(state.admin.inventoryFilter),
+    includeInactive: "1",
+  });
+
+  state.admin.inventoryPage = {
+    ...pageState,
+    limit,
+    offset,
+    loading: true,
+  };
+  renderAdminModal();
+
+  try {
+    const response = await requestAdminJson(`/api/admin/products?${query.toString()}`);
+    const products = Array.isArray(response.products) ? response.products : [];
+    const page = response.page || {};
+    const nextProducts = reset ? products : [...(state.admin.inventoryProducts || []), ...products];
+    state.admin.inventoryProducts = nextProducts;
+    state.admin.inventoryComparison = getAdminBranch() === "all"
+      ? buildInventoryComparisonFromProducts(nextProducts)
+      : null;
+    state.admin.inventoryPage = {
+      limit: Number(page.limit || limit),
+      offset: Number(page.offset || offset),
+      total: Number(page.total || nextProducts.length),
+      hasMore: Boolean(page.hasMore),
+      loading: false,
+    };
+    renderInventory();
+  } catch (error) {
+    showToast(error.message, "error");
+    state.admin.inventoryPage = {
+      ...state.admin.inventoryPage,
+      loading: false,
+    };
+  } finally {
+    renderAdminModal();
+  }
 }
 
 function getActiveAdminBranchOptions() {
@@ -1303,6 +1504,220 @@ async function loadAdminEditorData(branch = getAdminBranch()) {
   } finally {
     renderAdminRecordLists();
   }
+}
+
+async function loadAdminReceivableDuplicates(branch = getAdminBranch()) {
+  state.admin.receivableDuplicatesLoading = true;
+  if (typeof renderAdminReceivableDuplicates === "function") {
+    renderAdminReceivableDuplicates();
+  }
+  const search = String(state.admin.receivableDuplicateSearch || "");
+  const query = new URLSearchParams({
+    branch,
+    ...(search ? { search } : {}),
+  });
+  try {
+    const response = await requestAdminJson(`/api/admin/receivables/duplicates?${query.toString()}`);
+    state.admin.receivableDuplicates = Array.isArray(response.candidates) ? response.candidates : [];
+    markAdminWorkspaceLoaded("receivableDuplicates");
+  } catch (_error) {
+    state.admin.receivableDuplicates = [];
+  } finally {
+    state.admin.receivableDuplicatesLoading = false;
+    if (typeof renderAdminReceivableDuplicates === "function") {
+      renderAdminReceivableDuplicates();
+    }
+  }
+}
+
+async function loadAdminProductDuplicates(branch = getAdminBranch()) {
+  state.admin.productDuplicatesLoading = true;
+  if (typeof renderAdminProductDuplicates === "function") {
+    renderAdminProductDuplicates();
+  }
+  const search = String(state.admin.productDuplicateSearch || "");
+  const query = new URLSearchParams({
+    branch,
+    ...(search ? { search } : {}),
+  });
+  try {
+    const response = await requestAdminJson(`/api/admin/products/duplicates?${query.toString()}`);
+    state.admin.productDuplicates = Array.isArray(response.candidates) ? response.candidates : [];
+    markAdminWorkspaceLoaded("productDuplicates");
+  } catch (_error) {
+    state.admin.productDuplicates = [];
+  } finally {
+    state.admin.productDuplicatesLoading = false;
+    if (typeof renderAdminProductDuplicates === "function") {
+      renderAdminProductDuplicates();
+    }
+  }
+}
+
+function updateAdminReceivableDuplicateSearch(value) {
+  state.admin.receivableDuplicateSearch = String(value || "");
+  if (refs.adminReceivableDuplicateSearch && refs.adminReceivableDuplicateSearch.value !== state.admin.receivableDuplicateSearch) {
+    refs.adminReceivableDuplicateSearch.value = state.admin.receivableDuplicateSearch;
+  }
+  clearTimeout(updateAdminReceivableDuplicateSearch.timerId);
+  updateAdminReceivableDuplicateSearch.timerId = setTimeout(() => {
+    if (!state.admin.authenticated || !hasAdminCapability("quick_edit")) {
+      return;
+    }
+    void loadAdminReceivableDuplicates(getAdminBranch());
+  }, 250);
+}
+
+function updateAdminProductDuplicateSearch(value) {
+  state.admin.productDuplicateSearch = String(value || "");
+  if (refs.adminProductDuplicateSearch && refs.adminProductDuplicateSearch.value !== state.admin.productDuplicateSearch) {
+    refs.adminProductDuplicateSearch.value = state.admin.productDuplicateSearch;
+  }
+  clearTimeout(updateAdminProductDuplicateSearch.timerId);
+  updateAdminProductDuplicateSearch.timerId = setTimeout(() => {
+    if (!state.admin.authenticated || !hasAdminCapability("quick_edit")) {
+      return;
+    }
+    void loadAdminProductDuplicates(getAdminBranch());
+  }, 250);
+}
+
+async function renameAdminReceivableCustomer(customerKey) {
+  const safeCustomerKey = String(customerKey || "").trim();
+  if (!safeCustomerKey) {
+    return;
+  }
+  const currentName = findAdminReceivableCustomerByKey(safeCustomerKey)?.customerName || "";
+  const customerName = window.prompt("Nombre correcto del cliente fiado:", currentName);
+  if (customerName == null) {
+    return;
+  }
+  const cleanName = customerName.trim();
+  if (!cleanName) {
+    showToast("Escribe un nombre valido para corregir el cliente.", "info");
+    return;
+  }
+
+  state.admin.receivableDuplicateMerging = true;
+  renderAdminReceivableDuplicates();
+  try {
+    await requestAdminJson("/api/admin/receivables/customer", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        branch: findAdminReceivableCustomerByKey(safeCustomerKey)?.branch || getAdminActionBranch(),
+        customerKey: safeCustomerKey,
+        customerName: cleanName,
+      }),
+    });
+    showToast("Cliente fiado corregido.", "success");
+    await loadAdminReceivableDuplicates(getAdminBranch());
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.admin.receivableDuplicateMerging = false;
+    renderAdminReceivableDuplicates();
+  }
+}
+
+function findAdminProductDuplicateById(productId) {
+  const safeProductId = Number(productId);
+  for (const group of state.admin.productDuplicates || []) {
+    const product = (group.products || []).find((item) => Number(item.id) === safeProductId);
+    if (product) {
+      return product;
+    }
+  }
+  return null;
+}
+
+async function mergeAdminProductDuplicate(sourceProductId, targetProductId) {
+  const source = findAdminProductDuplicateById(sourceProductId);
+  const target = findAdminProductDuplicateById(targetProductId);
+  if (!source || !target || Number(source.id) === Number(target.id)) {
+    return;
+  }
+  const confirmed = window.confirm(
+    `Fusionar "${source.name}" con "${target.name}"? Las ventas, movimientos y existencias quedaran en el producto principal.`,
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  state.admin.productDuplicateMerging = true;
+  renderAdminProductDuplicates();
+  try {
+    await requestAdminJson("/api/admin/products/merge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        branch: source.branch || target.branch || getAdminActionBranch(),
+        sourceProductId: Number(source.id),
+        targetProductId: Number(target.id),
+      }),
+    });
+    showToast("Productos fusionados sin perder historial.", "success");
+    await Promise.allSettled([
+      loadAdminProductDuplicates(getAdminBranch()),
+      loadAdminInventoryProducts({ reset: true }),
+      loadAdminEditorData(getAdminBranch()),
+    ]);
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.admin.productDuplicateMerging = false;
+    renderAdminProductDuplicates();
+  }
+}
+
+async function mergeAdminReceivableCustomer(sourceCustomerKey, targetCustomerKey) {
+  const source = findAdminReceivableCustomerByKey(sourceCustomerKey);
+  const target = findAdminReceivableCustomerByKey(targetCustomerKey);
+  if (!source || !target || source.customerKey === target.customerKey) {
+    return;
+  }
+  const confirmed = window.confirm(
+    `Fusionar "${source.customerName}" con "${target.customerName}"? Las ventas y abonos quedaran en el cliente destino.`,
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  state.admin.receivableDuplicateMerging = true;
+  renderAdminReceivableDuplicates();
+  try {
+    await requestAdminJson("/api/admin/receivables/merge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        branch: source.branch || target.branch || getAdminActionBranch(),
+        sourceCustomerKey: source.customerKey,
+        targetCustomerKey: target.customerKey,
+        targetCustomerName: target.customerName,
+      }),
+    });
+    showToast("Clientes fiados fusionados sin perder historial.", "success");
+    await Promise.allSettled([
+      loadAdminReceivableDuplicates(getAdminBranch()),
+      loadAdminEditorData(getAdminBranch()),
+    ]);
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    state.admin.receivableDuplicateMerging = false;
+    renderAdminReceivableDuplicates();
+  }
+}
+
+function findAdminReceivableCustomerByKey(customerKey) {
+  const safeCustomerKey = String(customerKey || "");
+  for (const group of state.admin.receivableDuplicates || []) {
+    const customer = (group.customers || []).find((item) => item.customerKey === safeCustomerKey);
+    if (customer) {
+      return customer;
+    }
+  }
+  return null;
 }
 
 async function loadAdminAuditLogs(branch = getAdminBranch()) {
@@ -2116,6 +2531,8 @@ async function refreshAdminWorkspace(options = {}) {
       && (
         normalized.snapshot
         || normalized.editorData
+        || normalized.receivableDuplicates
+        || normalized.productDuplicates
         || normalized.auditLogs
         || normalized.branches
         || normalized.cashiers
@@ -2498,7 +2915,7 @@ function setAdminInventoryMode(mode, options = {}) {
   }
 
   if (state.admin.inventoryExpanded) {
-    renderInventory();
+    void loadAdminInventoryProducts({ reset: true });
   }
   renderAdminModal();
 }
@@ -2506,7 +2923,7 @@ function setAdminInventoryMode(mode, options = {}) {
 function setAdminInventoryFilter(filter) {
   state.admin.inventoryFilter = normalizeAdminInventoryFilterKey(filter);
   if (state.admin.inventoryExpanded) {
-    renderInventory();
+    void loadAdminInventoryProducts({ reset: true });
   }
   renderAdminModal();
 }
@@ -2514,18 +2931,21 @@ function setAdminInventoryFilter(filter) {
 function updateAdminInventorySearch(value) {
   state.admin.inventorySearch = String(value || "");
   if (state.admin.inventoryExpanded) {
-    renderInventory();
+    clearTimeout(updateAdminInventorySearch.timerId);
+    updateAdminInventorySearch.timerId = setTimeout(() => {
+      void loadAdminInventoryProducts({ reset: true });
+    }, 250);
   }
 }
 
 async function openAdminInventoryMovement(mode = "receive") {
   setAdminInventoryMode("movement");
-  state.quickImport.mode = mode === "return" ? "return" : "receive";
+  state.quickImport.mode = ["receive", "return", "count"].includes(mode) ? mode : "receive";
   await openQuickImportModal();
 }
 
-function openAdminInventoryCountMode() {
-  setAdminInventoryMode("edit", { expand: true });
+async function openAdminInventoryCountMode() {
+  await openAdminInventoryMovement("count");
 }
 
 function toggleAdminInventoryPanel() {
@@ -2535,7 +2955,7 @@ function toggleAdminInventoryPanel() {
   }
   state.admin.inventoryExpanded = !state.admin.inventoryExpanded;
   if (state.admin.inventoryExpanded) {
-    renderInventory();
+    void loadAdminInventoryProducts({ reset: true });
   }
   renderAdminModal();
 }
@@ -2894,6 +3314,36 @@ function getOwnerSelectedAdminCapabilities() {
       .filter((input) => input.checked)
       .map((input) => input.dataset.ownerCapabilityCode)
     : [];
+}
+
+const OWNER_SIMPLE_ADMIN_CAPABILITIES = [
+  "daily_flow",
+  "inventory",
+  "merchandise_requests",
+  "cashiers",
+  "support_tools",
+];
+
+function applyOwnerAdminCapabilityPreset(preset) {
+  if (!refs.ownerAdminSectionsWrap) {
+    return;
+  }
+  const availableCodes = getOwnerAdminSections().map((section) => section.code);
+  const selectedCodes = preset === "simple"
+    ? OWNER_SIMPLE_ADMIN_CAPABILITIES
+    : availableCodes;
+  const selected = new Set(selectedCodes);
+  refs.ownerAdminSectionsWrap
+    .querySelectorAll('input[type="checkbox"][data-owner-capability-code]')
+    .forEach((input) => {
+      input.checked = selected.has(input.dataset.ownerCapabilityCode);
+    });
+  showToast(
+    preset === "simple"
+      ? "Preset sencillo aplicado. Guarda cambios para activar."
+      : "Preset completo aplicado. Guarda cambios para activar.",
+    "info",
+  );
 }
 
 async function loadOwnerConsoleConfig() {
@@ -3531,7 +3981,7 @@ async function requestAdminMultipartJson(url, formData, options = {}) {
       signal: requestController.signal,
     });
     if (!response.ok) {
-      await throwAdminResponseError(response, "No fue posible guardar el logo.");
+      await throwAdminResponseError(response, options.fallbackMessage || "No fue posible guardar el archivo.");
     }
     return response.json().catch(() => ({}));
   } catch (error) {
@@ -3969,6 +4419,8 @@ function buildOfflineSalesAuditPayload(options = {}) {
         status: displayState.status,
         statusLabel: displayState.label,
         statusNote: displayState.note,
+        statusReason: displayState.reason || "",
+        statusAction: displayState.action || "",
         retryCount: record.retryCount,
         lastSyncAttemptAt: record.lastSyncAttemptAt,
         syncedAt: record.syncedAt,
@@ -3977,7 +4429,7 @@ function buildOfflineSalesAuditPayload(options = {}) {
         lastErrorCode: record.lastErrorCode,
         rejectedAt: record.rejectedAt,
         rejectedReason: record.rejectedReason,
-        reviewReason: record.reviewReason,
+        reviewReason: displayState.reviewReason || record.reviewReason,
         conflicts: displayState.conflicts,
         requestPayload: record.requestPayload,
         items: record.items,
@@ -4640,6 +5092,347 @@ async function reimportCatalog() {
   }
 }
 
+function getAdminOnboardingState() {
+  if (!state.admin.onboarding) {
+    state.admin.onboarding = {
+      file: null,
+      preview: null,
+      mapping: {},
+      loading: false,
+      applying: false,
+      status: "",
+    };
+  }
+  return state.admin.onboarding;
+}
+
+function collectAdminOnboardingMapping() {
+  const onboarding = getAdminOnboardingState();
+  const mapping = {};
+  Object.entries(onboarding.mapping || {}).forEach(([field, value]) => {
+    if (value === "" || value == null) {
+      return;
+    }
+    const index = Number(value);
+    if (Number.isInteger(index) && index >= 0) {
+      mapping[field] = index;
+    }
+  });
+  return mapping;
+}
+
+function buildAdminOnboardingFormData() {
+  const onboarding = getAdminOnboardingState();
+  const formData = new FormData();
+  formData.append("catalog", onboarding.file);
+  formData.append("branch", getAdminActionBranch());
+  formData.append("mapping", JSON.stringify(collectAdminOnboardingMapping()));
+  return formData;
+}
+
+function selectAdminOnboardingFile(file) {
+  const onboarding = getAdminOnboardingState();
+  onboarding.file = file || null;
+  onboarding.preview = null;
+  onboarding.mapping = {};
+  onboarding.status = file
+    ? `Listo para revisar ${file.name}.`
+    : "";
+  renderAdminModal();
+}
+
+function updateAdminOnboardingMapping(field, value) {
+  const onboarding = getAdminOnboardingState();
+  onboarding.mapping = {
+    ...(onboarding.mapping || {}),
+    [field]: value === "" ? "" : Number(value),
+  };
+  renderAdminModal();
+}
+
+async function previewAdminProductOnboarding() {
+  if (!await ensureAdminActionAccess("inventory", "El onboarding de catalogo esta bloqueado por el owner.")) {
+    return;
+  }
+  const onboarding = getAdminOnboardingState();
+  if (!onboarding.file) {
+    showToast("Selecciona un CSV o Excel de productos.", "error");
+    return;
+  }
+
+  onboarding.loading = true;
+  onboarding.status = "Leyendo archivo...";
+  renderAdminModal();
+
+  try {
+    const response = await requestAdminMultipartJson(
+      "/api/admin/onboarding/products/preview",
+      buildAdminOnboardingFormData(),
+      {
+        timeoutMs: 30000,
+        fallbackMessage: "No fue posible revisar el archivo de productos.",
+      },
+    );
+    onboarding.preview = response.preview || null;
+    onboarding.mapping = { ...(response.preview?.mapping || onboarding.mapping || {}) };
+    onboarding.status = onboarding.preview?.summary?.errors
+      ? "Corrige el mapeo o el archivo antes de importar."
+      : "Preview listo para importar.";
+    showToast("Archivo revisado.", "success");
+  } catch (error) {
+    onboarding.preview = null;
+    onboarding.status = error.message;
+    showToast(error.message, "error");
+  } finally {
+    onboarding.loading = false;
+    renderAdminModal();
+  }
+}
+
+async function applyAdminProductOnboarding() {
+  if (!await ensureAdminActionAccess("inventory", "El onboarding de catalogo esta bloqueado por el owner.")) {
+    return;
+  }
+  const onboarding = getAdminOnboardingState();
+  const errors = Number(onboarding.preview?.summary?.errors || 0);
+  if (!onboarding.file || !onboarding.preview) {
+    showToast("Previsualiza el archivo antes de importar.", "error");
+    return;
+  }
+  if (errors > 0) {
+    showToast("Corrige los errores del preview antes de importar.", "error");
+    return;
+  }
+
+  onboarding.applying = true;
+  onboarding.status = "Importando productos...";
+  renderAdminModal();
+
+  try {
+    const response = await requestAdminMultipartJson(
+      "/api/admin/onboarding/products/apply",
+      buildAdminOnboardingFormData(),
+      {
+        timeoutMs: 45000,
+        fallbackMessage: "No fue posible importar el catalogo.",
+      },
+    );
+    const summary = response.summary || {};
+    onboarding.file = null;
+    onboarding.preview = null;
+    onboarding.mapping = {};
+    onboarding.status = `Importados ${summary.imported || 0} productos.`;
+    if (refs.adminOnboardingFile) {
+      refs.adminOnboardingFile.value = "";
+    }
+    await refreshCurrentSnapshot();
+    await refreshAdminWorkspace({ ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true });
+    if (state.admin.inventoryExpanded) {
+      await loadAdminInventoryProducts({ reset: true });
+    }
+    showToast(
+      `Lista importada: ${summary.created || 0} altas y ${summary.updated || 0} cambios.`,
+      "success",
+    );
+  } catch (error) {
+    onboarding.status = error.message;
+    showToast(error.message, "error");
+  } finally {
+    onboarding.applying = false;
+    renderAdminModal();
+  }
+}
+
+function getAdminInventoryProductFromRecord(record) {
+  const productId = Number(record?.dataset?.productId);
+  if (!productId) {
+    return null;
+  }
+  const branch = record?.dataset?.branch || getAdminActionBranch();
+  const products = state.admin.branch === "all" && Array.isArray(state.admin.inventoryComparison?.branches)
+    ? state.admin.inventoryComparison.branches.flatMap((branchEntry) =>
+        (branchEntry.products || []).map((product) => ({
+          ...product,
+          branch: product.branch || branchEntry.value,
+          branchLabel: branchEntry.label,
+        })),
+      )
+    : state.admin.inventoryProducts || [];
+  return products.find((product) =>
+    Number(product.id) === productId
+    && (!branch || !product.branch || product.branch === branch),
+  ) || null;
+}
+
+function syncAdminProductEditorCatalogs(product = null) {
+  if (refs.adminEditProductCategory) {
+    setSelectOptions(
+      refs.adminEditProductCategory,
+      state.categories.map((category) => ({
+        value: String(category.id),
+        label: category.label,
+      })),
+      String(product?.categoryId || state.categories[0]?.id || ""),
+    );
+  }
+  if (refs.adminEditProductUnit) {
+    setSelectOptions(
+      refs.adminEditProductUnit,
+      state.units.map((unit) => ({
+        value: String(unit.id),
+        label: unit.label,
+      })),
+      String(product?.unitId || state.units[0]?.id || ""),
+    );
+  }
+  syncAdminProductEditorUnitStep();
+}
+
+function syncAdminProductEditorUnitStep() {
+  const selectedUnit = getUnitRecord(
+    Number(refs.adminEditProductUnit?.value || 0) || refs.adminEditProductUnit?.value,
+  ) || state.units[0] || null;
+  const numericStep = Number(selectedUnit?.step || 0.25);
+  if (refs.adminEditProductStock) {
+    refs.adminEditProductStock.step = String(numericStep);
+  }
+  if (refs.adminEditProductMinStock) {
+    refs.adminEditProductMinStock.step = String(numericStep);
+  }
+  if (refs.adminEditProductPackSize) {
+    refs.adminEditProductPackSize.step = String(numericStep);
+  }
+}
+
+function openAdminProductEditor(record) {
+  const product = getAdminInventoryProductFromRecord(record);
+  if (!product) {
+    showToast("No pude encontrar ese producto en el catalogo cargado.", "error");
+    return;
+  }
+  const branch = record?.dataset?.branch || product.branch || getAdminActionBranch();
+  state.admin.productEditor = {
+    productId: Number(product.id),
+    branch,
+  };
+  syncAdminProductEditorCatalogs(product);
+  if (refs.adminProductEditorTitle) {
+    refs.adminProductEditorTitle.textContent = product.name || "Editar producto";
+  }
+  if (refs.adminProductEditorMeta) {
+    refs.adminProductEditorMeta.textContent =
+      `${getBranchLabel(branch)} - ${product.categoryLabel || product.category || "Sin categoria"} - ${product.unit || "unidad"}`;
+  }
+  if (refs.adminEditProductName) refs.adminEditProductName.value = product.name || "";
+  if (refs.adminEditProductPrice) refs.adminEditProductPrice.value = product.price ?? "";
+  if (refs.adminEditProductCost) refs.adminEditProductCost.value = product.cost ?? 0;
+  if (refs.adminEditProductStock) refs.adminEditProductStock.value = product.stock ?? 0;
+  if (refs.adminEditProductMinStock) refs.adminEditProductMinStock.value = product.minStock ?? 0;
+  if (refs.adminEditProductActive) refs.adminEditProductActive.checked = product.active !== false;
+  if (refs.adminEditProductSku) refs.adminEditProductSku.value = product.sku || "";
+  if (refs.adminEditProductBarcode) refs.adminEditProductBarcode.value = product.barcode || "";
+  if (refs.adminEditProductBrand) refs.adminEditProductBrand.value = product.brand || "";
+  if (refs.adminEditProductSupplier) refs.adminEditProductSupplier.value = product.supplierName || "";
+  if (refs.adminEditProductPackSize) refs.adminEditProductPackSize.value = product.packSize ?? "";
+  if (refs.adminEditProductNote) refs.adminEditProductNote.value = "";
+  setModalOpen(refs.adminProductEditorModal, true);
+  refs.adminEditProductName?.focus();
+}
+
+function closeAdminProductEditor() {
+  setModalOpen(refs.adminProductEditorModal, false);
+  state.admin.productEditor = {
+    productId: null,
+    branch: "",
+  };
+}
+
+function buildAdminProductEditorPayload() {
+  return {
+    branch: state.admin.productEditor?.branch || getAdminActionBranch(),
+    name: refs.adminEditProductName?.value.trim() || "",
+    categoryId: Number(refs.adminEditProductCategory?.value || 0) || refs.adminEditProductCategory?.value,
+    unitId: Number(refs.adminEditProductUnit?.value || 0) || refs.adminEditProductUnit?.value,
+    price: roundMoney(refs.adminEditProductPrice?.value),
+    cost: roundMoney(refs.adminEditProductCost?.value || 0),
+    stock: roundStock(refs.adminEditProductStock?.value),
+    minStock: roundStock(refs.adminEditProductMinStock?.value),
+    active: Boolean(refs.adminEditProductActive?.checked),
+    sku: refs.adminEditProductSku?.value.trim() || "",
+    barcode: refs.adminEditProductBarcode?.value.trim() || "",
+    brand: refs.adminEditProductBrand?.value.trim() || "",
+    supplierName: refs.adminEditProductSupplier?.value.trim() || "",
+    packSize: refs.adminEditProductPackSize?.value.trim() || "",
+    note: refs.adminEditProductNote?.value.trim() || "Ajuste desde catalogo avanzado",
+  };
+}
+
+async function saveAdminProductEditor() {
+  const productId = Number(state.admin.productEditor?.productId);
+  if (!productId) {
+    showToast("No hay producto abierto para guardar.", "error");
+    return;
+  }
+  const payload = buildAdminProductEditorPayload();
+  if (!payload.name) {
+    showToast("Captura el nombre del producto.", "error");
+    return;
+  }
+
+  if (refs.saveAdminProductEditorButton) {
+    refs.saveAdminProductEditorButton.disabled = true;
+    refs.saveAdminProductEditorButton.textContent = "Guardando...";
+  }
+  try {
+    await requestAdminJson(`/api/products/${productId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    await refreshCurrentSnapshot();
+    await refreshAdminWorkspace({ ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true });
+    if (state.admin.inventoryExpanded) {
+      await loadAdminInventoryProducts({ reset: true });
+    }
+    closeAdminProductEditor();
+    showToast("Producto guardado.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    if (refs.saveAdminProductEditorButton) {
+      refs.saveAdminProductEditorButton.disabled = false;
+      refs.saveAdminProductEditorButton.textContent = "Guardar producto";
+    }
+  }
+}
+
+async function removeCurrentAdminProduct() {
+  const productId = Number(state.admin.productEditor?.productId);
+  if (!productId) {
+    showToast("No hay producto abierto para desactivar.", "error");
+    return;
+  }
+  const productName = refs.adminEditProductName?.value.trim() || "este producto";
+  if (!window.confirm(`Se desactivara ${productName}. Deseas continuar?`)) {
+    return;
+  }
+
+  try {
+    await requestAdminJson(
+      `/api/admin/products/${productId}?branch=${encodeURIComponent(state.admin.productEditor?.branch || getAdminActionBranch())}`,
+      { method: "DELETE" },
+    );
+    await refreshCurrentSnapshot();
+    await refreshAdminWorkspace({ ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true });
+    if (state.admin.inventoryExpanded) {
+      await loadAdminInventoryProducts({ reset: true });
+    }
+    closeAdminProductEditor();
+    showToast("Producto desactivado.", "success");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
 async function createAdminProduct() {
   const payload = {
     branch: getAdminActionBranch(),
@@ -4671,6 +5464,9 @@ async function createAdminProduct() {
     resetAdminProductForm();
     await refreshCurrentSnapshot();
     await refreshAdminWorkspace({ ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true });
+    if (state.admin.inventoryExpanded) {
+      await loadAdminInventoryProducts({ reset: true });
+    }
     showToast("Producto agregado correctamente.", "success");
   } catch (error) {
     showToast(error.message, "error");
@@ -4695,6 +5491,9 @@ async function removeAdminProduct(row) {
     );
     await refreshCurrentSnapshot();
     await refreshAdminWorkspace({ ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true });
+    if (state.admin.inventoryExpanded) {
+      await loadAdminInventoryProducts({ reset: true });
+    }
     showToast("Producto desactivado.", "success");
   } catch (error) {
     showToast(error.message, "error");
@@ -4768,6 +5567,9 @@ async function saveInventoryRow(row, branchOverride) {
     });
     await refreshCurrentSnapshot();
     await refreshAdminWorkspace({ ...getAdminWorkspaceLiveOptions(getAdminBranch()), force: true });
+    if (state.admin.inventoryExpanded) {
+      await loadAdminInventoryProducts({ reset: true });
+    }
     showToast("Inventario actualizado.", "success");
   } catch (error) {
     showToast(error.message, "error");

@@ -16,4 +16,11 @@ data/pos-runtime-config.json
 .pos-runtime.env
 owner-control/data/
 .DS_Store
-docs/
+docs/*
+!docs/PLAYBOOK-RESTAURACION.md
+
+# Obsidian
+obsidian-*/
+**/.obsidian/
+**/.trash/
+.obsidian.vimrc

@@ -72,6 +72,149 @@ function formatProductStock(product) {
   return `${formatQuantity(product.stock)} ${product.unit}`;
 }
 
+function getSalePrintableItems(sale) {
+  return Array.isArray(sale?.items)
+    ? sale.items
+    : Array.isArray(sale?.lines)
+      ? sale.lines
+      : [];
+}
+
+function getSalePrintablePaymentSummary(sale) {
+  const paymentMethod = sale?.paymentMethod || "Efectivo";
+  const total = roundMoney(sale?.total || 0);
+  const receivedAmount = roundMoney(sale?.receivedAmount || 0);
+  const paidAmount = roundMoney(sale?.paidAmount || receivedAmount || 0);
+  const pendingAmount = roundMoney(
+    sale?.pendingAmount === undefined
+      ? getSalePendingAmount(total, paidAmount, paymentMethod)
+      : sale.pendingAmount,
+  );
+  const changeAmount = roundMoney(sale?.changeAmount || 0);
+
+  if (isCreditPaymentMethod(paymentMethod)) {
+    return [
+      `Metodo: ${paymentMethod}`,
+      `Abono hoy: ${formatCurrency(receivedAmount)}`,
+      `Pagado: ${formatCurrency(paidAmount)}`,
+      `Pendiente: ${formatCurrency(pendingAmount)}`,
+    ];
+  }
+
+  return [
+    `Metodo: ${paymentMethod}`,
+    `Recibido: ${formatCurrency(receivedAmount)}`,
+    `Cambio: ${formatCurrency(changeAmount)}`,
+  ];
+}
+
+function buildSaleTicketPrintHtml(sale) {
+  const storeName = getStoreName();
+  const ticketNumber = sale?.ticketNumber || `Ticket #${sale?.id || ""}`;
+  const createdAt = sale?.createdAt ? new Date(sale.createdAt) : new Date();
+  const items = getSalePrintableItems(sale);
+  const cashier = sale?.cashier || "Cajero";
+  const shift = sale?.shift || "";
+  const customerName = sale?.customerName || "Mostrador";
+  const paymentLines = getSalePrintablePaymentSummary(sale);
+  const notes = String(sale?.notes || "").trim();
+
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(ticketNumber)}</title>
+  <style>
+    @page { size: 80mm auto; margin: 4mm; }
+    * { box-sizing: border-box; }
+    body {
+      width: 72mm;
+      margin: 0;
+      color: #111;
+      font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    h1 { margin: 0 0 2mm; font-size: 16px; text-align: center; }
+    .center { text-align: center; }
+    .muted { color: #444; }
+    .rule { border-top: 1px dashed #111; margin: 3mm 0; }
+    .row { display: flex; justify-content: space-between; gap: 3mm; }
+    .item { margin-bottom: 2mm; }
+    .item strong { display: block; font-size: 11px; }
+    .total { font-size: 14px; font-weight: 700; }
+    @media print {
+      button { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <h1>${escapeHtml(storeName)}</h1>
+  <div class="center muted">${escapeHtml(ticketNumber)}</div>
+  <div class="center muted">${escapeHtml(dateTimeFormatter.format(createdAt))}</div>
+  <div class="rule"></div>
+  <div>Cajero: ${escapeHtml(cashier)}${shift ? ` / ${escapeHtml(shift)}` : ""}</div>
+  <div>Cliente: ${escapeHtml(customerName)}</div>
+  <div class="rule"></div>
+  ${items
+    .map((item) => {
+      const productName = item.productName || item.name || "Producto";
+      const quantity = item.quantity ?? item.qty ?? 0;
+      const unitPrice = item.unitPrice ?? item.price ?? 0;
+      const lineTotal = item.lineTotal ?? roundMoney(roundStock(quantity) * roundMoney(unitPrice));
+      return `
+        <div class="item">
+          <strong>${escapeHtml(productName)}</strong>
+          <div class="row">
+            <span>${escapeHtml(formatQuantity(quantity))} x ${formatCurrency(unitPrice)}</span>
+            <span>${formatCurrency(lineTotal)}</span>
+          </div>
+        </div>`;
+    })
+    .join("")}
+  <div class="rule"></div>
+  <div class="row total">
+    <span>Total</span>
+    <span>${formatCurrency(sale?.total || 0)}</span>
+  </div>
+  ${paymentLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}
+  ${notes ? `<div class="rule"></div><div>Nota: ${escapeHtml(notes)}</div>` : ""}
+  <div class="rule"></div>
+  <div class="center">Gracias por su compra</div>
+  <script>
+    window.addEventListener("load", () => {
+      window.focus();
+      window.print();
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function printSaleTicket(sale) {
+  if (!sale) {
+    showToast("No hay ticket disponible para imprimir.", "error");
+    return false;
+  }
+
+  if (typeof window === "undefined" || typeof window.open !== "function") {
+    showToast("Este navegador no permite abrir la impresion.", "error");
+    return false;
+  }
+
+  const printWindow = window.open("", "_blank", "width=420,height=720");
+  if (!printWindow || !printWindow.document) {
+    showToast("Permite ventanas emergentes para imprimir el ticket.", "error");
+    return false;
+  }
+
+  printWindow.document.open();
+  printWindow.document.write(buildSaleTicketPrintHtml(sale));
+  printWindow.document.close();
+  showToast("Ticket listo para imprimir.", "success");
+  return true;
+}
+
 const productSearchBlobCache = new WeakMap();
 const elementMotionTimers = new WeakMap();
 
@@ -475,6 +618,104 @@ function getOfflineSalePayload(record) {
   return null;
 }
 
+function buildOfflineOperationReviewGuidance(options = {}) {
+  const operationLabel = options.kind === "receivable_payment" ? "abono" : "venta";
+  const reviewReason = String(options.reviewReason || "").trim();
+  const lastError = String(options.lastError || "").trim();
+  const statusCode = Number.isFinite(Number(options.lastErrorCode))
+    ? Number(options.lastErrorCode)
+    : null;
+  const recordBranch = String(options.branch || "").trim();
+  const recordCashier = String(options.cashier || "").trim();
+  const conflicts = Array.isArray(options.conflicts) ? options.conflicts.filter(Boolean) : [];
+
+  if (options.status === "synced") {
+    return {
+      reason: `${operationLabel === "abono" ? "Abono" : "Venta"} sincronizad${operationLabel === "abono" ? "o" : "a"}.`,
+      action: "No requiere accion.",
+    };
+  }
+
+  if (options.status === "rejected") {
+    return {
+      reason: lastError || `${operationLabel === "abono" ? "Abono" : "Venta"} archivada para revision manual.`,
+      action: "Puede reactivarse solo si el administrador confirma que debe volver a intentarse.",
+    };
+  }
+
+  if (!state.online) {
+    return {
+      reason: "Sin internet en este dispositivo.",
+      action: "Reconecta internet y deja abierta la caja para que se sincronice automaticamente.",
+    };
+  }
+
+  if (reviewReason === "sale_dependency_missing") {
+    return {
+      reason: "El ticket offline ligado al abono ya no existe en este dispositivo.",
+      action: "Revisa el historial local y registra el abono manualmente cuando confirmes el ticket original.",
+    };
+  }
+
+  if (reviewReason === "auth_required" || options.authMissing) {
+    return {
+      reason: "La sesion del cajero que capturo el movimiento vencio o no esta activa.",
+      action: `Inicia sesion como ${recordCashier || "el mismo cajero"} en ${recordBranch ? getBranchLabel(recordBranch) : "la misma sucursal"} y reintenta la sincronizacion.`,
+    };
+  }
+
+  if (options.branchMismatch) {
+    return {
+      reason: `El movimiento pertenece a ${recordBranch ? getBranchLabel(recordBranch) : "otra sucursal"}.`,
+      action: "Abre esa sucursal en esta caja o entra con el cajero correcto antes de reintentar.",
+    };
+  }
+
+  if (conflicts.length > 0 || reviewReason === "stock_conflict") {
+    return {
+      reason: conflicts.length > 0
+        ? `Conflicto de stock: ${conflicts[0]}`
+        : "El servidor rechazo la venta por stock, producto, sucursal o cajero.",
+      action: "Corrige inventario/producto o confirma manualmente antes de reintentar.",
+    };
+  }
+
+  if (reviewReason === "payment_conflict") {
+    return {
+      reason: "El servidor rechazo el abono por saldo, ticket, sucursal o cajero.",
+      action: "Abre la cartera del cliente, confirma el saldo actual y reintenta solo si el abono sigue siendo valido.",
+    };
+  }
+
+  if (statusCode && statusCode >= 400 && statusCode < 500) {
+    return {
+      reason: lastError || `El servidor rechazo el ${operationLabel}.`,
+      action: "Revisa los datos del movimiento antes de reintentar; el rechazo no fue un simple corte de internet.",
+    };
+  }
+
+  if (lastError) {
+    return {
+      reason: lastError,
+      action: "Reintenta cuando el servidor este estable; si vuelve a fallar, descarga auditoria offline y pide soporte.",
+    };
+  }
+
+  return {
+    reason: `El ${operationLabel} esta guardado localmente y listo para sincronizar.`,
+    action: "Mantén internet y sesion de cajero activa.",
+  };
+}
+
+function formatOfflineOperationReviewNote(guidance = {}) {
+  const reason = String(guidance.reason || "").trim();
+  const action = String(guidance.action || "").trim();
+  if (reason && action) {
+    return `Causa: ${reason} Accion: ${action}`;
+  }
+  return reason || action || "";
+}
+
 function buildClientReceivableCustomerLookupKey(branch, customerName) {
   const normalizedBranch = normalizeSearchText(branch || "branch") || "branch";
   const normalizedCustomer = normalizeSearchText(customerName || "cliente") || "cliente";
@@ -503,6 +744,7 @@ function getOfflineSaleDisplayState(record) {
   const conflicts = [];
   let note = "";
   let displayStatus = baseStatus;
+  let reviewReason = String(safeRecord.reviewReason || "");
 
   if (baseStatus === "synced") {
     note = safeRecord.syncedTicketNumber
@@ -518,19 +760,31 @@ function getOfflineSaleDisplayState(record) {
       canRetry: false,
       canReject: false,
       canReactivate: false,
+      reason: "Venta sincronizada.",
+      action: "No requiere accion.",
+      reviewReason,
     };
   }
 
   if (baseStatus === "rejected") {
     note = String(safeRecord.rejectedReason || safeRecord.lastError || "Venta archivada para revision manual.");
+    const guidance = buildOfflineOperationReviewGuidance({
+      kind: "sale",
+      status: "rejected",
+      lastError: note,
+      reviewReason,
+    });
     return {
       status: "rejected",
       label: getOfflineSaleStatusLabel("rejected"),
-      note,
+      note: formatOfflineOperationReviewNote(guidance),
       conflicts,
       canRetry: false,
       canReject: false,
       canReactivate: true,
+      reason: guidance.reason,
+      action: guidance.action,
+      reviewReason,
     };
   }
 
@@ -561,25 +815,39 @@ function getOfflineSaleDisplayState(record) {
 
   if (conflicts.length > 0) {
     displayStatus = "requires_review";
-    note = `Conflicto de stock en ${conflicts.length} producto(s). ${conflicts[0]}`;
+    reviewReason = "stock_conflict";
   } else if (!state.online) {
-    note = "Sin internet. La venta seguira guardada hasta reconectar.";
+    reviewReason = reviewReason || "network_pending";
   } else if (!state.cashier.authenticated || !state.cashier.token) {
-    note = `Tienes que iniciar sesion de ${recordCashier || "ese cajero"} para sincronizarla.`;
+    reviewReason = "auth_required";
   } else if (branchMismatch) {
     displayStatus = "requires_review";
-    note = `Pendiente de ${getBranchLabel(recordBranch)}. Abre esa caja o usa el mismo cajero para resincronizar.`;
+    reviewReason = "branch_mismatch";
   } else if (safeRecord.lastError) {
-    note = String(safeRecord.lastError);
     if (baseStatus === "pending" && Number.isFinite(Number(safeRecord.lastErrorCode))) {
       const statusCode = Number(safeRecord.lastErrorCode);
       if (statusCode >= 400 && statusCode < 500) {
         displayStatus = "requires_review";
       }
     }
+    reviewReason = reviewReason || "sync_error";
   } else {
-    note = "Lista para sincronizar en cuanto haya sesion e internet.";
+    reviewReason = reviewReason || "ready";
   }
+
+  const guidance = buildOfflineOperationReviewGuidance({
+    kind: "sale",
+    status: displayStatus,
+    reviewReason,
+    lastError: safeRecord.lastError,
+    lastErrorCode: safeRecord.lastErrorCode,
+    branch: recordBranch,
+    cashier: recordCashier,
+    branchMismatch,
+    authMissing: Boolean(state.online && (!state.cashier.authenticated || !state.cashier.token)),
+    conflicts,
+  });
+  note = formatOfflineOperationReviewNote(guidance);
 
   return {
     status: displayStatus,
@@ -589,6 +857,9 @@ function getOfflineSaleDisplayState(record) {
     canRetry: true,
     canReject: true,
     canReactivate: false,
+    reason: guidance.reason,
+    action: guidance.action,
+    reviewReason,
   };
 }
 
@@ -701,6 +972,7 @@ function getOfflineReceivablePaymentDisplayState(record) {
   const linkedSaleDisplayState = linkedSale ? getOfflineSaleDisplayState(linkedSale) : null;
   let displayStatus = baseStatus;
   let note = "";
+  let reviewReason = String(safeRecord.reviewReason || "");
 
   if (baseStatus === "synced") {
     note = safeRecord.syncedAt
@@ -713,6 +985,9 @@ function getOfflineReceivablePaymentDisplayState(record) {
       canRetry: false,
       canReject: false,
       canReactivate: false,
+      reason: "Abono sincronizado.",
+      action: "No requiere accion.",
+      reviewReason,
     };
   }
 
@@ -722,25 +997,42 @@ function getOfflineReceivablePaymentDisplayState(record) {
       || safeRecord.lastError
       || "Abono archivado para revision manual.",
     );
+    const guidance = buildOfflineOperationReviewGuidance({
+      kind: "receivable_payment",
+      status: "rejected",
+      lastError: note,
+      reviewReason,
+    });
     return {
       status: "rejected",
       label: getOfflineReceivablePaymentStatusLabel("rejected"),
-      note,
+      note: formatOfflineOperationReviewNote(guidance),
       canRetry: false,
       canReject: false,
       canReactivate: true,
+      reason: guidance.reason,
+      action: guidance.action,
+      reviewReason,
     };
   }
 
   if (linkedClientSaleId) {
     if (!linkedSale) {
+      const guidance = buildOfflineOperationReviewGuidance({
+        kind: "receivable_payment",
+        status: "requires_review",
+        reviewReason: "sale_dependency_missing",
+      });
       return {
         status: "requires_review",
         label: getOfflineReceivablePaymentStatusLabel("requires_review"),
-        note: "El ticket offline ligado a este abono ya no esta disponible en el dispositivo.",
+        note: formatOfflineOperationReviewNote(guidance),
         canRetry: true,
         canReject: false,
         canReactivate: false,
+        reason: guidance.reason,
+        action: guidance.action,
+        reviewReason: "sale_dependency_missing",
       };
     }
 
@@ -748,8 +1040,11 @@ function getOfflineReceivablePaymentDisplayState(record) {
       displayStatus = linkedSaleDisplayState?.status === "requires_review"
         ? "requires_review"
         : displayStatus;
+      reviewReason = linkedSaleDisplayState?.status === "requires_review"
+        ? (linkedSaleDisplayState.reviewReason || "sale_dependency_waiting")
+        : "sale_dependency_waiting";
       note = linkedSaleDisplayState?.status === "requires_review"
-        ? `El ticket ${linkedSale.localTicketNumber || "offline"} necesita revision antes de sincronizar este abono.`
+        ? `Causa: el ticket ${linkedSale.localTicketNumber || "offline"} necesita revision antes de sincronizar este abono. Accion: corrige primero la venta offline ligada.`
         : `Esperando que primero se sincronice ${linkedSale.localTicketNumber || linkedSale.syncedTicketNumber || "el ticket offline"}.`;
       return {
         status: displayStatus,
@@ -758,29 +1053,45 @@ function getOfflineReceivablePaymentDisplayState(record) {
         canRetry: true,
         canReject: false,
         canReactivate: false,
+        reason: linkedSaleDisplayState?.reason || "El abono espera la venta offline original.",
+        action: linkedSaleDisplayState?.action || "Sincroniza primero el ticket offline ligado.",
+        reviewReason,
       };
     }
   }
 
   const branchMismatch = Boolean(recordBranch && recordBranch !== getActiveCashierBranch());
   if (!state.online) {
-    note = "Sin internet. El abono seguira guardado hasta reconectar.";
+    reviewReason = reviewReason || "network_pending";
   } else if (!state.cashier.authenticated || !state.cashier.token) {
-    note = `Tienes que iniciar sesion de ${recordCashier || "ese cajero"} para sincronizarlo.`;
+    reviewReason = "auth_required";
   } else if (branchMismatch) {
     displayStatus = "requires_review";
-    note = `Pendiente de ${getBranchLabel(recordBranch)}. Abre esa caja o usa el mismo cajero para resincronizar.`;
+    reviewReason = "branch_mismatch";
   } else if (safeRecord.lastError) {
-    note = String(safeRecord.lastError);
     if (baseStatus === "pending" && Number.isFinite(Number(safeRecord.lastErrorCode))) {
       const statusCode = Number(safeRecord.lastErrorCode);
       if (statusCode >= 400 && statusCode < 500) {
         displayStatus = "requires_review";
       }
     }
+    reviewReason = reviewReason || "sync_error";
   } else {
-    note = "Listo para sincronizar en cuanto haya sesion e internet.";
+    reviewReason = reviewReason || "ready";
   }
+
+  const guidance = buildOfflineOperationReviewGuidance({
+    kind: "receivable_payment",
+    status: displayStatus,
+    reviewReason,
+    lastError: safeRecord.lastError,
+    lastErrorCode: safeRecord.lastErrorCode,
+    branch: recordBranch,
+    cashier: recordCashier,
+    branchMismatch,
+    authMissing: Boolean(state.online && (!state.cashier.authenticated || !state.cashier.token)),
+  });
+  note = formatOfflineOperationReviewNote(guidance);
 
   return {
     status: displayStatus,
@@ -789,6 +1100,9 @@ function getOfflineReceivablePaymentDisplayState(record) {
     canRetry: true,
     canReject: false,
     canReactivate: false,
+    reason: guidance.reason,
+    action: guidance.action,
+    reviewReason,
   };
 }
 
@@ -912,7 +1226,7 @@ function getStoreProfile() {
 }
 
 function getStoreName() {
-  return getStoreProfile().businessName || state.store?.name || "Retail POS";
+  return getStoreProfile().businessName || state.store?.name || "Merxalia POS";
 }
 
 function getEnabledModules() {

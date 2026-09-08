@@ -14,6 +14,8 @@ const CLONE_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "clone-business.js");
 const DEMO_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "seed-demo-instance.js");
 const PROVISION_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "provision-client.js");
 const VALIDATE_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "validate-client.js");
+const READINESS_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "readiness-gate.js");
+const PRINT_QA_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "generate-print-qa-ticket.js");
 const RUN_TESTS_ISOLATED_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "run-tests-isolated.js");
 const WORKBOOK_PATH = path.join(ROOT_DIR, "Queseria El rincon V1.5.xlsx");
 const ABARROTES_WORKBOOK_PATH = path.join(ROOT_DIR, "catalogos", "abarrotes-base.xlsx");
@@ -501,7 +503,7 @@ test("seed-demo-instance creates a commercial demo with users and sample activit
   );
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /Demo Axentra POS lista/i);
+  assert.match(result.stdout, /Demo Merxalia POS lista/i);
   assert.equal(fs.existsSync(dbPath), true);
   assert.equal(fs.existsSync(path.join(tempDir, "demo.private.md")), true);
 
@@ -512,6 +514,11 @@ test("seed-demo-instance creates a commercial demo with users and sample activit
     const salesCount = Number(db.prepare("SELECT COUNT(*) AS count FROM sales").get()?.count || 0);
     const creditSalesCount = Number(db.prepare("SELECT COUNT(*) AS count FROM sales WHERE payment_method = 'Fiado'").get()?.count || 0);
     const creditPaymentsCount = Number(db.prepare("SELECT COUNT(*) AS count FROM credit_payments").get()?.count || 0);
+    const lowStockCount = Number(db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM products
+      WHERE active = 1 AND stock_initialized = 1 AND stock <= min_stock
+    `).get()?.count || 0);
     const registerEventsCount = Number(db.prepare("SELECT COUNT(*) AS count FROM register_events").get()?.count || 0);
     const servicePaymentCount = Number(db.prepare("SELECT COUNT(*) AS count FROM service_subscription_payments").get()?.count || 0);
     const ownerCount = Number(db.prepare("SELECT COUNT(*) AS count FROM app_settings WHERE key LIKE 'owner.%'").get()?.count || 0);
@@ -522,6 +529,7 @@ test("seed-demo-instance creates a commercial demo with users and sample activit
     assert.equal(salesCount, 3);
     assert.equal(creditSalesCount, 1);
     assert.equal(creditPaymentsCount, 1);
+    assert.ok(lowStockCount >= 1);
     assert.ok(registerEventsCount >= 2);
     assert.equal(servicePaymentCount, 1);
     assert.ok(ownerCount >= 2);
@@ -529,4 +537,232 @@ test("seed-demo-instance creates a commercial demo with users and sample activit
   } finally {
     db.close();
   }
+});
+
+function writeReadinessEvidence(tempDir, overrides = {}) {
+  const checkedAt = new Date().toISOString();
+  const evidence = {
+    client: "cliente-prueba",
+    testsPassed: true,
+    auditClean: true,
+    supportConfigured: true,
+    catalogLoadedWithoutCriticalDuplicates: true,
+    adminSimpleModeConfigured: true,
+    followUpPlan: true,
+    offlinePreparedDevices: [
+      { name: "Caja", branch: "carrizal", ready: true, checkedAt },
+    ],
+    backup: {
+      verifyCommandExitCode: 0,
+      status: "ok",
+      verifiedAt: checkedAt,
+      sqliteBytes: 4096,
+      workbookBytes: 2048,
+      sqliteArtifact: "clientes/cliente-prueba/daily/2026-08-15/cliente.sqlite",
+      workbookArtifact: "clientes/cliente-prueba/daily/2026-08-15/cliente.xlsx",
+      restorationTested: false,
+      restorationTestedAt: "",
+    },
+    railway: {
+      backupCronServiceCreated: false,
+      serviceName: "",
+      backupCronVerifiedAt: "",
+    },
+    printing: {
+      promisedTicket: false,
+      hardwareTestPassed: false,
+      hardwareTestedAt: "",
+      model: "",
+      qaDocument: "docs/QA-IMPRESION-HARDWARE.md",
+    },
+    ...overrides,
+  };
+  const evidencePath = path.join(tempDir, "readiness.json");
+  fs.writeFileSync(evidencePath, JSON.stringify(evidence, null, 2));
+  return evidencePath;
+}
+
+test("readiness gate approves pilot only with required evidence", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-readiness-ok-"));
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const evidencePath = writeReadinessEvidence(tempDir);
+  const result = runNodeScript(READINESS_SCRIPT_PATH, ["--stage", "pilot", "--evidence", evidencePath]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Readiness pilot: APROBADO/);
+});
+
+test("readiness gate blocks promised physical ticket without hardware evidence", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-readiness-print-"));
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const evidencePath = writeReadinessEvidence(tempDir, {
+    printing: {
+      promisedTicket: true,
+      hardwareTestPassed: false,
+    },
+  });
+  const result = runNodeScript(READINESS_SCRIPT_PATH, ["--stage", "pilot", "--evidence", evidencePath]);
+  assert.equal(result.status, 1);
+  assert.match(`${result.stdout}\n${result.stderr}`, /falta prueba real de impresora/i);
+});
+
+test("readiness gate approves promised physical ticket with QA document", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-readiness-print-ok-"));
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const evidencePath = writeReadinessEvidence(tempDir, {
+    printing: {
+      promisedTicket: true,
+      hardwareTestPassed: true,
+      hardwareTestedAt: new Date().toISOString(),
+      model: "Impresora termica prueba",
+      qaDocument: "docs/QA-IMPRESION-HARDWARE.md",
+    },
+  });
+  const result = runNodeScript(READINESS_SCRIPT_PATH, ["--stage", "pilot", "--evidence", evidencePath]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+test("readiness gate blocks backup evidence without artifacts and bytes", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-readiness-backup-"));
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const evidencePath = writeReadinessEvidence(tempDir, {
+    backup: {
+      verifyCommandExitCode: 0,
+      status: "ok",
+      verifiedAt: new Date().toISOString(),
+      sqliteBytes: 0,
+      workbookBytes: 0,
+      sqliteArtifact: "",
+      workbookArtifact: "",
+    },
+  });
+  const result = runNodeScript(READINESS_SCRIPT_PATH, ["--stage", "pilot", "--evidence", evidencePath]);
+  assert.equal(result.status, 1);
+  assert.match(`${result.stdout}\n${result.stderr}`, /bytes SQLite/i);
+  assert.match(`${result.stdout}\n${result.stderr}`, /artefacto Excel/i);
+});
+
+test("readiness gate can consume backup verify JSON report", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-readiness-report-"));
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const reportPath = path.join(tempDir, "backup-report.json");
+  fs.writeFileSync(reportPath, JSON.stringify({
+    ok: true,
+    checkedAt: new Date().toISOString(),
+    lastRun: {
+      status: "ok",
+      sqliteBytes: 2048,
+      workbookBytes: 1024,
+      sqliteRemoteKey: "clientes/cliente-prueba/daily/2026-08-15/cliente.sqlite",
+      workbookRemoteKey: "clientes/cliente-prueba/daily/2026-08-15/cliente.xlsx",
+    },
+  }, null, 2));
+
+  const evidencePath = writeReadinessEvidence(tempDir, {
+    backup: {
+      verifyReportPath: "backup-report.json",
+      verifyCommandExitCode: 1,
+      status: "pending",
+      verifiedAt: "",
+      sqliteBytes: 0,
+      workbookBytes: 0,
+      sqliteArtifact: "",
+      workbookArtifact: "",
+    },
+  });
+  const result = runNodeScript(READINESS_SCRIPT_PATH, ["--stage", "pilot", "--evidence", evidencePath]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Readiness pilot: APROBADO/);
+});
+
+test("readiness gate blocks scale without Railway cron and restoration evidence", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-readiness-scale-"));
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const evidencePath = writeReadinessEvidence(tempDir);
+  const result = runNodeScript(READINESS_SCRIPT_PATH, ["--stage", "scale", "--evidence", evidencePath]);
+  assert.equal(result.status, 1);
+  assert.match(`${result.stdout}\n${result.stderr}`, /servicio cron real/i);
+  assert.match(`${result.stdout}\n${result.stderr}`, /restauracion probada/i);
+});
+
+test("readiness gate approves scale with cron and restoration documents", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-readiness-scale-ok-"));
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+  const checkedAt = new Date().toISOString();
+
+  const evidencePath = writeReadinessEvidence(tempDir, {
+    backup: {
+      verifyCommandExitCode: 0,
+      status: "ok",
+      verifiedAt: checkedAt,
+      sqliteBytes: 4096,
+      workbookBytes: 2048,
+      sqliteArtifact: "clientes/cliente-prueba/daily/2026-08-15/cliente.sqlite",
+      workbookArtifact: "clientes/cliente-prueba/daily/2026-08-15/cliente.xlsx",
+      restorationTested: true,
+      restorationTestedAt: checkedAt,
+      restorationEvidenceDocument: "docs/PLAYBOOK-RESTAURACION.md",
+    },
+    railway: {
+      backupCronServiceCreated: true,
+      serviceName: "cliente-prueba-backup",
+      backupCronVerifiedAt: checkedAt,
+      evidenceDocument: "docs/RAILWAY-BACKUP-CRON.md",
+    },
+  });
+  const result = runNodeScript(READINESS_SCRIPT_PATH, ["--stage", "scale", "--evidence", evidencePath]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Readiness scale: APROBADO/);
+});
+
+test("print QA ticket script writes reproducible html text and metadata", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-print-qa-"));
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const result = runNodeScript(PRINT_QA_SCRIPT_PATH, [
+    "--out",
+    tempDir,
+    "--ticket",
+    "QA-TEST-001",
+    "--store",
+    "Merxalia QA",
+  ]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const htmlPath = path.join(tempDir, "qa-test-001.html");
+  const textPath = path.join(tempDir, "qa-test-001.txt");
+  const metaPath = path.join(tempDir, "qa-test-001.json");
+  assert.equal(fs.existsSync(htmlPath), true);
+  assert.equal(fs.existsSync(textPath), true);
+  assert.equal(fs.existsSync(metaPath), true);
+
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const text = fs.readFileSync(textPath, "utf8");
+  const metadata = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+  assert.match(html, /@page \{ size: 80mm auto/);
+  assert.match(html, /Merxalia QA/);
+  assert.match(text, /TOTAL:/);
+  assert.equal(metadata.ticketNumber, "QA-TEST-001");
+  assert.equal(metadata.expectedTotal, 356.75);
 });

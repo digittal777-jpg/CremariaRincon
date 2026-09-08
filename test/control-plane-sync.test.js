@@ -935,6 +935,7 @@ test("POS tracks recent control-plane auth failures after owner-control rotates 
       "Content-Type": "application/json",
       "X-Owner-Control-Token": "owner-sync-token",
     },
+    body: JSON.stringify({ graceMinutes: 0 }),
   });
   assert.equal(rotated.status, 200);
 

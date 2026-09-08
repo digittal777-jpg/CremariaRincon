@@ -8,6 +8,9 @@ const {
   POS_FORCE_HTTPS,
   POS_HSTS_MAX_AGE_SECONDS,
   POS_PUBLIC_ORIGIN,
+  POS_SUPPORT_LABEL,
+  POS_SUPPORT_PHONE,
+  POS_SUPPORT_WHATSAPP_URL,
   POS_TRUST_PROXY,
   POS_HTTPS_CERT_B64,
   POS_HTTPS_CERT_PATH,
@@ -359,6 +362,30 @@ function buildSecurityPosture() {
   return result;
 }
 
+function buildSupportContactSummary() {
+  const configuredUrl = String(POS_SUPPORT_WHATSAPP_URL || "").trim();
+  const phoneDigits = String(POS_SUPPORT_PHONE || "").replace(/\D/g, "");
+  const whatsappUrl = configuredUrl || (phoneDigits ? `https://wa.me/${phoneDigits}` : "");
+  let valid = false;
+
+  if (whatsappUrl) {
+    try {
+      const parsedUrl = new URL(whatsappUrl);
+      valid = ["http:", "https:"].includes(parsedUrl.protocol);
+    } catch (_error) {
+      valid = false;
+    }
+  }
+
+  return {
+    label: POS_SUPPORT_LABEL || "Soporte",
+    configured: valid,
+    whatsappUrl: valid ? whatsappUrl : "",
+    phoneConfigured: Boolean(phoneDigits),
+    urlConfigured: Boolean(configuredUrl),
+  };
+}
+
 function buildSupportHealthSemaphore({
   backupStatus,
   syncHealth,
@@ -553,6 +580,7 @@ function getSupportHealthReport(options = {}) {
   const runtimeSnapshot = getRuntimeConfigEditorSnapshot();
   const security = buildSecurityPosture();
   const subscription = getServiceSubscription();
+  const supportContact = buildSupportContactSummary();
 
   return {
     branch,
@@ -563,7 +591,13 @@ function getSupportHealthReport(options = {}) {
       nodeVersion: process.version,
       platform: process.platform,
       uptimeSeconds: Math.round(process.uptime()),
+      printing: {
+        mode: "browser",
+        receiptWidthMm: 80,
+        nativeDriverRequired: false,
+      },
     },
+    supportContact,
     database,
     latestSale,
     counts,

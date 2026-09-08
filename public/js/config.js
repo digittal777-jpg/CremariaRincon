@@ -44,6 +44,7 @@ const STORAGE_KEYS = {
   shift: "cremeria.shift",
   routeMode: "cremeria.routeMode",
   routeRegisterCollapsed: "cremeria.routeRegisterCollapsed",
+  scannerMode: "cremeria.scannerMode",
   cashierSession: "cremeria.cashier.session",
   cashierOfflineProfiles: "cremeria.cashier.offlineProfiles",
   snapshot: "cremeria.snapshot",

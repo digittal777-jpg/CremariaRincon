@@ -1023,14 +1023,14 @@ function initializeSchema(db) {
     SELECT 1, ?, ?, ?, 'MXN', 'es-MX', ?, 'POS', 'base', ?, '{}', ?, ?, ?
     WHERE NOT EXISTS (SELECT 1 FROM business_profile WHERE id = 1)
   `).run(
-    "Retail Base POS",
-    "retail-base-pos",
-    "Retail POS",
+    "Merxalia POS",
+    "merxalia-pos",
+    "Merxalia",
     STORE_TIME_ZONE,
     JSON.stringify({
-      logo192: "/assets/branding/retail-base-badge.svg",
-      logo512: "/assets/branding/retail-base-badge.svg",
-      logo: "/assets/branding/retail-base-badge.svg",
+      logo192: "/assets/branding/merxalia-badge.svg",
+      logo512: "/assets/branding/merxalia-badge.svg",
+      logo: "/assets/branding/merxalia-badge.svg",
     }),
     JSON.stringify([]),
     seededAt,

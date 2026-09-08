@@ -1288,6 +1288,7 @@ async function restoreCart() {
 function persistPreferences() {
   persistText(STORAGE_KEYS.shift, refs.shiftSelect.value);
   persistText(STORAGE_KEYS.routeMode, state.ui?.routeMode ? "1" : "0");
+  persistText(STORAGE_KEYS.scannerMode, state.ui?.scannerMode ? "1" : "0");
   persistText(
     STORAGE_KEYS.routeRegisterCollapsed,
     state.ui?.routeRegisterCollapsed ? "1" : "0",
@@ -1301,6 +1302,7 @@ async function restorePreferences() {
     STORAGE_KEYS.routeRegisterCollapsed,
     "",
   );
+  const savedScannerMode = await readPersistedText(STORAGE_KEYS.scannerMode, "");
 
   if (savedShift) {
     refs.shiftSelect.value = savedShift;
@@ -1312,6 +1314,9 @@ async function restorePreferences() {
     state.ui.routeMode = savedRouteMode === "1";
   } else {
     state.ui.routeMode = shouldPreferRouteModeByDefault();
+  }
+  if (savedScannerMode === "1" || savedScannerMode === "0") {
+    state.ui.scannerMode = savedScannerMode === "1";
   }
 
   if (state.ui.routeMode) {

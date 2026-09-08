@@ -272,6 +272,87 @@ function listProducts(branch = "carrizal", options = {}) {
   return mapProductRows(rows);
 }
 
+function normalizeProductPageLimit(value, fallback = 120) {
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit <= 0) {
+    return fallback;
+  }
+  return Math.min(Math.max(limit, 1), 250);
+}
+
+function listProductsPage(branch = "carrizal", options = {}) {
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const includeInactive = options.includeInactive === true;
+  const limit = normalizeProductPageLimit(options.limit);
+  const offset = Math.max(0, Number.parseInt(String(options.offset || 0), 10) || 0);
+  const search = normalizeText(options.search || "", 120).toLowerCase();
+  const filter = normalizeText(options.filter || "all", 24).toLowerCase();
+  const clauses = [];
+  const params = [];
+
+  if (normalizedBranch !== ALL_BRANCHES) {
+    clauses.push("p.branch = ?");
+    params.push(normalizedBranch);
+  }
+  if (!includeInactive && filter !== "inactive") {
+    clauses.push("p.active = 1");
+  }
+  if (search) {
+    clauses.push(`(
+      LOWER(p.name) LIKE ?
+      OR LOWER(COALESCE(p.sku, '')) LIKE ?
+      OR LOWER(COALESCE(p.barcode, '')) LIKE ?
+      OR LOWER(COALESCE(p.brand, '')) LIKE ?
+      OR LOWER(COALESCE(p.supplier_name, '')) LIKE ?
+      OR LOWER(COALESCE(pc.label, p.category, '')) LIKE ?
+    )`);
+    const searchLike = `%${search}%`;
+    params.push(searchLike, searchLike, searchLike, searchLike, searchLike, searchLike);
+  }
+  if (filter === "low") {
+    clauses.push("p.active = 1 AND p.stock_initialized = 1 AND p.stock <= p.min_stock AND p.stock >= 0");
+  } else if (filter === "negative") {
+    clauses.push("p.stock < 0");
+  } else if (filter === "uncounted") {
+    clauses.push("(p.stock_initialized = 0 OR p.stock_initialized IS NULL)");
+  } else if (filter === "inactive") {
+    clauses.push("p.active = 0");
+  }
+
+  const whereSql = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const total = Number(db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM products p
+    LEFT JOIN product_categories pc ON pc.id = p.category_id
+    ${whereSql}
+  `).get(...params)?.count || 0);
+  const rows = db.prepare(`
+    ${getProductSelectSql()}
+    ${whereSql}
+    ORDER BY
+      p.branch COLLATE NOCASE,
+      COALESCE(pc.sort_order, 9999),
+      p.display_order,
+      p.name COLLATE NOCASE
+    LIMIT ? OFFSET ?
+  `).all(...params, limit, offset);
+
+  return {
+    products: mapProductRows(rows),
+    page: {
+      branch: normalizedBranch,
+      limit,
+      offset,
+      total,
+      returned: rows.length,
+      hasMore: offset + rows.length < total,
+      search,
+      filter,
+      includeInactive,
+    },
+  };
+}
+
 function getProductById(productId, branch = "carrizal") {
   const normalizedBranch = normalizeBranch(branch);
   const row = db.prepare(`
@@ -659,13 +740,281 @@ function listAllProductsForExport(options = {}) {
   `).all(...params);
 }
 
+function normalizeDuplicateMatchValue(value = "") {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function buildDuplicateProductSummary(row) {
+  return {
+    id: Number(row.id),
+    name: row.name,
+    sku: row.sku || "",
+    barcode: row.barcode || "",
+    brand: row.brand || "",
+    supplierName: row.supplier_name || "",
+    price: roundMoney(row.price || 0),
+    cost: roundMoney(row.cost || 0),
+    stock: roundStock(row.stock || 0),
+    active: Boolean(row.active),
+    branch: row.branch,
+  };
+}
+
+function listProductDuplicateCandidates(branch = "carrizal", options = {}) {
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const search = normalizeDuplicateMatchValue(options.search || "");
+  const branchSql = normalizedBranch === ALL_BRANCHES ? "" : "WHERE branch = ?";
+  const rows = db.prepare(`
+    SELECT id, name, sku, barcode, brand, supplier_name, price, cost, stock, active, branch
+    FROM products
+    ${branchSql}
+    ORDER BY branch COLLATE NOCASE, active DESC, name COLLATE NOCASE, id ASC
+  `).all(...(normalizedBranch === ALL_BRANCHES ? [] : [normalizedBranch]));
+  const groups = new Map();
+
+  rows.forEach((row) => {
+    const candidates = [
+      row.barcode ? { type: "barcode", label: "Codigo de barras", value: normalizeDuplicateMatchValue(row.barcode) } : null,
+      row.sku ? { type: "sku", label: "SKU", value: normalizeDuplicateMatchValue(row.sku) } : null,
+      row.name ? { type: "name", label: "Nombre parecido", value: normalizeDuplicateMatchValue(row.name) } : null,
+    ].filter((item) => item?.value);
+
+    candidates.forEach((candidate) => {
+      const key = `${row.branch}:${candidate.type}:${candidate.value}`;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          branch: row.branch,
+          matchType: candidate.type,
+          matchLabel: candidate.label,
+          matchValue: candidate.value,
+          products: [],
+        });
+      }
+      groups.get(key).products.push(buildDuplicateProductSummary(row));
+    });
+  });
+
+  return [...groups.values()]
+    .filter((group) => group.products.length > 1)
+    .filter((group) => {
+      if (!search) {
+        return true;
+      }
+      return group.products.some((product) =>
+        normalizeDuplicateMatchValue([
+          product.name,
+          product.sku,
+          product.barcode,
+          product.brand,
+          product.supplierName,
+        ].join(" ")).includes(search),
+      );
+    })
+    .map((group) => {
+      const products = group.products
+        .sort((left, right) => Number(right.active) - Number(left.active) || right.stock - left.stock || left.id - right.id);
+      return {
+        ...group,
+        products,
+        stockTotal: roundStock(products.reduce((sum, product) => sum + roundStock(product.stock || 0), 0)),
+        activeCount: products.filter((product) => product.active).length,
+      };
+    })
+    .sort((left, right) =>
+      left.branch.localeCompare(right.branch, "es")
+      || right.stockTotal - left.stockTotal
+      || left.matchValue.localeCompare(right.matchValue, "es"),
+    );
+}
+
+function copyMissingProductAttributes(sourceProductId, targetProductId, timestamp) {
+  db.prepare(`
+    INSERT OR IGNORE INTO product_attribute_values (
+      product_id,
+      definition_id,
+      value_text,
+      updated_at
+    )
+    SELECT
+      ?,
+      source.definition_id,
+      source.value_text,
+      ?
+    FROM product_attribute_values source
+    WHERE source.product_id = ?
+      AND COALESCE(source.value_text, '') <> ''
+  `).run(targetProductId, timestamp, sourceProductId);
+}
+
+function mergeProductDuplicates(payload = {}) {
+  const branch = normalizeBranch(payload.branch);
+  const sourceProductId = Number(payload.sourceProductId);
+  const targetProductId = Number(payload.targetProductId);
+
+  if (!Number.isInteger(sourceProductId) || sourceProductId <= 0) {
+    throw createHttpError("Selecciona el producto duplicado que vas a fusionar.", 400);
+  }
+  if (!Number.isInteger(targetProductId) || targetProductId <= 0) {
+    throw createHttpError("Selecciona el producto principal que va a quedar.", 400);
+  }
+  if (sourceProductId === targetProductId) {
+    throw createHttpError("El producto duplicado y el principal no pueden ser el mismo.", 400);
+  }
+
+  const source = db.prepare(`
+    SELECT *
+    FROM products
+    WHERE id = ? AND branch = ?
+  `).get(sourceProductId, branch);
+  const target = db.prepare(`
+    SELECT *
+    FROM products
+    WHERE id = ? AND branch = ?
+  `).get(targetProductId, branch);
+
+  if (!source || !target) {
+    throw createHttpError("Los productos deben existir en la misma sucursal.", 404);
+  }
+
+  const mergedAt = nowIso();
+  const sourceStock = roundStock(source.stock || 0);
+  const targetStockBefore = roundStock(target.stock || 0);
+  const targetStockAfter = roundStock(targetStockBefore + sourceStock);
+
+  const result = db.transaction(() => {
+    const salesUpdated = db.prepare("UPDATE sale_items SET product_id = ? WHERE product_id = ?")
+      .run(targetProductId, sourceProductId).changes;
+    const movementsUpdated = db.prepare("UPDATE inventory_movements SET product_id = ? WHERE product_id = ?")
+      .run(targetProductId, sourceProductId).changes;
+    const requestsUpdated = db.prepare("UPDATE merchandise_request_items SET product_id = ? WHERE product_id = ?")
+      .run(targetProductId, sourceProductId).changes;
+
+    copyMissingProductAttributes(sourceProductId, targetProductId, mergedAt);
+    const sourceAttributesRemoved = db.prepare("DELETE FROM product_attribute_values WHERE product_id = ?")
+      .run(sourceProductId).changes;
+
+    const weightedRows = db.prepare(`
+      SELECT id, session_id, product_id
+      FROM weighted_audit_items
+      WHERE product_id = ?
+    `).all(sourceProductId);
+    let weightedAuditUpdated = 0;
+    weightedRows.forEach((row) => {
+      const targetExists = db.prepare(`
+        SELECT id
+        FROM weighted_audit_items
+        WHERE session_id = ? AND product_id = ?
+      `).get(row.session_id, targetProductId);
+      if (targetExists) {
+        db.prepare("DELETE FROM weighted_audit_items WHERE id = ?").run(row.id);
+      } else {
+        weightedAuditUpdated += db.prepare(`
+          UPDATE weighted_audit_items
+          SET product_id = ?, updated_at = ?
+          WHERE id = ?
+        `).run(targetProductId, mergedAt, row.id).changes;
+      }
+    });
+
+    db.prepare(`
+      UPDATE products
+      SET
+        stock = ?,
+        stock_initialized = CASE WHEN stock_initialized = 1 OR ? = 1 THEN 1 ELSE stock_initialized END,
+        cost = CASE WHEN COALESCE(cost, 0) > 0 THEN cost ELSE ? END,
+        sku = CASE WHEN COALESCE(sku, '') <> '' THEN sku ELSE ? END,
+        barcode = CASE WHEN COALESCE(barcode, '') <> '' THEN barcode ELSE ? END,
+        brand = CASE WHEN COALESCE(brand, '') <> '' THEN brand ELSE ? END,
+        supplier_name = CASE WHEN COALESCE(supplier_name, '') <> '' THEN supplier_name ELSE ? END,
+        pack_size = CASE WHEN pack_size IS NOT NULL THEN pack_size ELSE ? END,
+        min_stock = MAX(COALESCE(min_stock, 0), ?),
+        active = CASE WHEN active = 1 OR ? = 1 THEN 1 ELSE active END,
+        updated_at = ?
+      WHERE id = ? AND branch = ?
+    `).run(
+      targetStockAfter,
+      Number(source.stock_initialized || 0),
+      roundMoney(source.cost || 0),
+      source.sku || null,
+      source.barcode || null,
+      source.brand || null,
+      source.supplier_name || null,
+      source.pack_size ?? null,
+      roundStock(source.min_stock || 0),
+      Number(source.active || 0),
+      mergedAt,
+      targetProductId,
+      branch,
+    );
+
+    db.prepare(`
+      UPDATE products
+      SET stock = 0, active = 0, updated_at = ?
+      WHERE id = ? AND branch = ?
+    `).run(mergedAt, sourceProductId, branch);
+
+    if (sourceStock !== 0) {
+      db.prepare(`
+        INSERT INTO inventory_movements (
+          product_id,
+          movement_type,
+          branch,
+          quantity_delta,
+          stock_before,
+          stock_after,
+          note,
+          reference_type,
+          reference_id,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        targetProductId,
+        "merge",
+        branch,
+        sourceStock,
+        targetStockBefore,
+        targetStockAfter,
+        `Fusion de producto duplicado #${sourceProductId}: ${source.name}`,
+        "product_merge",
+        sourceProductId,
+        mergedAt,
+      );
+    }
+
+    return {
+      salesUpdated,
+      movementsUpdated,
+      requestsUpdated,
+      weightedAuditUpdated,
+      sourceAttributesRemoved,
+      sourceProductId,
+      targetProductId,
+      branch,
+      stockMerged: sourceStock,
+    };
+  })();
+
+  return {
+    ...result,
+    product: getProductById(targetProductId, branch),
+  };
+}
+
 module.exports = {
   createProduct,
   ensureCatalogSeeded,
   getProductById,
   importCatalogFromWorkbook,
   listAllProductsForExport,
+  listProductDuplicateCandidates,
   listProducts,
+  listProductsPage,
+  mergeProductDuplicates,
   removeProduct,
   resolveWorkbookPath,
   updateProduct,

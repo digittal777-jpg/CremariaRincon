@@ -276,7 +276,7 @@ function getBusinessProfile() {
       return {
         id: Number(row.id),
         businessName: row.business_name || STORE_NAME,
-        slug: row.slug || "retail-base-pos",
+        slug: row.slug || "merxalia-pos",
         shortName: row.short_name || row.business_name || STORE_NAME,
         currencyCode: row.currency_code || "MXN",
         locale: row.locale || "es-MX",
@@ -296,18 +296,18 @@ function getBusinessProfile() {
 
   return {
     id: 1,
-    businessName: "Retail Base POS",
-    slug: "retail-base-pos",
-    shortName: "Retail POS",
+    businessName: "Merxalia POS",
+    slug: "merxalia-pos",
+    shortName: "Merxalia",
     currencyCode: "MXN",
     locale: "es-MX",
     timezone: STORE_TIME_ZONE,
     ticketPrefix: "POS",
     templateKey: "base",
     branding: {
-      logo192: "/assets/branding/retail-base-badge.svg",
-      logo512: "/assets/branding/retail-base-badge.svg",
-      logo: "/assets/branding/retail-base-badge.svg",
+      logo192: "/assets/branding/merxalia-badge.svg",
+      logo512: "/assets/branding/merxalia-badge.svg",
+      logo: "/assets/branding/merxalia-badge.svg",
     },
     visibleTexts: {},
     modules: [],

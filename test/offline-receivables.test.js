@@ -182,8 +182,12 @@ function loadOfflineReceivablesContext() {
       getCachedReceivableCustomerDetail,
       upsertReceivablesCacheCustomers,
       upsertReceivablesCacheCustomerDetail,
+      buildReceivableStatementText,
+      buildReceivableStatementPrintHtml,
       registerPendingOfflineSale,
       registerPendingOfflineReceivablePayment,
+      markOfflineReceivablePaymentForReview,
+      getOfflineReceivablePaymentDisplayState,
       getOfflineReceivablePaymentRecordByClientPaymentId,
       getOfflineSaleRecordByClientSaleId,
       normalizeQueuedOperation,
@@ -198,6 +202,98 @@ function loadOfflineReceivablesContext() {
     toResponse,
   };
 }
+
+test("receivable statement can be printed safely and shared as plain WhatsApp text", () => {
+  const { api } = loadOfflineReceivablesContext();
+
+  api.state.store.name = "Merxalia POS";
+  api.state.online = false;
+  const customer = {
+    customerKey: "cust-danger",
+    customerName: '<script>alert("cliente")</script>',
+    branch: "carrizal",
+    pendingAmount: 75,
+    paidAmount: 25,
+    openSalesCount: 1,
+    localSaleCount: 1,
+    localPaymentCount: 1,
+    sales: [
+      {
+        ticketNumber: 'RIN-9" onclick="boom',
+        cashier: "Caja",
+        shift: "Tarde",
+        total: 100,
+        paidAmount: 25,
+        pendingAmount: 75,
+        notes: '<img src=x onerror="boom">',
+        createdAt: "2026-06-10T10:00:00.000Z",
+        isLocalOnly: true,
+        pendingSyncPaymentsCount: 1,
+        payments: [
+          {
+            amount: 25,
+            paymentMethod: "Efectivo",
+            createdAt: "2026-06-10T11:00:00.000Z",
+            pendingSync: true,
+          },
+        ],
+      },
+    ],
+  };
+
+  const statementText = api.buildReceivableStatementText(customer);
+  assert.match(statementText, /Estado de cuenta - Merxalia POS/);
+  assert.match(statementText, /Total pendiente: \$75\.00/);
+  assert.match(statementText, /abono offline/);
+  assert.match(statementText, /<script>alert\("cliente"\)<\/script>/);
+
+  const printHtml = api.buildReceivableStatementPrintHtml(customer);
+  assert.match(printHtml, /&lt;script&gt;alert\(&quot;cliente&quot;\)&lt;\/script&gt;/);
+  assert.match(printHtml, /RIN-9&quot; onclick=&quot;boom/);
+  assert.match(printHtml, /&lt;img src=x onerror=&quot;boom&quot;&gt;/);
+  assert.doesNotMatch(printHtml, /<img src=x/i);
+  assert.doesNotMatch(printHtml, /<script>alert\("cliente"\)<\/script>/i);
+});
+
+test("offline receivable payment display state explains review action", () => {
+  const { api } = loadOfflineReceivablesContext();
+
+  api.state.online = true;
+  api.state.cashier.name = "Ana";
+  api.state.cashier.branch = "carrizal";
+  api.state.cashier.authenticated = true;
+  api.state.cashier.token = "cashier-token";
+
+  api.registerPendingOfflineReceivablePayment({
+    clientPaymentId: "pay-review-1",
+    saleId: 22,
+    ticketNumber: "RIN-22",
+    shift: "Tarde",
+    cashier: "Ana",
+    branch: "carrizal",
+    customerName: "Ana Perez",
+    customerKey: "cust-ana",
+    amount: 50,
+    paymentMethod: "Efectivo",
+  });
+
+  api.markOfflineReceivablePaymentForReview("pay-review-1", {
+    status: "requires_review",
+    lastError: "El abono excede el saldo pendiente.",
+    lastErrorCode: 409,
+    reviewReason: "payment_conflict",
+  });
+
+  const displayState = api.getOfflineReceivablePaymentDisplayState(
+    api.getOfflineReceivablePaymentRecordByClientPaymentId("pay-review-1"),
+  );
+
+  assert.equal(displayState.status, "requires_review");
+  assert.equal(displayState.reviewReason, "payment_conflict");
+  assert.match(displayState.reason, /rechazo el abono/i);
+  assert.match(displayState.action, /confirma el saldo actual/i);
+  assert.match(displayState.note, /Accion:/);
+});
 
 test("receivables merge cached debt, local fiados and queued offline payments into one offline view", () => {
   const { api } = loadOfflineReceivablesContext();

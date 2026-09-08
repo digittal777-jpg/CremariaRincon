@@ -81,7 +81,7 @@ function formatChatLabel(chat = {}) {
 
 function buildDefaultTestMessage() {
   const lines = [
-    "Prueba de Telegram desde Cremeria El Rincon POS.",
+    "Prueba de Telegram desde Merxalia POS.",
     `Fecha: ${new Date().toISOString()}`,
   ];
   if (POS_PUBLIC_ORIGIN) {

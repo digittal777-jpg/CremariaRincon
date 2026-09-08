@@ -56,7 +56,7 @@ function getGuideDefaults() {
 
 function buildLocalRuntimeConfigExample(defaults) {
   return {
-    POS_DB_PATH: "data/retail-base-pos.sqlite",
+    POS_DB_PATH: "data/merxalia-pos.sqlite",
     POS_WORKBOOK_PATH: defaults.catalogPath,
     POS_TIMEZONE: STORE_TIME_ZONE || "America/Mexico_City",
     POS_PUBLIC_ORIGIN: defaults.publicUrl,
@@ -76,7 +76,7 @@ function buildLocalRuntimeConfigExample(defaults) {
 }
 
 function buildOwnerOperationCommands(defaults) {
-  const localDbPath = relativeToRoot(DB_PATH || path.join(ROOT_DIR, "data", "retail-base-pos.sqlite"));
+  const localDbPath = relativeToRoot(DB_PATH || path.join(ROOT_DIR, "data", "merxalia-pos.sqlite"));
   const safeName = defaults.businessName.replace(/"/g, '\\"');
   const safeSlug = defaults.slug || "nuevo-cliente";
   const safeTemplate = defaults.templateKey || "cremeria";
@@ -106,7 +106,7 @@ function buildOwnerOperationCommands(defaults) {
       id: "prepare-railway-db",
       label: "Preparar SQLite",
       description: "Genera copia lista para volumen persistente sin perder identidad ni branding.",
-      command: `npm.cmd run prepare:railway-db -- --source ".\\${localDbPath.replace(/\//g, "\\")}" --railway-db-path /data/retail-base-pos.sqlite`,
+      command: `npm.cmd run prepare:railway-db -- --source ".\\${localDbPath.replace(/\//g, "\\")}" --railway-db-path /data/merxalia-pos.sqlite`,
     },
     {
       id: "validate-client",

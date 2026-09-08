@@ -1,0 +1,51 @@
+{
+  "description": "Plantilla base para dulceria, botanas, pinateria y mesa de fiesta.",
+  "businessName": "Dulceria Base",
+  "shortName": "Dulceria POS",
+  "slug": "dulceria-base",
+  "currencyCode": "MXN",
+  "locale": "es-MX",
+  "timezone": "America/Mexico_City",
+  "ticketPrefix": "DUL",
+  "modules": ["merchandise_requests"],
+  "branding": {
+    "logo": "",
+    "logo192": "",
+    "logo512": ""
+  },
+  "visibleTexts": {
+    "eyebrow": "Caja para dulceria",
+    "heroCopy": "Ventas rapidas, bolsas por mayoreo y control claro de fiesta, botanas y confiteria."
+  },
+  "branches": [
+    {
+      "code": "principal",
+      "name": "Sucursal principal",
+      "timezone": "America/Mexico_City",
+      "active": true,
+      "sortOrder": 0
+    }
+  ],
+  "categories": [
+    { "code": "chocolates", "label": "Chocolates", "sortOrder": 0 },
+    { "code": "gomitas", "label": "Gomitas y enchilados", "sortOrder": 1 },
+    { "code": "paletas", "label": "Paletas y caramelos", "sortOrder": 2 },
+    { "code": "botanas", "label": "Botanas", "sortOrder": 3 },
+    { "code": "fiesta", "label": "Fiesta y piñateria", "sortOrder": 4 },
+    { "code": "bebidas", "label": "Bebidas", "sortOrder": 5 },
+    { "code": "general", "label": "General", "sortOrder": 6 }
+  ],
+  "units": [
+    { "code": "pza", "label": "Pza", "allowDecimals": false, "step": 1, "sortOrder": 0 },
+    { "code": "kg", "label": "Kg", "allowDecimals": true, "step": 0.25, "sortOrder": 1 },
+    { "code": "lt", "label": "Lt", "allowDecimals": true, "step": 0.25, "sortOrder": 2 },
+    { "code": "paq", "label": "Paquete", "allowDecimals": false, "step": 1, "sortOrder": 3 },
+    { "code": "caja", "label": "Caja", "allowDecimals": false, "step": 1, "sortOrder": 4 },
+    { "code": "bolsa", "label": "Bolsa", "allowDecimals": false, "step": 1, "sortOrder": 5 }
+  ],
+  "productAttributes": [
+    { "key": "marca", "label": "Marca", "valueType": "text", "required": false, "sortOrder": 0 },
+    { "key": "presentacion", "label": "Presentacion", "valueType": "text", "required": false, "sortOrder": 1 },
+    { "key": "mayoreo", "label": "Mayoreo", "valueType": "text", "required": false, "sortOrder": 2 }
+  ]
+}

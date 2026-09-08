@@ -28,6 +28,9 @@ const {
   POS_HSTS_MAX_AGE_SECONDS,
   POS_HTTP_REDIRECT_PORT,
   POS_PUBLIC_ORIGIN,
+  POS_SUPPORT_LABEL,
+  POS_SUPPORT_PHONE,
+  POS_SUPPORT_WHATSAPP_URL,
   POS_TRUST_PROXY,
   ROOT_DIR,
   SESSION_COOKIE_SECURE,
@@ -41,6 +44,7 @@ const {
 } = require("./db");
 
 const services = require("./services");
+const packageInfo = require("../package.json");
 const adminAuth = require("./admin/auth");
 const ownerAuth = require("./owner/auth");
 const cashierAuth = require("./cashier/auth");
@@ -560,7 +564,7 @@ function buildManifestPayload() {
     branding.logo512 ? { src: branding.logo512, sizes: "512x512", type: getManifestMimeType(branding.logo512) } : null,
     branding.logo ? { src: branding.logo, sizes: "512x512", type: getManifestMimeType(branding.logo) } : null,
     {
-      src: "/assets/branding/retail-base-badge.svg",
+      src: "/assets/branding/merxalia-badge.svg",
       sizes: "any",
       type: "image/svg+xml",
       purpose: "any maskable",
@@ -608,6 +612,30 @@ function buildBusinessTemplateSummaries() {
       branches: Array.isArray(loadedTemplate.branches) ? loadedTemplate.branches.length : 0,
     };
   });
+}
+
+function buildSupportMetadata() {
+  const configuredUrl = String(POS_SUPPORT_WHATSAPP_URL || "").trim();
+  const rawPhone = String(POS_SUPPORT_PHONE || "").replace(/\D/g, "");
+  const whatsappUrl = configuredUrl || (rawPhone ? `https://wa.me/${rawPhone}` : "");
+  let safeUrl = "";
+
+  if (whatsappUrl) {
+    try {
+      const parsedUrl = new URL(whatsappUrl);
+      if (["http:", "https:"].includes(parsedUrl.protocol)) {
+        safeUrl = parsedUrl.toString();
+      }
+    } catch (_error) {
+      safeUrl = "";
+    }
+  }
+
+  return {
+    label: POS_SUPPORT_LABEL || "Soporte",
+    whatsappUrl: safeUrl,
+    configured: Boolean(safeUrl),
+  };
 }
 
 function getFirstForwardedProto(request) {
@@ -818,6 +846,32 @@ function broadcastSnapshot(snapshot = services.getDashboardSnapshot()) {
 }
 
 let controlPlaneConfigPollTimer = null;
+let controlPlaneConsecutiveFailures = 0;
+const CONTROL_PLANE_POLL_BACKOFF_MAX_MS = 5 * 60 * 1000;
+const CONTROL_PLANE_POLL_JITTER_RATIO = 0.2;
+
+function getControlPlanePollDelayMs() {
+  const baseDelayMs = Math.max(0, Number(CONTROL_CONFIG_POLL_MS || 0));
+  if (baseDelayMs <= 0) {
+    return 0;
+  }
+  const backoffFactor = Math.min(
+    8,
+    2 ** Math.max(0, controlPlaneConsecutiveFailures - 1),
+  );
+  const backoffDelayMs = Math.min(
+    CONTROL_PLANE_POLL_BACKOFF_MAX_MS,
+    baseDelayMs * backoffFactor,
+  );
+  const jitterRangeMs = Math.round(backoffDelayMs * CONTROL_PLANE_POLL_JITTER_RATIO);
+  if (jitterRangeMs <= 0) {
+    return backoffDelayMs;
+  }
+  return Math.max(
+    baseDelayMs,
+    backoffDelayMs + Math.round((Math.random() * jitterRangeMs * 2) - jitterRangeMs),
+  );
+}
 
 async function syncControlPlaneRuntimeConfig(reason = "poll") {
   const status = services.getControlPlaneStatus();
@@ -883,17 +937,36 @@ function startControlPlanePolling() {
     return;
   }
 
-  controlPlaneConfigPollTimer = setInterval(() => {
-    syncControlPlaneRuntimeConfig("poll").catch((error) => {
-      console.warn(`[control-plane] No pude sincronizar variables runtime: ${error.message}`);
-    });
-    syncControlPlaneConfigAndBroadcast("poll").catch((error) => {
-      console.warn(`[control-plane] No pude sincronizar configuracion central: ${error.message}`);
-    });
-  }, CONTROL_CONFIG_POLL_MS);
-  if (typeof controlPlaneConfigPollTimer.unref === "function") {
-    controlPlaneConfigPollTimer.unref();
-  }
+  const scheduleNextPoll = () => {
+    const delayMs = getControlPlanePollDelayMs();
+    if (delayMs <= 0) {
+      controlPlaneConfigPollTimer = null;
+      return;
+    }
+    controlPlaneConfigPollTimer = setTimeout(runPoll, delayMs);
+    if (typeof controlPlaneConfigPollTimer.unref === "function") {
+      controlPlaneConfigPollTimer.unref();
+    }
+  };
+
+  const runPoll = async () => {
+    controlPlaneConfigPollTimer = null;
+    try {
+      await syncControlPlaneRuntimeConfig("poll");
+      await syncControlPlaneConfigAndBroadcast("poll");
+      controlPlaneConsecutiveFailures = 0;
+    } catch (error) {
+      controlPlaneConsecutiveFailures += 1;
+      console.warn(
+        `[control-plane] No pude completar el polling central `
+        + `(fallo ${controlPlaneConsecutiveFailures}): ${error.message}`,
+      );
+    } finally {
+      scheduleNextPoll();
+    }
+  };
+
+  scheduleNextPoll();
 }
 
 function broadcastMerchandiseRequestUpdate(requestRecord) {
@@ -999,7 +1072,12 @@ app.get("/", sendPosShell);
 app.get("/administracion", sendPosShell);
 
 app.get("/api/health", (_request, response) => {
-  response.json({ ok: true, generatedAt: new Date().toISOString() });
+  response.json({
+    ok: true,
+    service: "merxalia-pos",
+    version: packageInfo.version || "0.0.0",
+    generatedAt: new Date().toISOString(),
+  });
 });
 
 app.get("/api/dashboard", requireAuthenticatedActor, async (request, response) => {
@@ -1025,6 +1103,7 @@ function attachBootstrapMetadata(snapshot, accessContext, adminCapabilities) {
     ? snapshot.productAttributeDefinitions
     : [];
   snapshot.branding = snapshot.branding || snapshot.profile?.branding || snapshot.store?.branding || {};
+  snapshot.support = buildSupportMetadata();
   snapshot.adminCapabilities = adminCapabilities;
   return snapshot;
 }
@@ -1072,8 +1151,12 @@ app.get("/api/admin/bootstrap", (request, response, next) => {
     const includeInactiveInventory = ["1", "true"].includes(
       String(request.query.includeInactiveInventory || "").toLowerCase(),
     );
+    const includeProducts = ["1", "true"].includes(
+      String(request.query.includeInventory || request.query.includeProducts || "").toLowerCase(),
+    );
     const snapshot = services.getDashboardSnapshot(branch, {
       includeInventoryInactive: includeInactiveInventory,
+      includeProducts,
       useCache: true,
     });
     response.json(attachBootstrapMetadata(snapshot, accessContext, adminCapabilities));
@@ -2266,6 +2349,104 @@ app.get("/api/admin/editor-data", (request, response, next) => {
   });
 });
 
+app.get("/api/admin/receivables/duplicates", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
+}, (request, response) => {
+  response.json({
+    candidates: services.listReceivableDuplicateCandidates(request.query.branch || "carrizal", {
+      search: request.query.search || "",
+    }),
+    generatedAt: nowIso(),
+  });
+});
+
+app.patch("/api/admin/receivables/customer", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
+}, (request, response) => {
+  const result = services.renameReceivableCustomer(request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "receivable_customer_rename",
+    entityType: "receivable_customer",
+    entityId: result.customer?.customerKey || request.body?.customerKey || null,
+    branch: request.body?.branch || "carrizal",
+    payload: {
+      customerKey: request.body?.customerKey || null,
+      customerName: result.customer?.customerName || request.body?.customerName || null,
+      salesUpdated: result.salesUpdated || 0,
+      paymentsUpdated: result.paymentsUpdated || 0,
+    },
+  });
+  response.json({ ...result, generatedAt: nowIso() });
+});
+
+app.post("/api/admin/receivables/merge", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
+}, (request, response) => {
+  const result = services.mergeReceivableCustomers(request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "receivable_customer_merge",
+    entityType: "receivable_customer",
+    entityId: result.customer?.customerKey || request.body?.targetCustomerKey || null,
+    branch: request.body?.branch || "carrizal",
+    payload: {
+      sourceCustomerKey: request.body?.sourceCustomerKey || null,
+      targetCustomerKey: request.body?.targetCustomerKey || null,
+      targetCustomerName: result.customer?.customerName || request.body?.targetCustomerName || null,
+      salesUpdated: result.salesUpdated || 0,
+      sourcePaymentsUpdated: result.sourcePaymentsUpdated || 0,
+    },
+  });
+  response.json({ ...result, generatedAt: nowIso() });
+});
+
+app.get("/api/admin/products/duplicates", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
+}, (request, response) => {
+  response.json({
+    candidates: services.listProductDuplicateCandidates(request.query.branch || "carrizal", {
+      search: request.query.search || "",
+    }),
+    generatedAt: nowIso(),
+  });
+});
+
+app.post("/api/admin/products/merge", (request, response, next) => {
+  adminAuth.requireAdminAuth(request, response, next, adminSessions);
+}, (request, response, next) => {
+  requireAdminCapability("quick_edit")(request, response, next);
+}, (request, response) => {
+  const result = services.mergeProductDuplicates(request.body || {});
+  services.logAdminAction({
+    actorName: getAdminActorName(request),
+    action: "product_duplicate_merge",
+    entityType: "product",
+    entityId: result.targetProductId,
+    branch: result.branch || request.body?.branch || "carrizal",
+    payload: {
+      sourceProductId: result.sourceProductId,
+      targetProductId: result.targetProductId,
+      stockMerged: result.stockMerged,
+      salesUpdated: result.salesUpdated,
+      movementsUpdated: result.movementsUpdated,
+      requestsUpdated: result.requestsUpdated,
+      weightedAuditUpdated: result.weightedAuditUpdated,
+    },
+  });
+  const snapshot = services.getDashboardSnapshot(result.branch || request.body?.branch || "carrizal");
+  broadcastSnapshot(snapshot);
+  response.json({ ...result, snapshot, generatedAt: nowIso() });
+});
+
 app.get("/api/inventory/quick-import", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);
 }, (request, response, next) => {
@@ -2299,6 +2480,20 @@ app.get("/api/admin/products", (request, response, next) => {
   requireAdminCapability("inventory")(request, response, next);
 }, (request, response) => {
   const branch = request.query.branch || "carrizal";
+  const hasPagingQuery = ["limit", "offset", "search", "filter", "includeInactive"]
+    .some((key) => request.query[key] !== undefined);
+  if (hasPagingQuery) {
+    const result = services.listProductsPage(branch, {
+      limit: request.query.limit,
+      offset: request.query.offset,
+      search: request.query.search,
+      filter: request.query.filter,
+      includeInactive: ["1", "true"].includes(String(request.query.includeInactive || "").toLowerCase()),
+    });
+    response.json({ ...result, generatedAt: nowIso() });
+    return;
+  }
+
   response.json({ products: services.listProducts(branch), generatedAt: nowIso() });
 });
 
@@ -2320,6 +2515,104 @@ app.post("/api/admin/products", (request, response, next) => {
   const snapshot = services.getDashboardSnapshot(branch);
   response.status(201).json({ ...result, snapshot });
 });
+
+function parseProductOnboardingMapping(value) {
+  if (!value) {
+    return {};
+  }
+  if (typeof value === "object") {
+    return value;
+  }
+  try {
+    const parsed = JSON.parse(String(value));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_error) {
+    throw Object.assign(new Error("El mapeo de columnas no es JSON valido."), { statusCode: 400 });
+  }
+}
+
+app.post(
+  "/api/admin/onboarding/products/preview",
+  (request, response, next) => {
+    adminAuth.requireAdminAuth(request, response, next, adminSessions);
+  },
+  (request, response, next) => {
+    requireAdminCapability("inventory")(request, response, next);
+  },
+  upload.single("catalog"),
+  async (request, response, next) => {
+    try {
+      if (!request.file) {
+        response.status(400).json({ message: "Sube un CSV o Excel de productos." });
+        return;
+      }
+      const preview = await services.buildProductOnboardingPreview({
+        filePath: request.file.path,
+        originalName: request.file.originalname,
+        branch: request.body?.branch || "carrizal",
+        mapping: parseProductOnboardingMapping(request.body?.mapping),
+      });
+      response.json({ preview, generatedAt: nowIso() });
+    } catch (error) {
+      if (error.statusCode === 400) {
+        response.status(400).json({ message: error.message });
+        return;
+      }
+      next(error);
+    } finally {
+      cleanupUploadedFile(request.file);
+    }
+  },
+);
+
+app.post(
+  "/api/admin/onboarding/products/apply",
+  (request, response, next) => {
+    adminAuth.requireAdminAuth(request, response, next, adminSessions);
+  },
+  (request, response, next) => {
+    requireAdminCapability("inventory")(request, response, next);
+  },
+  upload.single("catalog"),
+  async (request, response, next) => {
+    try {
+      if (!request.file) {
+        response.status(400).json({ message: "Sube un CSV o Excel de productos." });
+        return;
+      }
+      const branch = request.body?.branch || "carrizal";
+      const result = await services.applyProductOnboardingImport({
+        filePath: request.file.path,
+        originalName: request.file.originalname,
+        branch,
+        mapping: parseProductOnboardingMapping(request.body?.mapping),
+      });
+      services.logAdminAction({
+        actorName: getAdminActorName(request),
+        action: "product_onboarding_import",
+        entityType: "catalog",
+        entityId: branch,
+        branch,
+        payload: {
+          fileName: request.file.originalname || null,
+          fileSize: request.file.size || null,
+          summary: result.summary,
+        },
+      });
+      const snapshot = services.getDashboardSnapshot(branch);
+      broadcastSnapshot(snapshot);
+      response.status(201).json({ ...result, snapshot, generatedAt: nowIso() });
+    } catch (error) {
+      if (error.statusCode === 400) {
+        response.status(400).json({ message: error.message });
+        return;
+      }
+      next(error);
+    } finally {
+      cleanupUploadedFile(request.file);
+    }
+  },
+);
 
 app.post("/api/admin/products/manual", (request, response, next) => {
   adminAuth.requireAdminAuth(request, response, next, adminSessions);

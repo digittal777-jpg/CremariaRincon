@@ -11,6 +11,7 @@ const ExcelJS = require("exceljs");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BACKUP_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "backup-nightly.js");
+const BACKUP_VERIFY_SCRIPT_PATH = path.join(ROOT_DIR, "scripts", "verify-backup-run.js");
 
 function runNodeProcess(args = [], options = {}) {
   return spawnSync(process.execPath, args, {
@@ -99,6 +100,27 @@ test("backup-nightly writes sqlite and workbook to file-backed storage and recor
   const result = runBackupScript(env);
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
+  const verifyResult = runNodeProcess([BACKUP_VERIFY_SCRIPT_PATH, "--max-age-hours", "1"], { env });
+  assert.equal(verifyResult.status, 0, verifyResult.stderr || verifyResult.stdout);
+  assert.match(verifyResult.stdout, /Backup verificado: OK/);
+
+  const verifyReportPath = path.join(tempDir, "backup-verify.json");
+  const verifyJsonResult = runNodeProcess([
+    BACKUP_VERIFY_SCRIPT_PATH,
+    "--max-age-hours",
+    "1",
+    "--output",
+    verifyReportPath,
+  ], { env });
+  assert.equal(verifyJsonResult.status, 0, verifyJsonResult.stderr || verifyJsonResult.stdout);
+  const verifyReport = JSON.parse(fs.readFileSync(verifyReportPath, "utf8"));
+  assert.equal(verifyReport.ok, true);
+  assert.equal(verifyReport.lastRun.status, "ok");
+  assert.ok(verifyReport.lastRun.sqliteBytes > 0);
+  assert.equal(verifyReport.restoreCheck.ok, true);
+  assert.equal(verifyReport.restoreCheck.integrity, "ok");
+  assert.ok(verifyReport.restoreCheck.tables.products >= 0);
+
   const latest = openLatestBackupRow(dbPath);
   assert.equal(latest.status, "ok");
   assert.equal(latest.sync_state, "clean");
@@ -115,6 +137,27 @@ test("backup-nightly writes sqlite and workbook to file-backed storage and recor
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(workbookTarget);
   assert.ok(workbook.worksheets.length > 0);
+});
+
+test("backup verifier fails when no real backup run exists", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "retail-base-backup-verify-empty-"));
+  const dbPath = path.join(tempDir, "backup.sqlite");
+  const bucketRoot = path.join(tempDir, "bucket");
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const env = buildRuntimeEnv(tempDir, {
+    POS_DB_PATH: dbPath,
+    BACKUP_ENABLED: "true",
+    BACKUP_BUCKET_ENDPOINT: pathToFileURL(bucketRoot).href,
+    BACKUP_BUCKET_NAME: "local",
+  });
+
+  const result = runNodeProcess([BACKUP_VERIFY_SCRIPT_PATH], { env });
+  assert.equal(result.status, 1);
+  assert.match(`${result.stdout}\n${result.stderr}`, /No hay corridas registradas/);
 });
 
 test("backup-nightly records partial when a device reports pending offline work", (t) => {

@@ -5,7 +5,7 @@ const APP_SHELL = [
   "/administracion",
   "/index.html",
   "/styles.css",
-  "/assets/branding/retail-base-badge.svg",
+  "/assets/branding/merxalia-badge.svg",
   "/socket.io/socket.io.js",
   "/js/config.js",
   "/js/state.js",

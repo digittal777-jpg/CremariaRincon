@@ -42,6 +42,7 @@ function getDashboardCacheKey(branch, options = {}) {
   return [
     normalizeBranch(branch, { allowAll: true }),
     options.includeInventoryInactive === true ? "inactive" : "active",
+    options.includeProducts === false ? "summary" : "products",
   ].join(":");
 }
 
@@ -323,10 +324,20 @@ function getDashboardSnapshot(
   const units = listMeasurementUnits({ includeInactive: false });
   const productAttributeDefinitions = listProductAttributeDefinitions({ includeInactive: false });
   const enabledModules = getEnabledModules();
-  const activeProducts = listProducts(normalizedBranch);
-  const inventoryProducts = includeInventoryInactive
-    ? listProducts(normalizedBranch, { includeInactive: true })
-    : activeProducts;
+  const includeProducts = options.includeProducts !== false;
+  const activeProducts = includeProducts
+    ? normalizedBranch === ALL_BRANCHES
+      ? activeBranches.flatMap((branchRecord) => listProducts(branchRecord.code))
+      : listProducts(normalizedBranch)
+    : [];
+  const inventoryProducts = includeProducts
+    ? includeInventoryInactive
+      ? normalizedBranch === ALL_BRANCHES
+        ? listConfiguredBranches({ includeInactive: true })
+            .flatMap((branchRecord) => listProducts(branchRecord.code, { includeInactive: true }))
+        : listProducts(normalizedBranch, { includeInactive: true })
+      : activeProducts
+    : [];
   const knownBranch = normalizedBranch === ALL_BRANCHES
     ? null
     : getBranchRecord(normalizedBranch, { includeInactive: true });
@@ -362,7 +373,7 @@ function getDashboardSnapshot(
       timezone: getStoreTimeZone(),
       locale: profile.locale || "es-MX",
       currencyCode: profile.currencyCode || "MXN",
-      slug: profile.slug || "retail-base-pos",
+      slug: profile.slug || "merxalia-pos",
       templateKey: profile.templateKey || "custom",
       branding: profile.branding || {},
       visibleTexts: profile.visibleTexts || {},
@@ -387,7 +398,7 @@ function getDashboardSnapshot(
   };
 
   // Si se solicita "all" (todas las sucursales), incluir inventarios comparativos
-  if (normalizedBranch === ALL_BRANCHES) {
+  if (includeProducts && normalizedBranch === ALL_BRANCHES) {
     snapshot.inventoryComparison = {
       branches: listConfiguredBranches({ includeInactive: true }).map((branchRecord) => ({
         value: branchRecord.code,

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "watchPatterns": [
+      "package.json",
+      "package-lock.json",
+      "railway.backup.json",
+      "src/**",
+      "scripts/backup-nightly.js"
+    ]
+  },
+  "deploy": {
+    "startCommand": "npm run backup:nightly",
+    "healthcheckPath": null,
+    "sleepApplication": true,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 1,
+    "cronSchedule": "0 9 * * *",
+    "overlapSeconds": 0,
+    "drainingSeconds": 10
+  }
+}

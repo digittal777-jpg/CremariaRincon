@@ -1,6 +1,6 @@
-# Cremeria El Rincon POS
+# Merxalia POS
 
-POS web hecho con Node.js, SQLite y Socket.IO para operar caja, inventario y admin desde una sola URL publica.
+POS web para tiendas rurales y comercios de mostrador. Esta instancia esta configurada para Cremeria El Rincon y opera con Node.js, SQLite y Socket.IO desde una sola URL publica.
 
 ## Lo que incluye hoy
 
@@ -11,6 +11,13 @@ POS web hecho con Node.js, SQLite y Socket.IO para operar caja, inventario y adm
 - Sucursales dinamicas con alta, edicion y activar/desactivar desde admin.
 - Cola offline para ventas y eventos de caja con reintento y bloqueo visible si el servidor rechaza algo.
 - Exportacion a Excel, restauracion desde Excel exportado y respaldo/restauracion de SQLite.
+
+## Impresion y hardware
+
+- El flujo actual imprime tickets 80 mm desde el navegador usando la impresora instalada en Windows o el sistema operativo.
+- No prometas ESC/POS directo, apertura de cajon, corte automatico de papel, bascula o lectura serial hasta probar el modelo real del cliente.
+- Si el cliente necesita ticket fisico, valida una venta de prueba y una reimpresion desde el detalle de venta antes de cerrar piloto.
+- Documenta la validacion con `docs/QA-IMPRESION-HARDWARE.md`.
 
 ## Requisitos
 
@@ -245,6 +252,7 @@ node scripts/telegram-helper.js send-test --chat 123456789
   - perfiles offline de cajeros ya autenticados antes.
 - Si una venta offline es rechazada por el servidor, queda visible y bloqueada para revision manual; no se pierde silenciosamente.
 - Si una tablet nunca cargo datos de una sucursal con internet, no podra entrar offline a esa sucursal.
+- Para subir ventas antiguas guardadas offline, inicia sesion con el mismo cajero y la misma sucursal que capturaron esas ventas; si la sesion vencio, reactivala con internet y deja que la cola termine antes de cerrar caja.
 
 ## Backups recomendados
 
@@ -282,6 +290,46 @@ npm.cmd run backup:nightly
 
 La app expone `GET /api/admin/backups/status` para ver el ultimo respaldo, su estado (`ok`, `partial`, `failed`) y el resumen de sincronizacion reportado por los clientes.
 
+En Railway, `railway.json` queda reservado para el servicio web de caja. Para backup nocturno crea un segundo servicio/job usando `railway.backup.json`; ejecuta `npm run backup:nightly` con cron `0 9 * * *`, pensado para correr despues del cierre del dia Mexico/Centro.
+
+Verificar que el primer backup real sirve para piloto:
+
+```powershell
+npm.cmd run backup:verify -- --max-age-hours 36
+```
+
+Para dejar evidencia consumible por el gate comercial:
+
+```powershell
+npm.cmd run backup:verify -- --max-age-hours 36 --output .tmp-provisioning/<cliente>-backup-verify.json
+```
+
+Si el backup quedo `partial` por cola offline pendiente y queda documentado:
+
+```powershell
+npm.cmd run backup:verify -- --max-age-hours 36 --allow-partial
+```
+
+Guia de cierre Railway: `docs/RAILWAY-BACKUP-CRON.md`.
+
+Restauracion: sigue `docs/PLAYBOOK-RESTAURACION.md` antes de declarar que un backup sirve para piloto o produccion.
+
+## Gate comercial
+
+Tests verdes no significan automaticamente que un cliente este listo. Copia `docs/READINESS-EVIDENCE.example.json` a `.tmp-provisioning/<cliente>-readiness.json`, llena la evidencia real, pon `backup.verifyReportPath` apuntando al JSON generado por `backup:verify --output` y ejecuta:
+
+```powershell
+npm.cmd run readiness:pilot -- --evidence .tmp-provisioning/<cliente>-readiness.json
+```
+
+El gate de piloto exige evidencia concreta: `npm test`, `npm audit --omit=dev`, soporte configurado, catalogo sin duplicados criticos, admin reducido, dispositivo offline preparado con fecha, backup verificado con fecha, bytes y ruta/llave de SQLite y Excel. Si se prometio ticket fisico, tambien exige modelo de impresora, fecha de prueba real y documento QA existente.
+
+Para escala masiva, exige ademas cron Railway real, documento de evidencia del cron, restauracion probada y documento de evidencia de restauracion:
+
+```powershell
+npm.cmd run readiness:scale -- --evidence .tmp-provisioning/<cliente>-readiness.json
+```
+
 ## Sucursales dinamicas
 
 - Las sucursales ya viven en la base de datos.
@@ -297,12 +345,18 @@ Catalogos base disponibles:
 
 - `.\catalogos\abarrotes-base.xlsx`
 - `.\catalogos\cremeria-base.xlsx`
+- `.\catalogos\dulceria-base.xlsx`
+- `.\catalogos\ferreteria-base.xlsx`
+- `.\catalogos\limpieza-base.xlsx`
 - `.\catalogos\papeleria-base.xlsx`
 
 Notas:
 
 - `abarrotes` arranca como minisuper/tienda de barrio con marcas comunes.
 - `cremeria` arranca con quesos, embutidos, refrigerados y complementos tipicos.
+- `dulceria` arranca con chocolates, gomitas, paletas, botanas, fiesta y bebidas.
+- `ferreteria` arranca con herramienta, fijacion, electricidad, plomeria, pintura y seguridad.
+- `limpieza` arranca con quimicos, jarcieria, papel, desechables y hogar.
 - `papeleria` arranca con utiles, oficina, arte e impresion.
 - Ninguno es una copia 1:1 de una cadena comercial; sirven como base operativa editable.
 - Todos vienen con stock inicial en `0` para que no arranques con inventario inventado.
@@ -341,6 +395,9 @@ Ejemplos utiles:
 
 ```powershell
 npm.cmd run clone:business -- --slug cremeria-san-juan --name "Cremeria San Juan" --template cremeria --catalog ".\catalogos\cremeria-base.xlsx"
+npm.cmd run clone:business -- --slug dulceria-la-pinata --name "Dulceria La Pinata" --template dulceria --catalog ".\catalogos\dulceria-base.xlsx"
+npm.cmd run clone:business -- --slug ferreteria-central --name "Ferreteria Central" --template ferreteria --catalog ".\catalogos\ferreteria-base.xlsx"
+npm.cmd run clone:business -- --slug limpieza-brillante --name "Limpieza Brillante" --template limpieza --catalog ".\catalogos\limpieza-base.xlsx"
 npm.cmd run clone:business -- --slug papeleria-estrella --name "Papeleria Estrella" --template papeleria --catalog ".\catalogos\papeleria-base.xlsx"
 ```
 

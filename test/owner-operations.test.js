@@ -54,9 +54,9 @@ test("owner operation guide defaults to neutral public URLs without railway fall
   const provisionCommand = guide.commands.find((command) => command.id === "provision-client");
 
   assert.equal(guide.current.publicOrigin, "");
-  assert.equal(guide.localRuntimeConfigExample.POS_PUBLIC_ORIGIN, "https://retail-base-pos.ejemplo.com");
-  assert.equal(guide.localRuntimeConfigExample.POS_ALLOWED_ORIGINS, "https://retail-base-pos.ejemplo.com,http://localhost:3100");
+  assert.equal(guide.localRuntimeConfigExample.POS_PUBLIC_ORIGIN, "https://merxalia-pos.ejemplo.com");
+  assert.equal(guide.localRuntimeConfigExample.POS_ALLOWED_ORIGINS, "https://merxalia-pos.ejemplo.com,http://localhost:3100");
   assert.ok(provisionCommand);
-  assert.match(provisionCommand.command, /https:\/\/retail-base-pos\.ejemplo\.com/i);
+  assert.match(provisionCommand.command, /https:\/\/merxalia-pos\.ejemplo\.com/i);
   assert.doesNotMatch(provisionCommand.command, /\.railway\.app/i);
 });

@@ -37,6 +37,7 @@ function loadAdminClientSecurityContext() {
     setTimeout,
     clearTimeout,
     AbortController,
+    URLSearchParams,
     localStorage: {
       __store: storageEntries,
       getItem() {
@@ -116,6 +117,7 @@ function loadAdminClientSecurityContext() {
       context.__renderAdminModalCalls = (context.__renderAdminModalCalls || 0) + 1;
     },
     renderQuickImportModal() {},
+    showToast() {},
     async openQuickImportModal() {
       context.__quickImportOpenCalls = (context.__quickImportOpenCalls || 0) + 1;
     },
@@ -143,6 +145,7 @@ function loadAdminClientSecurityContext() {
     __renderInventoryCalls: 0,
     __renderAdminModalCalls: 0,
     __quickImportOpenCalls: 0,
+    __adminProductRequests: [],
     isAdministrationRoute() {
       return context.__adminRouteActive;
     },
@@ -171,6 +174,18 @@ function loadAdminClientSecurityContext() {
     refs.adminModal = { classList: globalThis.__createClassListStub() };
     refs.ownerConsoleModal = { classList: globalThis.__createClassListStub() };
     refs.ownerAuthModal = { classList: globalThis.__createClassListStub() };
+    requestAdminJson = async (url) => {
+      globalThis.__adminProductRequests.push(String(url));
+      return {
+        products: [],
+        page: {
+          limit: 120,
+          offset: 0,
+          total: 0,
+          hasMore: false,
+        },
+      };
+    };
     globalThis.__adminClientSecurityApi = {
       state,
       buildPublicSnapshotCacheView,
@@ -192,7 +207,10 @@ function loadAdminClientSecurityContext() {
       clearClientBusinessResetState,
       clearAffectedBranchOperationalState,
       getAdminWorkspaceSectionOptions,
+      applyOwnerAdminCapabilityPreset,
+      getOwnerSelectedAdminCapabilities,
       normalizeAdminSectionKey,
+      applyAdminSnapshot,
       normalizeAdminInventoryMode,
       normalizeAdminInventoryFilterKey,
       setAdminInventoryMode,
@@ -212,6 +230,9 @@ function loadAdminClientSecurityContext() {
       },
       getQuickImportOpenCalls() {
         return globalThis.__quickImportOpenCalls;
+      },
+      getAdminProductRequests() {
+        return globalThis.__adminProductRequests.slice();
       },
     };
   `).runInContext(vmContext);
@@ -266,25 +287,61 @@ test("admin workspace section options load only the active admin area", () => {
   assert.equal(api.normalizeAdminSectionKey("no-existe"), "overview");
 });
 
+test("admin snapshot preserves the selected admin branch view", () => {
+  const api = loadAdminClientSecurityContext();
+
+  api.state.admin.branch = "all";
+  api.applyAdminSnapshot({
+    store: {
+      currentBranch: "chris",
+      currentBranchLabel: "Chris",
+    },
+    summary: {},
+    products: [],
+  }, { branch: "all" });
+  assert.equal(api.state.admin.branch, "all");
+
+  api.state.admin.branch = "miradores";
+  api.applyAdminSnapshot({
+    store: {
+      currentBranch: "chris",
+      currentBranchLabel: "Chris",
+    },
+    summary: {},
+    products: [],
+  }, { branch: "miradores" });
+  assert.equal(api.state.admin.branch, "miradores");
+});
+
 test("admin inventory workspace separates quick movement from full editing state", async () => {
   const api = loadAdminClientSecurityContext();
+  const flushInventoryLoad = () => new Promise((resolve) => setTimeout(resolve, 0));
+  api.state.admin.authenticated = true;
+  api.state.adminCapabilities = ["inventory"];
 
   assert.equal(api.normalizeAdminInventoryMode("weird"), "movement");
   assert.equal(api.normalizeAdminInventoryFilterKey("weird"), "all");
+  assert.equal(api.state.admin.inventoryExpanded, false);
 
   api.setAdminInventoryMode("edit", { expand: true });
+  await flushInventoryLoad();
   assert.equal(api.state.admin.inventoryMode, "edit");
   assert.equal(api.state.admin.inventoryExpanded, true);
   assert.equal(api.getRenderInventoryCalls(), 1);
-  assert.equal(api.getRenderAdminModalCalls(), 1);
+  assert.match(api.getAdminProductRequests().at(-1), /\/api\/admin\/products\?/);
+  assert.match(api.getAdminProductRequests().at(-1), /limit=120/);
 
   api.setAdminInventoryFilter("negative");
+  await flushInventoryLoad();
   assert.equal(api.state.admin.inventoryFilter, "negative");
   assert.equal(api.getRenderInventoryCalls(), 2);
+  assert.match(api.getAdminProductRequests().at(-1), /filter=negative/);
 
   api.updateAdminInventorySearch("panela");
+  await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal(api.state.admin.inventorySearch, "panela");
   assert.equal(api.getRenderInventoryCalls(), 3);
+  assert.match(api.getAdminProductRequests().at(-1), /search=panela/);
 
   await api.openAdminInventoryMovement("return");
   assert.equal(api.state.admin.inventoryMode, "movement");
@@ -292,9 +349,19 @@ test("admin inventory workspace separates quick movement from full editing state
   assert.equal(api.state.quickImport.mode, "return");
   assert.equal(api.getQuickImportOpenCalls(), 1);
 
-  api.openAdminInventoryCountMode();
+  await api.openAdminInventoryCountMode();
+  await flushInventoryLoad();
+  assert.equal(api.state.admin.inventoryMode, "movement");
+  assert.equal(api.state.admin.inventoryExpanded, false);
+  assert.equal(api.state.quickImport.mode, "count");
+  assert.equal(api.getQuickImportOpenCalls(), 2);
+
+  api.setAdminInventoryMode("edit", { expand: true });
+  await flushInventoryLoad();
   assert.equal(api.state.admin.inventoryMode, "edit");
   assert.equal(api.state.admin.inventoryExpanded, true);
+  assert.match(api.getAdminProductRequests().at(-1), /\/api\/admin\/products\?/);
+  assert.match(api.getAdminProductRequests().at(-1), /limit=120/);
 });
 
 test("admin client normalizes blocked snapshots to public data before using them", () => {
@@ -611,4 +678,43 @@ test("full database install reload clears privileged auth and persisted operatio
   assert.equal(api.readStorageJson(api.STORAGE_KEYS.snapshot, "missing"), null);
   assert.equal(Object.keys(api.readStorageJson(api.STORAGE_KEYS.preparedSnapshots, {})).length, 0);
   assert.equal(api.readStorageJson(api.STORAGE_KEYS.cashierOfflineProfiles, []).length, 0);
+});
+
+test("owner simple admin preset selects merchant-facing sections without saving automatically", () => {
+  const api = loadAdminClientSecurityContext();
+  const inputs = [
+    "daily_flow",
+    "inventory",
+    "merchandise_requests",
+    "cashiers",
+    "support_tools",
+    "backups",
+    "quick_edit",
+    "business_config",
+  ].map((code) => ({
+    checked: false,
+    dataset: { ownerCapabilityCode: code },
+  }));
+
+  api.state.owner.adminSections = inputs.map((input) => ({
+    code: input.dataset.ownerCapabilityCode,
+    label: input.dataset.ownerCapabilityCode,
+  }));
+  api.refs.ownerAdminSectionsWrap = {
+    querySelectorAll() {
+      return inputs;
+    },
+  };
+
+  api.applyOwnerAdminCapabilityPreset("simple");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.getOwnerSelectedAdminCapabilities().sort())),
+    ["cashiers", "daily_flow", "inventory", "merchandise_requests", "support_tools"].sort(),
+  );
+
+  api.applyOwnerAdminCapabilityPreset("full");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(api.getOwnerSelectedAdminCapabilities().sort())),
+    inputs.map((input) => input.dataset.ownerCapabilityCode).sort(),
+  );
 });

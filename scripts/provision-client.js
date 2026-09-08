@@ -169,8 +169,8 @@ function buildInstallReport({
 }) {
   const safePublicUrl = publicUrl || "https://pendiente";
   const createdAt = new Date().toISOString();
-  const localDbPath = "data/retail-base-pos.sqlite";
-  const railwayDbPath = "/data/retail-base-pos.sqlite";
+  const localDbPath = "data/merxalia-pos.sqlite";
+  const railwayDbPath = "/data/merxalia-pos.sqlite";
 
   return `---
 privado: true
@@ -252,8 +252,10 @@ CONTROL_REQUIRE_HTTPS=true
 - [ ] Hacer corte de prueba.
 - [ ] Descargar Excel de prueba.
 - [ ] Descargar SQLite de prueba.
-- [ ] Activar y probar backup si aplica.
+- [ ] Crear servicio cron separado con railway.backup.json si aplica.
+- [ ] Ejecutar primer backup y validar con npm run backup:verify.
 - [ ] Preparar dispositivo principal online y confirmar modo offline.
+- [ ] Probar impresion con docs/QA-IMPRESION-HARDWARE.md si se prometio ticket fisico.
 - [ ] Registrar plan, fecha de corte y responsable del negocio.
 
 ## Evidencia final

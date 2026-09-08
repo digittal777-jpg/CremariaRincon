@@ -194,7 +194,7 @@ function prepareMerchandiseRequestItems(incomingItems, branch) {
     }
 
     const product = db.prepare(`
-      SELECT id, name, price, stock, active, branch, unit
+      SELECT id, name, price, cost, stock, active, branch, unit
       FROM products
       WHERE id = ? AND branch = ?
     `).get(productId, branch);
@@ -203,14 +203,11 @@ function prepareMerchandiseRequestItems(incomingItems, branch) {
       throw createHttpError("Uno de los productos de la solicitud ya no esta disponible.");
     }
 
-    const unitPrice = roundMoney(product.price);
-    const quantity = product.unit === "pza"
-      ? requestedQuantity
-      : roundStock(
-        requestedTotalValue > 0 && unitPrice > 0
-          ? requestedTotalValue / unitPrice
-          : requestedQuantity,
-      );
+    const quantity = requestedQuantity;
+    const fallbackUnitCost = roundMoney(product.cost > 0 ? product.cost : product.price);
+    const unitPrice = requestedTotalValue > 0
+      ? roundMoney(requestedTotalValue / quantity)
+      : fallbackUnitCost;
 
     if (!Number.isFinite(quantity) || quantity <= 0) {
       throw createHttpError(`No pude calcular una cantidad valida para ${product.name}.`);
@@ -425,7 +422,11 @@ function approveMerchandiseRequest(requestId) {
   db.transaction(() => {
     const updateProduct = db.prepare(`
       UPDATE products
-      SET stock = ?, stock_initialized = 1, updated_at = ?
+      SET
+        stock = ?,
+        stock_initialized = 1,
+        cost = CASE WHEN ? = 1 THEN ? ELSE cost END,
+        updated_at = ?
       WHERE id = ? AND branch = ?
     `);
     const insertMovement = db.prepare(`
@@ -464,10 +465,21 @@ function approveMerchandiseRequest(requestId) {
       assertPreparedItemCanBeApplied(item, stockAfter, "approve");
 
       runningStockByProductId.set(item.productId, stockAfter);
-      updateProduct.run(stockAfter, approvedAt, item.productId, currentRequest.branch);
+      const shouldUpdateCost = item.mode === "receive" && Number(item.unitPrice || 0) > 0;
+      updateProduct.run(
+        stockAfter,
+        shouldUpdateCost ? 1 : 0,
+        roundMoney(item.unitPrice || 0),
+        approvedAt,
+        item.productId,
+        currentRequest.branch,
+      );
 
       const supplierLabel = currentRequest.supplierName
         ? ` con ${currentRequest.supplierName}`
+        : "";
+      const costLabel = shouldUpdateCost
+        ? ` - costo proveedor ${roundMoney(item.unitPrice).toFixed(2)}/u`
         : "";
       insertMovement.run(
         item.productId,
@@ -476,7 +488,7 @@ function approveMerchandiseRequest(requestId) {
         quantityDelta,
         stockBefore,
         stockAfter,
-        `Solicitud de mercaderia #${currentRequest.id}${supplierLabel}`,
+        `Solicitud de mercaderia #${currentRequest.id}${supplierLabel}${costLabel}`,
         "merchandise_request",
         currentRequest.id,
         approvedAt,

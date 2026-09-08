@@ -253,9 +253,9 @@ async function setupCashierFlow(server) {
         updated_at = excluded.updated_at
     `).run(
       1,
-      "Retail Base POS",
-      "retail-base-pos",
-      "Retail POS",
+      "Merxalia POS",
+      "merxalia-pos",
+      "Merxalia",
       "MXN",
       "es-MX",
       "America/Mexico_City",

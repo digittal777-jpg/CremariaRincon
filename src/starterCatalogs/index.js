@@ -1,5 +1,8 @@
 const { starterCatalog: abarrotesCatalog } = require("./abarrotesBase");
 const { starterCatalog: cremeriaCatalog } = require("./cremeriaBase");
+const { starterCatalog: dulceriaCatalog } = require("./dulceriaBase");
+const { starterCatalog: ferreteriaCatalog } = require("./ferreteriaBase");
+const { starterCatalog: limpiezaCatalog } = require("./limpiezaBase");
 const { starterCatalog: papeleriaCatalog } = require("./papeleriaBase");
 
 const starterCatalogDefinitions = {
@@ -16,6 +19,27 @@ const starterCatalogDefinitions = {
     sheetName: "Catalogo",
     businessName: "Cremeria Base",
     starterCatalog: cremeriaCatalog,
+  },
+  dulceria: {
+    templateKey: "dulceria",
+    fileName: "dulceria-base.xlsx",
+    sheetName: "Catalogo",
+    businessName: "Dulceria Base",
+    starterCatalog: dulceriaCatalog,
+  },
+  ferreteria: {
+    templateKey: "ferreteria",
+    fileName: "ferreteria-base.xlsx",
+    sheetName: "Catalogo",
+    businessName: "Ferreteria Base",
+    starterCatalog: ferreteriaCatalog,
+  },
+  limpieza: {
+    templateKey: "limpieza",
+    fileName: "limpieza-base.xlsx",
+    sheetName: "Catalogo",
+    businessName: "Limpieza Base",
+    starterCatalog: limpiezaCatalog,
   },
   papeleria: {
     templateKey: "papeleria",

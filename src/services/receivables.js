@@ -20,7 +20,12 @@ const {
 const db = getDb();
 
 function normalizeReceivableCustomerKey(value) {
-  return normalizeText(value || "", 80).toLowerCase();
+  return normalizeText(value || "", 80)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 function normalizeStoredReceivableCustomerKey(value) {
@@ -375,6 +380,180 @@ function listReceivableCustomers(branch = STORE_BRANCHES[0], options = {}) {
     });
 }
 
+function buildReceivableCustomerSummary(customerKey, branch = STORE_BRANCHES[0], options = {}) {
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const safeCustomerKey = normalizeStoredReceivableCustomerKey(customerKey);
+  if (!safeCustomerKey) {
+    return null;
+  }
+
+  const sales = listFiadoSales(normalizedBranch)
+    .filter((sale) => sale.customerKey === safeCustomerKey);
+  const payments = listCreditPaymentsForReceivableCustomer(safeCustomerKey, normalizedBranch);
+  if (sales.length === 0 && payments.length === 0) {
+    return null;
+  }
+
+  const saleNames = sales.map((sale) => normalizeText(sale.customerName || "", 80)).filter(Boolean);
+  const paymentNames = payments.map((payment) => normalizeText(payment.customerName || "", 80)).filter(Boolean);
+  const customerName =
+    normalizeText(options.customerName || "", 80)
+    || saleNames[0]
+    || paymentNames[0]
+    || "";
+  const pendingSales = sales.filter((sale) => sale.pendingAmount > 0);
+  const latestActivityAt = [...sales.map((sale) => sale.lastPaymentAt || sale.createdAt), ...payments.map((payment) => payment.createdAt)]
+    .filter(Boolean)
+    .sort((left, right) => String(right).localeCompare(String(left)))[0] || null;
+
+  return {
+    customerKey: safeCustomerKey,
+    customerName,
+    normalizedName: normalizeReceivableCustomerKey(customerName),
+    branch: normalizedBranch === ALL_BRANCHES
+      ? (sales[0]?.branch || payments[0]?.branch || ALL_BRANCHES)
+      : normalizedBranch,
+    pendingAmount: roundMoney(pendingSales.reduce((sum, sale) => sum + sale.pendingAmount, 0)),
+    paidAmount: roundMoney(sales.reduce((sum, sale) => sum + sale.paidAmount, 0)),
+    openSalesCount: pendingSales.length,
+    totalSalesCount: sales.length,
+    paymentsCount: payments.length,
+    ticketNumbers: sales.map((sale) => sale.ticketNumber).filter(Boolean),
+    oldestSaleAt: sales.length ? sales[0].createdAt : null,
+    latestActivityAt,
+  };
+}
+
+function listCreditPaymentsForReceivableCustomer(customerKey, branch = STORE_BRANCHES[0]) {
+  const safeCustomerKey = normalizeStoredReceivableCustomerKey(customerKey);
+  if (!safeCustomerKey) {
+    return [];
+  }
+
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const rows = normalizedBranch === ALL_BRANCHES
+    ? db.prepare(`
+      SELECT
+        cp.id,
+        cp.sale_id,
+        cp.client_payment_id,
+        cp.shift,
+        cp.cashier,
+        cp.branch,
+        cp.customer_name,
+        cp.customer_key,
+        cp.payment_method,
+        cp.amount,
+        cp.notes,
+        cp.created_at,
+        s.ticket_number
+      FROM credit_payments cp
+      JOIN sales s ON s.id = cp.sale_id
+      WHERE COALESCE(NULLIF(TRIM(cp.customer_key), ''), s.customer_key) = ?
+      ORDER BY cp.created_at ASC, cp.id ASC
+    `).all(safeCustomerKey)
+    : db.prepare(`
+      SELECT
+        cp.id,
+        cp.sale_id,
+        cp.client_payment_id,
+        cp.shift,
+        cp.cashier,
+        cp.branch,
+        cp.customer_name,
+        cp.customer_key,
+        cp.payment_method,
+        cp.amount,
+        cp.notes,
+        cp.created_at,
+        s.ticket_number
+      FROM credit_payments cp
+      JOIN sales s ON s.id = cp.sale_id
+      WHERE cp.branch = ?
+        AND COALESCE(NULLIF(TRIM(cp.customer_key), ''), s.customer_key) = ?
+      ORDER BY cp.created_at ASC, cp.id ASC
+    `).all(normalizedBranch, safeCustomerKey);
+
+  return rows.map(mapCreditPaymentRow);
+}
+
+function listReceivableDuplicateCandidates(branch = STORE_BRANCHES[0], options = {}) {
+  const normalizedBranch = normalizeBranch(branch, { allowAll: true });
+  const normalizedSearch = normalizeReceivableCustomerKey(options.search || "");
+  const summaries = new Map();
+
+  listFiadoSales(normalizedBranch).forEach((sale) => {
+    const customerKey = sale.customerKey;
+    if (!customerKey) {
+      return;
+    }
+    if (!summaries.has(customerKey)) {
+      summaries.set(customerKey, buildReceivableCustomerSummary(customerKey, normalizedBranch, {
+        customerName: sale.customerName,
+      }));
+    }
+  });
+
+  const groups = new Map();
+  [...summaries.values()].filter(Boolean).forEach((summary) => {
+    const normalizedName = normalizeReceivableCustomerKey(summary.customerName);
+    if (!normalizedName) {
+      return;
+    }
+    if (
+      normalizedSearch
+      && !normalizeReceivableCustomerKey(summary.customerName).includes(normalizedSearch)
+      && !summary.customerKey.toLowerCase().includes(normalizedSearch)
+      && !summary.ticketNumbers.some((ticketNumber) => String(ticketNumber).toLowerCase().includes(normalizedSearch))
+    ) {
+      return;
+    }
+
+    const groupKey = `${summary.branch}:${normalizedName}`;
+    const current = groups.get(groupKey) || {
+      branch: summary.branch,
+      customerName: summary.customerName,
+      normalizedName,
+      pendingAmount: 0,
+      paidAmount: 0,
+      openSalesCount: 0,
+      totalSalesCount: 0,
+      paymentsCount: 0,
+      latestActivityAt: summary.latestActivityAt,
+      customers: [],
+    };
+
+    current.pendingAmount = roundMoney(current.pendingAmount + summary.pendingAmount);
+    current.paidAmount = roundMoney(current.paidAmount + summary.paidAmount);
+    current.openSalesCount += summary.openSalesCount;
+    current.totalSalesCount += summary.totalSalesCount;
+    current.paymentsCount += summary.paymentsCount;
+    if (String(summary.latestActivityAt || "").localeCompare(String(current.latestActivityAt || "")) > 0) {
+      current.latestActivityAt = summary.latestActivityAt;
+    }
+    current.customers.push(summary);
+    groups.set(groupKey, current);
+  });
+
+  return [...groups.values()]
+    .filter((group) => group.customers.length > 1)
+    .map((group) => ({
+      ...group,
+      customers: group.customers.sort((left, right) => {
+        if (right.pendingAmount !== left.pendingAmount) {
+          return right.pendingAmount - left.pendingAmount;
+        }
+        return String(right.latestActivityAt || "").localeCompare(String(left.latestActivityAt || ""));
+      }),
+    }))
+    .sort((left, right) => {
+      if (right.pendingAmount !== left.pendingAmount) {
+        return right.pendingAmount - left.pendingAmount;
+      }
+      return String(right.latestActivityAt || "").localeCompare(String(left.latestActivityAt || ""));
+    });
+}
+
 function getReceivableCustomerDetail(customerKey, branch = STORE_BRANCHES[0]) {
   const safeCustomerKey = normalizeStoredReceivableCustomerKey(customerKey);
   if (!safeCustomerKey) {
@@ -402,6 +581,107 @@ function getReceivableCustomerDetail(customerKey, branch = STORE_BRANCHES[0]) {
       return String(current).localeCompare(String(latest)) > 0 ? current : latest;
     }, sales[0].lastPaymentAt || sales[0].createdAt),
     sales,
+  };
+}
+
+function renameReceivableCustomer(payload = {}) {
+  const branch = normalizeBranch(payload.branch);
+  const customerKey = normalizeStoredReceivableCustomerKey(payload.customerKey || "");
+  const customerName = normalizeText(payload.customerName || "", 80);
+  if (!customerKey) {
+    throw createHttpError("Selecciona un cliente fiado valido para corregirlo.");
+  }
+  if (!customerName) {
+    throw createHttpError("Escribe el nombre correcto del cliente fiado.");
+  }
+
+  const existing = buildReceivableCustomerSummary(customerKey, branch);
+  if (!existing) {
+    throw createHttpError("No encontre el cliente fiado que quieres corregir.", 404);
+  }
+
+  const updateCustomerName = db.transaction(() => {
+    const salesResult = db.prepare(`
+      UPDATE sales
+      SET customer_name = ?
+      WHERE branch = ? AND customer_key = ?
+    `).run(customerName, branch, customerKey);
+    const paymentsResult = db.prepare(`
+      UPDATE credit_payments
+      SET customer_name = ?
+      WHERE branch = ? AND customer_key = ?
+    `).run(customerName, branch, customerKey);
+    return {
+      salesUpdated: Number(salesResult.changes || 0),
+      paymentsUpdated: Number(paymentsResult.changes || 0),
+    };
+  });
+
+  const updatedCounts = updateCustomerName();
+  return {
+    ...updatedCounts,
+    customer: buildReceivableCustomerSummary(customerKey, branch, { customerName }),
+  };
+}
+
+function mergeReceivableCustomers(payload = {}) {
+  const branch = normalizeBranch(payload.branch);
+  const sourceCustomerKey = normalizeStoredReceivableCustomerKey(payload.sourceCustomerKey || "");
+  const targetCustomerKey = normalizeStoredReceivableCustomerKey(payload.targetCustomerKey || "");
+  const targetCustomerName = normalizeText(payload.targetCustomerName || "", 80);
+
+  if (!sourceCustomerKey || !targetCustomerKey) {
+    throw createHttpError("Selecciona el cliente origen y el cliente destino para fusionar.");
+  }
+  if (sourceCustomerKey === targetCustomerKey) {
+    throw createHttpError("El cliente origen y destino deben ser distintos.");
+  }
+
+  const source = buildReceivableCustomerSummary(sourceCustomerKey, branch);
+  const target = buildReceivableCustomerSummary(targetCustomerKey, branch);
+  if (!source) {
+    throw createHttpError("No encontre el cliente fiado origen.", 404);
+  }
+  if (!target) {
+    throw createHttpError("No encontre el cliente fiado destino.", 404);
+  }
+
+  const finalCustomerName = targetCustomerName || target.customerName || source.customerName;
+  const mergeTransaction = db.transaction(() => {
+    const salesResult = db.prepare(`
+      UPDATE sales
+      SET customer_key = ?, customer_name = ?
+      WHERE branch = ? AND customer_key = ?
+    `).run(targetCustomerKey, finalCustomerName, branch, sourceCustomerKey);
+    const sourcePaymentsResult = db.prepare(`
+      UPDATE credit_payments
+      SET customer_key = ?, customer_name = ?
+      WHERE branch = ? AND customer_key = ?
+    `).run(targetCustomerKey, finalCustomerName, branch, sourceCustomerKey);
+    const targetSalesNameResult = db.prepare(`
+      UPDATE sales
+      SET customer_name = ?
+      WHERE branch = ? AND customer_key = ?
+    `).run(finalCustomerName, branch, targetCustomerKey);
+    const targetPaymentsNameResult = db.prepare(`
+      UPDATE credit_payments
+      SET customer_name = ?
+      WHERE branch = ? AND customer_key = ?
+    `).run(finalCustomerName, branch, targetCustomerKey);
+
+    return {
+      salesUpdated: Number(salesResult.changes || 0),
+      sourcePaymentsUpdated: Number(sourcePaymentsResult.changes || 0),
+      targetSalesRenamed: Number(targetSalesNameResult.changes || 0),
+      targetPaymentsRenamed: Number(targetPaymentsNameResult.changes || 0),
+    };
+  });
+
+  const updatedCounts = mergeTransaction();
+  return {
+    ...updatedCounts,
+    customer: buildReceivableCustomerSummary(targetCustomerKey, branch, { customerName: finalCustomerName }),
+    duplicateCandidates: listReceivableDuplicateCandidates(branch, { search: finalCustomerName }),
   };
 }
 
@@ -688,10 +968,13 @@ module.exports = {
   getCreditPaymentById,
   getCreditPaymentRowsBySaleIds,
   getReceivableCustomerDetail,
+  listReceivableDuplicateCandidates,
   listCreditPaymentsForExport,
   listCreditPaymentsForStoreDay,
   listRecentCreditPayments,
   listReceivableCustomers,
+  mergeReceivableCustomers,
+  renameReceivableCustomer,
   resolveReceivableCustomerKeyForSale,
   normalizeReceivableCustomerKey,
 };

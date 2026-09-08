@@ -1,7 +1,7 @@
 {
-  "name": "retail-base-pos",
+  "name": "merxalia-pos",
   "version": "1.0.0",
-  "description": "Base maestra retail para generar POS limpios por negocio con inventario, caja y sucursales.",
+  "description": "POS rural para caja, inventario, offline, respaldos y soporte comercial por cliente.",
   "main": "src/server.js",
   "scripts": {
     "dev": "node --watch src/server.js",
@@ -9,6 +9,10 @@
     "prepare:railway-db": "node scripts/prepare-railway-db.js",
     "rebuild:native": "npm rebuild better-sqlite3",
     "backup:nightly": "node scripts/backup-nightly.js",
+    "backup:verify": "node scripts/verify-backup-run.js",
+    "readiness:pilot": "node scripts/readiness-gate.js --stage pilot",
+    "readiness:scale": "node scripts/readiness-gate.js --stage scale",
+    "print:qa-ticket": "node scripts/generate-print-qa-ticket.js",
     "build:starter-catalog": "node scripts/build-starter-catalog.js",
     "import:excel": "node scripts/import-workbook.js",
     "install:excel-export": "node scripts/install-export-workbook.js",

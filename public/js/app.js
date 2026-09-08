@@ -237,6 +237,260 @@ function pickDirectProductSearchMatch(rawSearch, products = []) {
   }) || null;
 }
 
+function pickExactScannedProductMatch(rawCode, products = state.products) {
+  const normalizedCode = normalizeSearchText(rawCode);
+  if (!normalizedCode) {
+    return null;
+  }
+
+  return (Array.isArray(products) ? products : []).find((product) => {
+    const exactCodes = [
+      product.barcode,
+      product.sku,
+    ].map((value) => normalizeSearchText(value)).filter(Boolean);
+    return exactCodes.includes(normalizedCode);
+  }) || null;
+}
+
+function getScannerDefaultCategory() {
+  return (Array.isArray(state.categories) ? state.categories : [])
+    .find((category) => category.active !== false)?.id
+    || (Array.isArray(state.categories) ? state.categories : [])
+      .find((category) => category.code === "general")?.code
+    || "general";
+}
+
+function getScannerDefaultUnit() {
+  return (Array.isArray(state.units) ? state.units : [])
+    .find((unit) => unit.code === "pza" && unit.active !== false)?.id
+    || (Array.isArray(state.units) ? state.units : [])
+      .find((unit) => unit.active !== false)?.id
+    || "pza";
+}
+
+function renderScannerMode() {
+  if (refs.toggleScannerModeButton) {
+    refs.toggleScannerModeButton.classList.toggle("is-active", Boolean(state.ui.scannerMode));
+    refs.toggleScannerModeButton.setAttribute("aria-pressed", state.ui.scannerMode ? "true" : "false");
+  }
+  if (refs.scannerStatusPill) {
+    const status = state.ui.scannerMode
+      ? state.ui.scannerLastStatus === "created"
+        ? "Creado"
+        : state.ui.scannerLastStatus === "found"
+          ? "Agregado"
+          : state.ui.scannerLastStatus === "missing"
+            ? "Codigo no existe"
+            : "Scanner activo"
+      : "Manual";
+    refs.scannerStatusPill.textContent = status;
+    refs.scannerStatusPill.dataset.status = state.ui.scannerMode
+      ? state.ui.scannerLastStatus || "active"
+      : "manual";
+  }
+  if (refs.scannerCreateProductButton) {
+    refs.scannerCreateProductButton.hidden = !(
+      state.ui.scannerMode
+      && state.ui.scannerLastStatus === "missing"
+      && state.ui.scannerLastCode
+    );
+  }
+}
+
+function setScannerMode(enabled) {
+  state.ui.scannerMode = Boolean(enabled);
+  state.ui.scannerLastStatus = state.ui.scannerMode ? "active" : "idle";
+  state.ui.scannerLastCode = state.ui.scannerMode ? state.ui.scannerLastCode : "";
+  persistPreferences();
+  renderScannerMode();
+  if (state.ui.scannerMode) {
+    keepScannerSearchFocus({ select: true });
+  }
+}
+
+function setScannerResult(status, code = "") {
+  state.ui.scannerLastStatus = status;
+  state.ui.scannerLastCode = String(code || "").trim();
+  renderScannerMode();
+  if (refs.scannerStatusPill) {
+    pulseElement(refs.scannerStatusPill);
+  }
+}
+
+function playScannerFeedback(status = "found") {
+  if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+    navigator.vibrate(status === "missing" ? [40, 30, 40] : 35);
+  }
+
+  const AudioContextCtor =
+    typeof window !== "undefined" && (window.AudioContext || window.webkitAudioContext);
+  if (!AudioContextCtor) {
+    return;
+  }
+
+  try {
+    const audioContext = new AudioContextCtor();
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.value = status === "missing" ? 220 : 660;
+    gain.gain.value = 0.04;
+    oscillator.connect(gain);
+    gain.connect(audioContext.destination);
+    oscillator.start();
+    oscillator.stop(audioContext.currentTime + 0.08);
+    oscillator.addEventListener("ended", () => {
+      audioContext.close?.();
+    });
+  } catch (_error) {
+    // El navegador puede bloquear audio sin gesto suficiente; la confirmacion visual queda activa.
+  }
+}
+
+function shouldKeepScannerSearchFocus() {
+  if (!state.ui.scannerMode || !refs.searchInput) {
+    return false;
+  }
+
+  const hasOpenModal = Array.from(document.querySelectorAll(".modal-shell"))
+    .some((modal) => modal.classList.contains("open"));
+  if (hasOpenModal) {
+    return false;
+  }
+
+  const activeElement = document.activeElement;
+  if (!activeElement || activeElement === document.body || activeElement === refs.searchInput) {
+    return true;
+  }
+
+  return !["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(activeElement.tagName);
+}
+
+function keepScannerSearchFocus(options = {}) {
+  if (!shouldKeepScannerSearchFocus()) {
+    return;
+  }
+
+  refs.searchInput.focus({ preventScroll: true });
+  if (options.select) {
+    refs.searchInput.select?.();
+  }
+}
+
+function addScannedProductToCart(product) {
+  if (!requireCashierSession("Inicia sesion de cajero antes de escanear productos.")) {
+    return false;
+  }
+
+  if (!isRouteSimpleProduct(product)) {
+    openItemModal(product, {
+      focusField: "quantity",
+    });
+    showToast("Producto encontrado. Captura cantidad o total antes de agregarlo.", "info");
+    return true;
+  }
+
+  const cartItem = buildCartItem(product, {
+    quantity: getProductMin(product),
+    unitPrice: product.price,
+  });
+  const changedIndex = upsertCartItem(cartItem, {
+    mergeBaseLineProduct: product,
+  });
+  markRouteCartLineMotion(changedIndex);
+  commitCartUiState();
+  showToast(`${product.name} agregado por scanner.`, "success");
+  return true;
+}
+
+function submitScannerCode(rawCode = refs.searchInput?.value || "") {
+  const code = String(rawCode || "").trim();
+  if (!code) {
+    return false;
+  }
+
+  const product = pickExactScannedProductMatch(code);
+  if (product) {
+    if (addScannedProductToCart(product)) {
+      setScannerResult("found", code);
+      playScannerFeedback("found");
+      if (refs.searchInput) {
+        refs.searchInput.value = "";
+      }
+      requestProductsRender(true);
+      keepScannerSearchFocus({ select: true });
+    }
+    return true;
+  }
+
+  setScannerResult("missing", code);
+  playScannerFeedback("missing");
+  showToast("Codigo no registrado. Puedes crear el producto minimo si tienes acceso admin.", "info");
+  requestProductsRender(true);
+  refs.searchInput?.select?.();
+  keepScannerSearchFocus({ select: true });
+  return false;
+}
+
+async function createScannerProductFromLastCode() {
+  const code = String(state.ui.scannerLastCode || refs.searchInput?.value || "").trim();
+  if (!code) {
+    showToast("Escanea o captura un codigo primero.", "error");
+    return;
+  }
+
+  if (!await ensureAdminActionAccess("inventory", "La alta rapida de productos requiere acceso de inventario.")) {
+    return;
+  }
+
+  if (refs.scannerCreateProductButton) {
+    refs.scannerCreateProductButton.disabled = true;
+    refs.scannerCreateProductButton.textContent = "Creando...";
+  }
+
+  try {
+    const response = await requestAdminJson("/api/admin/products/manual", {
+      method: "POST",
+      body: JSON.stringify({
+        branch: getActiveCashierBranch(),
+        name: `Producto escaneado ${code}`.slice(0, 80),
+        categoryId: getScannerDefaultCategory(),
+        unitId: getScannerDefaultUnit(),
+        price: 1,
+        cost: 0,
+        stock: 0,
+        minStock: 0,
+        barcode: code,
+      }),
+    });
+    const product = response.product;
+    if (response.snapshot) {
+      applyPublicSnapshot(response.snapshot);
+    } else {
+      await refreshCurrentSnapshot(getActiveCashierBranch());
+    }
+    setScannerResult("created", code);
+    playScannerFeedback("created");
+    if (product) {
+      state.selectedCategory = "all";
+      requestProductsRender(true);
+      openItemModal(product, {
+        focusField: "total",
+      });
+    }
+    showToast("Producto minimo creado. Ajusta nombre, precio y existencia cuando puedas.", "success");
+  } catch (error) {
+    setScannerResult("missing", code);
+    showToast(error.message || "No pude crear el producto escaneado.", "error");
+  } finally {
+    if (refs.scannerCreateProductButton) {
+      refs.scannerCreateProductButton.disabled = false;
+      refs.scannerCreateProductButton.textContent = "Crear producto";
+    }
+    renderScannerMode();
+  }
+}
+
 function submitProductSearchFromKeyboard() {
   if (!refs.searchInput) {
     return;
@@ -252,6 +506,11 @@ function submitProductSearchFromKeyboard() {
     return;
   }
   lastProductSearchSubmitAt = now;
+
+  if (state.ui.scannerMode) {
+    submitScannerCode(search);
+    return;
+  }
 
   const filteredProducts = getFilteredProducts();
   const directMatch = pickDirectProductSearchMatch(search, filteredProducts);
@@ -423,12 +682,17 @@ async function bootstrap() {
   refs.searchQuickResults = $("search-quick-results");
   refs.toggleRouteModeButton = $("toggle-route-mode-button");
   refs.routeModePill = $("route-mode-pill");
+  refs.toggleScannerModeButton = $("toggle-scanner-mode-button");
+  refs.scannerStatusPill = $("scanner-status-pill");
+  refs.scannerCreateProductButton = $("scanner-create-product-button");
   refs.toggleRegisterToolbarButton = $("toggle-register-toolbar-button");
   refs.openAdminButton = $("open-admin-button");
   refs.headerAdminButton = $("header-admin-button");
+  refs.headerSupportLink = $("header-support-link");
   refs.branchDisplay = $("branch-display");
   refs.cashierSessionLabel = $("cashier-session-label");
   refs.cashierSessionHelper = $("cashier-session-helper");
+  refs.offlineReadyPill = $("offline-ready-pill");
   refs.switchCashierButton = $("switch-cashier-button");
   refs.logoutCashierButton = $("logout-cashier-button");
   refs.openStartRegisterButton = $("open-start-register-button");
@@ -507,6 +771,7 @@ async function bootstrap() {
   refs.paymentRouteConfirmButton = $("payment-route-confirm-button");
   refs.cashPaymentBlock = $("cash-payment-block");
   refs.quickImportModal = $("quick-import-modal");
+  refs.quickImportTitle = $("quick-import-title");
   refs.quickImportModeBar = $("quick-import-mode-bar");
   refs.quickImportDescription = $("quick-import-description");
   refs.quickImportProgressText = $("quick-import-progress-text");
@@ -546,6 +811,7 @@ async function bootstrap() {
   refs.merchandiseRequestProducts = $("merchandise-request-products");
   refs.merchandiseRequestItems = $("merchandise-request-items");
   refs.merchandiseRequestSupplier = $("merchandise-request-supplier");
+  refs.merchandiseRequestSupplierChips = $("merchandise-request-supplier-chips");
   refs.merchandiseRequestNote = $("merchandise-request-note");
   refs.merchandiseRequestTotalLabel = $("merchandise-request-total-label");
   refs.merchandiseRequestTotal = $("merchandise-request-total");
@@ -625,6 +891,7 @@ async function bootstrap() {
   refs.adminProfitabilityMissingCost = $("admin-profitability-missing-cost");
   refs.adminHealthStatus = $("admin-health-status");
   refs.adminHealthSummary = $("admin-health-summary");
+  refs.adminMerchantStatusSummary = $("admin-merchant-status-summary");
   refs.adminHealthReasons = $("admin-health-reasons");
   refs.adminHealthActions = $("admin-health-actions");
   refs.adminSubscriptionStatus = $("admin-subscription-status");
@@ -665,6 +932,12 @@ async function bootstrap() {
   refs.adminSalesList = $("admin-sales-list");
   refs.adminRegisterEventsList = $("admin-register-events-list");
   refs.adminInventoryMovementsList = $("admin-inventory-movements-list");
+  refs.adminReceivableDuplicatesStatus = $("admin-receivable-duplicates-status");
+  refs.adminReceivableDuplicateSearch = $("admin-receivable-duplicate-search");
+  refs.adminReceivableDuplicatesList = $("admin-receivable-duplicates-list");
+  refs.adminProductDuplicatesStatus = $("admin-product-duplicates-status");
+  refs.adminProductDuplicateSearch = $("admin-product-duplicate-search");
+  refs.adminProductDuplicatesList = $("admin-product-duplicates-list");
   refs.adminAuditLogList = $("admin-audit-log-list");
   refs.adminDevSummary = $("admin-dev-summary");
   refs.devRefreshAdminButton = $("dev-refresh-admin-button");
@@ -686,6 +959,14 @@ async function bootstrap() {
   refs.adminInventoryFilterBar = $("admin-inventory-filter-bar");
   refs.adminInventorySearch = $("admin-inventory-search");
   refs.adminInventoryFilterChips = $("admin-inventory-filter-chips");
+  refs.adminTableHint = $("admin-table-hint");
+  refs.adminOnboardingPanel = $("admin-onboarding-panel");
+  refs.adminOnboardingFile = $("admin-onboarding-file");
+  refs.previewAdminOnboardingButton = $("preview-admin-onboarding-button");
+  refs.applyAdminOnboardingButton = $("apply-admin-onboarding-button");
+  refs.adminOnboardingStatus = $("admin-onboarding-status");
+  refs.adminOnboardingMapping = $("admin-onboarding-mapping");
+  refs.adminOnboardingPreview = $("admin-onboarding-preview");
   refs.adminProductCreateForm = $("admin-product-create-form");
   refs.inventoryCardList = $("inventory-card-list");
   refs.adminNewProductName = $("admin-new-product-name");
@@ -702,6 +983,25 @@ async function bootstrap() {
   refs.adminNewProductPackSize = $("admin-new-product-pack-size");
   refs.adminNewProductAttributes = $("admin-new-product-attributes");
   refs.saveAdminProductButton = $("save-admin-product-button");
+  refs.adminProductEditorModal = $("admin-product-editor-modal");
+  refs.adminProductEditorTitle = $("admin-product-editor-title");
+  refs.adminProductEditorMeta = $("admin-product-editor-meta");
+  refs.adminEditProductName = $("admin-edit-product-name");
+  refs.adminEditProductCategory = $("admin-edit-product-category");
+  refs.adminEditProductUnit = $("admin-edit-product-unit");
+  refs.adminEditProductPrice = $("admin-edit-product-price");
+  refs.adminEditProductCost = $("admin-edit-product-cost");
+  refs.adminEditProductStock = $("admin-edit-product-stock");
+  refs.adminEditProductMinStock = $("admin-edit-product-min-stock");
+  refs.adminEditProductActive = $("admin-edit-product-active");
+  refs.adminEditProductSku = $("admin-edit-product-sku");
+  refs.adminEditProductBarcode = $("admin-edit-product-barcode");
+  refs.adminEditProductBrand = $("admin-edit-product-brand");
+  refs.adminEditProductSupplier = $("admin-edit-product-supplier");
+  refs.adminEditProductPackSize = $("admin-edit-product-pack-size");
+  refs.adminEditProductNote = $("admin-edit-product-note");
+  refs.saveAdminProductEditorButton = $("save-admin-product-editor-button");
+  refs.removeAdminProductEditorButton = $("remove-admin-product-editor-button");
   refs.adminCashierName = $("admin-cashier-name");
   refs.adminCashierBranch = $("admin-cashier-branch");
   refs.adminCashierPassword = $("admin-cashier-password");
@@ -810,6 +1110,8 @@ async function bootstrap() {
   refs.ownerConsoleDescription = $("owner-console-description");
   refs.ownerModulesWrap = $("owner-modules-wrap");
   refs.ownerAdminSectionsWrap = $("owner-admin-sections-wrap");
+  refs.ownerAdminSimplePresetButton = $("owner-admin-simple-preset-button");
+  refs.ownerAdminFullPresetButton = $("owner-admin-full-preset-button");
   refs.ownerTemplateSelect = $("owner-template-select");
   refs.ownerTemplateBusinessName = $("owner-template-business-name");
   refs.ownerTemplateSlug = $("owner-template-slug");
@@ -973,6 +1275,7 @@ async function bootstrap() {
   renderSyncStatus();
   if (!isAdminRuntime) {
     renderRouteMode();
+    renderScannerMode();
   }
   window.setInterval(updateClock, 1000);
   if (!isAdminRuntime) {
@@ -1002,7 +1305,13 @@ async function bootstrap() {
   // === Registro de eventos ===
 
   // Buscador
-  refs.searchInput.addEventListener("input", () => requestProductsRender(true));
+  refs.searchInput.addEventListener("input", () => {
+    if (state.ui.scannerMode) {
+      state.ui.scannerLastStatus = refs.searchInput.value.trim() ? "active" : "idle";
+      renderScannerMode();
+    }
+    requestProductsRender(true);
+  });
   refs.searchInput.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") {
       return;
@@ -1012,6 +1321,22 @@ async function bootstrap() {
     submitProductSearchFromKeyboard();
   });
   refs.searchInput.addEventListener("search", submitProductSearchFromKeyboard);
+  refs.toggleScannerModeButton?.addEventListener("click", () => {
+    setScannerMode(!state.ui.scannerMode);
+    showToast(
+      state.ui.scannerMode
+        ? "Modo scanner activo. El lector puede enviar Enter para agregar por codigo."
+        : "Modo scanner desactivado.",
+      "info",
+    );
+  });
+  refs.scannerCreateProductButton?.addEventListener("click", () => {
+    void createScannerProductFromLastCode();
+  });
+  window.addEventListener("focus", () => keepScannerSearchFocus());
+  document.addEventListener("click", () => {
+    window.setTimeout(() => keepScannerSearchFocus(), 0);
+  });
   refs.searchQuickResults?.addEventListener("click", (event) => {
     const button = event.target.closest('[data-action="open-search-product"]');
     if (!button) {
@@ -1146,6 +1471,7 @@ async function bootstrap() {
   refs.toggleAdminInventoryButton.addEventListener("click", toggleAdminInventoryPanel);
   refs.saveAdminProductButton.addEventListener("click", createAdminProduct);
   refs.adminNewProductUnit?.addEventListener("change", syncAdminProductCatalogs);
+  refs.adminEditProductUnit?.addEventListener("change", syncAdminProductEditorUnitStep);
   refs.adminInventoryModeBar?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-inventory-mode]");
     if (!button) {
@@ -1165,13 +1491,31 @@ async function bootstrap() {
     }
     setAdminInventoryFilter(button.dataset.inventoryFilter);
   });
+  refs.adminOnboardingFile?.addEventListener("change", () => {
+    selectAdminOnboardingFile(refs.adminOnboardingFile.files?.[0] || null);
+  });
+  refs.previewAdminOnboardingButton?.addEventListener("click", () => {
+    void previewAdminProductOnboarding();
+  });
+  refs.applyAdminOnboardingButton?.addEventListener("click", () => {
+    void applyAdminProductOnboarding();
+  });
+  refs.adminOnboardingMapping?.addEventListener("change", (event) => {
+    const select = event.target.closest("[data-onboarding-field]");
+    if (!select) {
+      return;
+    }
+    updateAdminOnboardingMapping(select.dataset.onboardingField, select.value);
+  });
   refs.openInventoryReceiveButton?.addEventListener("click", () => {
     void openAdminInventoryMovement("receive");
   });
   refs.openInventoryReturnButton?.addEventListener("click", () => {
     void openAdminInventoryMovement("return");
   });
-  refs.openInventoryCountButton?.addEventListener("click", openAdminInventoryCountMode);
+  refs.openInventoryCountButton?.addEventListener("click", () => {
+    void openAdminInventoryMovement("count");
+  });
 
   // Carrito y venta
   refs.openPaymentButton.addEventListener("click", openPaymentModal);
@@ -1230,6 +1574,8 @@ async function bootstrap() {
   $("close-owner-console-modal").addEventListener("click", closeOwnerConsoleModal);
   refs.ownerLogoutButton.addEventListener("click", logoutOwner);
   refs.saveOwnerConsoleButton.addEventListener("click", submitOwnerConsole);
+  refs.ownerAdminSimplePresetButton?.addEventListener("click", () => applyOwnerAdminCapabilityPreset("simple"));
+  refs.ownerAdminFullPresetButton?.addEventListener("click", () => applyOwnerAdminCapabilityPreset("full"));
   refs.applyOwnerTemplateButton?.addEventListener("click", applyOwnerTemplateReset);
   refs.ownerOperationGuide?.addEventListener("click", copyOwnerOperationCommand);
   refs.ownerRetryOfflineSalesButton?.addEventListener("click", retryAllOfflineSalesFromPanel);
@@ -1312,6 +1658,14 @@ async function bootstrap() {
     }
     setQuickImportMode(button.dataset.mode);
   });
+  $("close-admin-product-editor-modal")?.addEventListener("click", closeAdminProductEditor);
+  $("cancel-admin-product-editor-button")?.addEventListener("click", closeAdminProductEditor);
+  refs.saveAdminProductEditorButton?.addEventListener("click", () => {
+    void saveAdminProductEditor();
+  });
+  refs.removeAdminProductEditorButton?.addEventListener("click", () => {
+    void removeCurrentAdminProduct();
+  });
   refs.quickImportNextList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-index]");
     if (!button) {
@@ -1372,16 +1726,57 @@ async function bootstrap() {
   });
   refs.merchandiseRequestSupplier.addEventListener("input", () => {
     state.merchandise.supplierName = refs.merchandiseRequestSupplier.value;
+    renderMerchandiseRequestModal();
   });
   refs.merchandiseRequestNote.addEventListener("input", () => {
     state.merchandise.notes = refs.merchandiseRequestNote.value;
   });
   refs.merchandiseRequestProducts.addEventListener("click", (event) => {
+    const quickButton = event.target.closest('[data-action="quick-add-merchandise"]');
+    if (quickButton) {
+      addMerchandiseRequestQuickItem(quickButton.dataset.productId, quickButton.dataset.mode);
+      return;
+    }
+
     const button = event.target.closest('[data-action="open-merchandise-product"]');
     if (!button) {
       return;
     }
     openMerchandiseRequestItemModal(button.dataset.productId);
+  });
+  refs.merchandiseRequestProducts.addEventListener("input", (event) => {
+    const quantityInput = event.target.closest("[data-merchandise-quick-quantity]");
+    if (quantityInput) {
+      updateMerchandiseRequestQuickQuantity(
+        quantityInput.dataset.merchandiseQuickQuantity,
+        quantityInput.value,
+      );
+      return;
+    }
+
+    const totalInput = event.target.closest("[data-merchandise-quick-total]");
+    if (totalInput) {
+      updateMerchandiseRequestQuickTotal(
+        totalInput.dataset.merchandiseQuickTotal,
+        totalInput.value,
+      );
+    }
+  });
+  refs.merchandiseRequestProducts.addEventListener("keydown", (event) => {
+    const input = event.target.closest("[data-merchandise-quick-quantity],[data-merchandise-quick-total]");
+    if (!input || event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    const productId = input.dataset.merchandiseQuickQuantity || input.dataset.merchandiseQuickTotal;
+    addMerchandiseRequestQuickItem(productId, event.shiftKey ? "return" : "receive");
+  });
+  refs.merchandiseRequestSupplierChips?.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="set-merchandise-supplier"]');
+    if (!button) {
+      return;
+    }
+    setMerchandiseSupplierFilter(button.dataset.supplier || "");
   });
   refs.merchandiseRequestItems.addEventListener("click", (event) => {
     const button = event.target.closest('[data-action="remove-merchandise-item"]');
@@ -1462,6 +1857,18 @@ async function bootstrap() {
     void loadReceivableCustomerDetail(state.receivables.selectedCustomerKey);
   });
   refs.receivablesCustomerDetail.addEventListener("click", (event) => {
+    const statementButton = event.target.closest(
+      '[data-action="print-receivable-statement"], [data-action="share-receivable-statement"]',
+    );
+    if (statementButton) {
+      if (statementButton.dataset.action === "print-receivable-statement") {
+        printReceivableStatement();
+      } else {
+        shareReceivableStatementViaWhatsApp();
+      }
+      return;
+    }
+
     const button = event.target.closest('[data-action="open-receivable-payment"]');
     if (!button) {
       return;
@@ -1665,6 +2072,12 @@ async function bootstrap() {
   });
 
   refs.detailViewerModal.addEventListener("click", (event) => {
+    const printButton = event.target.closest('[data-action="print-sale-ticket"]');
+    if (printButton) {
+      printSaleTicket(state.detailViewer.detail);
+      return;
+    }
+
     if (event.target === refs.detailViewerModal) {
       closeDetailViewer();
     }
@@ -1720,6 +2133,37 @@ async function bootstrap() {
   });
 
   // Admin - listas de registros
+  refs.adminReceivableDuplicateSearch?.addEventListener("input", () => {
+    updateAdminReceivableDuplicateSearch(refs.adminReceivableDuplicateSearch.value);
+  });
+  refs.adminReceivableDuplicatesList?.addEventListener("click", (event) => {
+    const renameButton = event.target.closest('[data-action="rename-receivable-customer"]');
+    if (renameButton) {
+      void renameAdminReceivableCustomer(renameButton.dataset.customerKey);
+      return;
+    }
+
+    const mergeButton = event.target.closest('[data-action="merge-receivable-customer"]');
+    if (mergeButton) {
+      void mergeAdminReceivableCustomer(
+        mergeButton.dataset.sourceCustomerKey,
+        mergeButton.dataset.targetCustomerKey,
+      );
+    }
+  });
+  refs.adminProductDuplicateSearch?.addEventListener("input", () => {
+    updateAdminProductDuplicateSearch(refs.adminProductDuplicateSearch.value);
+  });
+  refs.adminProductDuplicatesList?.addEventListener("click", (event) => {
+    const mergeButton = event.target.closest('[data-action="merge-product-duplicate"]');
+    if (!mergeButton) {
+      return;
+    }
+    void mergeAdminProductDuplicate(
+      mergeButton.dataset.sourceProductId,
+      mergeButton.dataset.targetProductId,
+    );
+  });
   refs.adminSalesList.addEventListener("click", (event) => {
     const button = event.target.closest('[data-action="edit-admin-record"]');
     if (!button) {
@@ -2047,6 +2491,11 @@ async function bootstrap() {
 
   if (refs.inventoryBodyWrapper) {
     refs.inventoryBodyWrapper.addEventListener("click", (event) => {
+      const editButton = event.target.closest('[data-action="edit-product"]');
+      if (editButton) {
+        openAdminProductEditor(editButton.closest("[data-inventory-record], tr"));
+        return;
+      }
       const saveButton = event.target.closest('[data-action="save-product"]');
       if (saveButton) {
         const record = saveButton.closest("[data-inventory-record], tr");
@@ -2060,6 +2509,11 @@ async function bootstrap() {
       const removeButton = event.target.closest('[data-action="remove-product"]');
       if (removeButton) {
         removeAdminProduct(removeButton.closest("[data-inventory-record], tr"));
+        return;
+      }
+      const loadMoreButton = event.target.closest('[data-action="load-more-admin-products"]');
+      if (loadMoreButton) {
+        void loadAdminInventoryProducts({ reset: false });
       }
     });
   }
@@ -2120,7 +2574,7 @@ async function bootstrap() {
               ...getOwnerAuthHeaders(),
             };
         const snapshotUrl = isAdminRuntime
-          ? `/api/admin/bootstrap?branch=${encodeURIComponent(getAdminBranch())}&includeInactiveInventory=1`
+          ? `/api/admin/bootstrap?branch=${encodeURIComponent(getAdminBranch())}`
           : `/api/bootstrap?branch=${encodeURIComponent(getActiveCashierBranch())}`;
         const snapshot = await performJsonRequest(
           snapshotUrl,

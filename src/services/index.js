@@ -25,6 +25,7 @@ const { assertModuleEnabled } = require("../utils/helpers");
 const ownerConsole = require("./ownerConsole");
 const ownerOperations = require("./ownerOperations");
 const businessBranding = require("./businessBranding");
+const productOnboardingImport = require("./productOnboardingImport");
 
 module.exports = {
   ...products,
@@ -53,5 +54,6 @@ module.exports = {
   ...ownerConsole,
   ...ownerOperations,
   ...businessBranding,
+  ...productOnboardingImport,
   assertModuleEnabled,
 };

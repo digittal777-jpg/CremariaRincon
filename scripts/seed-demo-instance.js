@@ -3,7 +3,7 @@ const path = require("node:path");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const DEFAULT_TEMPLATE = "cremeria";
-const DEFAULT_DEMO_DB_PATH = path.join(ROOT_DIR, ".tmp-demo", "axentra-demo.sqlite");
+const DEFAULT_DEMO_DB_PATH = path.join(ROOT_DIR, ".tmp-demo", "merxalia-demo.sqlite");
 const DEMO_OWNER = { username: "demo_owner", password: "DemoOwner123" };
 const DEMO_ADMIN = { username: "demo_admin", password: "DemoAdmin123" };
 const DEMO_CASHIER = { name: "Ana Demo", password: "1234" };
@@ -130,6 +130,27 @@ function buildCashReceived(total) {
   return Math.ceil(roundMoney(total) / 50) * 50 || total;
 }
 
+function seedDemoLowStockAlerts({ db, products, branch }) {
+  const now = new Date().toISOString();
+  const lowStockProducts = products.slice(-3);
+  const updateProduct = db.prepare(`
+    UPDATE products
+    SET stock = ?,
+        min_stock = ?,
+        stock_initialized = 1,
+        updated_at = ?
+    WHERE id = ? AND branch = ?
+  `);
+
+  lowStockProducts.forEach((product) => {
+    const lowStock = product.unit === "pza" ? 1 : 0.25;
+    const minStock = product.unit === "pza" ? 3 : 1;
+    updateProduct.run(lowStock, minStock, now, product.id, branch);
+  });
+
+  return lowStockProducts.length;
+}
+
 function setDemoCredentials({ ownerAuth, adminAuth, services, branch }) {
   ownerAuth.setStoredOwnerCredentials(DEMO_OWNER.username, DEMO_OWNER.password);
   adminAuth.setSetting("admin.username", DEMO_ADMIN.username);
@@ -252,12 +273,14 @@ function seedDemoActivity({ db, services, branch }) {
       : "Demo: corte parcial sin retiro.",
     clientEventId: "demo-register-quick-cut",
   });
+  const lowStockCount = seedDemoLowStockAlerts({ db, products, branch });
 
   return {
     productsCount: products.length,
     sales: [cashSale, cardSale, creditSale],
     creditPayment,
     quickCut,
+    lowStockCount,
   };
 }
 
@@ -286,7 +309,7 @@ function writeDemoReport({ dbPath, reportPath, businessName, slug, branch, activ
   const inventory = commercial.profitability?.inventory || {};
   const subscription = commercial.paymentBundle?.subscription || {};
   const health = commercial.health?.semaphore || {};
-  const content = `# Axentra POS Demo
+  const content = `# Merxalia POS Demo
 
 Demo generada para mostrar caja, inventario, fiado, cortes, rentabilidad, salud y suscripcion sin datos reales.
 
@@ -316,6 +339,7 @@ URL: http://localhost:3100
 - Slug: ${slug}
 - Sucursal: ${branch}
 - Productos disponibles: ${activity.productsCount}
+- Productos bajos demo: ${activity.lowStockCount || 0}
 - Ventas demo: ${activity.sales.length}
 - Fiado demo: ticket ${activity.sales[2]?.ticketNumber || ""}
 - Abono demo: ${activity.creditPayment?.amount || 0}
@@ -343,8 +367,8 @@ URL: http://localhost:3100
 
 async function main() {
   const templateKey = getFlagValue("template") || DEFAULT_TEMPLATE;
-  const businessName = getFlagValue("name") || "Axentra POS Demo";
-  const slug = normalizeSlug(getFlagValue("slug") || "axentra-demo");
+  const businessName = getFlagValue("name") || "Merxalia POS Demo";
+  const slug = normalizeSlug(getFlagValue("slug") || "merxalia-demo");
   const dbPath = prepareDemoDbPath(
     resolvePath(getFlagValue("db"), DEFAULT_DEMO_DB_PATH),
     hasFlag("reset"),
@@ -387,7 +411,7 @@ async function main() {
   const commercial = seedDemoCommercialLayer({ services, branch });
   writeDemoReport({ dbPath, reportPath, businessName, slug, branch, activity, commercial });
 
-  console.log("Demo Axentra POS lista.");
+  console.log("Demo Merxalia POS lista.");
   console.log(`DB: ${dbPath}`);
   console.log(`Reporte: ${reportPath}`);
   console.log("");

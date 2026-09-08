@@ -1145,10 +1145,16 @@ function renderSyncStatus() {
   );
   const reviewCount = Math.max(blockedCount, offlineOperationSummary.requiresReview);
   if (reviewCount > 0) {
+    const firstBlockedOperation = typeof getFirstBlockedPendingOperation === "function"
+      ? getFirstBlockedPendingOperation()
+      : null;
+    const firstBlockedReason = String(firstBlockedOperation?.lastSyncError || "").trim();
     refs.syncStatus.textContent = reviewCount === 1
       ? "1 operacion requiere revision"
       : `${reviewCount} operaciones requieren revision`;
-    syncStatusTarget.title = "Toca para revisar el registro local de operaciones offline.";
+    syncStatusTarget.title = firstBlockedReason
+      ? `Toca para revisar el registro local. Causa: ${firstBlockedReason}`
+      : "Toca para revisar el registro local de operaciones offline.";
     return;
   }
 

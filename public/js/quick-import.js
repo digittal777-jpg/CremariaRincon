@@ -378,6 +378,10 @@ function getQuickImportResultValue() {
     return roundStock(item.recordedStock);
   }
 
+  if (state.quickImport.mode === "count") {
+    return roundStock(parsedValue);
+  }
+
   if (state.quickImport.mode === "return") {
     return roundStock(item.recordedStock - parsedValue);
   }
@@ -502,23 +506,41 @@ function renderQuickImportCurrentItem() {
   const draft = getQuickImportDraft();
   const status = getQuickImportItemStatus(item);
   const isReturnMode = state.quickImport.mode === "return";
+  const isCountMode = state.quickImport.mode === "count";
 
-  refs.quickImportDescription.textContent = isReturnMode
-    ? "Captura la cantidad que el proveedor retira. Se descuenta del inventario actual."
-    : "Captura la cantidad de entrada. Se suma al inventario actual para compras o correcciones.";
-  refs.quickImportValueLabel.textContent = isReturnMode
-    ? "Cantidad a descontar"
-    : "Cantidad a agregar";
+  if (refs.quickImportTitle) {
+    refs.quickImportTitle.textContent = isCountMode
+      ? "Conteo fisico"
+      : isReturnMode
+        ? "Salida de mercancia"
+        : "Entrada de mercancia";
+  }
+
+  refs.quickImportDescription.textContent = isCountMode
+    ? "Cuenta el producto fisicamente y captura la existencia real. El POS ajustara el stock a ese numero."
+    : isReturnMode
+      ? "Captura la cantidad que sale. Se descuenta del inventario actual."
+      : "Captura la cantidad que entro. Se suma al inventario actual.";
+  refs.quickImportValueLabel.textContent = isCountMode
+    ? "Cantidad contada"
+    : isReturnMode
+      ? "Cantidad a descontar"
+      : "Cantidad a agregar";
   refs.quickImportHelper.textContent =
     "Enter guarda y avanza. Shift+Enter guarda sin avanzar. Flechas izquierda y derecha cambian producto.";
+  if (refs.quickImportProviderField) {
+    refs.quickImportProviderField.hidden = isCountMode;
+  }
   refs.quickImportSupplier.value = state.quickImport.supplierName;
   refs.quickImportNote.value = draft.note;
   refs.quickImportValue.value = draft.quantity;
   refs.quickImportValue.step = String(getProductStep(item));
   refs.quickImportValue.min = "0";
-  refs.quickImportValue.placeholder = isReturnMode
-    ? "Captura cantidad a descontar"
-    : "Captura cantidad a agregar";
+  refs.quickImportValue.placeholder = isCountMode
+    ? "Captura cantidad contada"
+    : isReturnMode
+      ? "Captura cantidad a descontar"
+      : "Captura cantidad a agregar";
 
   refs.quickImportProductName.textContent = item.name;
   refs.quickImportProductMeta.textContent = `${item.categoryLabel} · ${item.unit}`;
@@ -640,7 +662,7 @@ function renderQuickImportModal() {
 
   if (state.quickImport.loading) {
     refs.quickImportEmpty.hidden = false;
-    refs.quickImportEmpty.textContent = "Cargando productos para captura rapida...";
+    refs.quickImportEmpty.textContent = "Cargando productos para capturar inventario...";
     refs.quickImportContent.hidden = true;
     refs.quickImportPrevButton.disabled = true;
     refs.quickImportNextButton.disabled = true;
@@ -653,7 +675,7 @@ function renderQuickImportModal() {
 
   if (getQuickImportItems().length === 0 || !getCurrentQuickImportItem()) {
     refs.quickImportEmpty.hidden = false;
-    refs.quickImportEmpty.textContent = "No hay productos activos para captura rapida.";
+    refs.quickImportEmpty.textContent = "No hay productos activos para capturar inventario.";
     refs.quickImportContent.hidden = true;
     renderQuickImportNextList();
     renderQuickImportActionButtons();
@@ -745,7 +767,7 @@ function updateCurrentQuickImportDraft(patch = {}) {
 }
 
 function setQuickImportMode(mode) {
-  if (!["receive", "return"].includes(mode)) {
+  if (!["receive", "return", "count"].includes(mode)) {
     return;
   }
 
@@ -768,7 +790,7 @@ async function loadQuickImportItems() {
   } catch (_error) {
     state.quickImport.items = buildQuickImportFallbackItems();
     showToast(
-      "No fue posible traer ventas del dia para la captura rapida. Se usara el inventario local.",
+      "No fue posible traer ventas del dia para la captura. Se usara el inventario local.",
       "info",
     );
   } finally {
@@ -792,13 +814,14 @@ async function openQuickImportModal() {
     return;
   }
 
-  if (!hasAdminCapability("daily_flow")) {
-    showToast("La importacion rapida esta bloqueada por el owner para este admin.", "error");
+  const isCountMode = state.quickImport.mode === "count";
+  if (!hasAdminCapability(isCountMode ? "inventory" : "daily_flow")) {
+    showToast("La captura de inventario esta bloqueada por el owner para este admin.", "error");
     return;
   }
 
   if (getAdminBranch() === "all") {
-    showToast("Selecciona una sucursal especifica en admin para la importacion rapida.", "info");
+    showToast("Selecciona una sucursal especifica en admin para capturar inventario.", "info");
     return;
   }
 
@@ -849,8 +872,9 @@ async function saveQuickImportEntry(options = {}) {
 
   const parsedValue = roundStock(numericValue);
   const isReturnMode = state.quickImport.mode === "return";
-  if (parsedValue <= 0) {
-    showToast("La cantidad debe ser mayor a cero.", "error");
+  const isCountMode = state.quickImport.mode === "count";
+  if (isCountMode ? parsedValue < 0 : parsedValue <= 0) {
+    showToast(isCountMode ? "La cantidad contada no puede ser negativa." : "La cantidad debe ser mayor a cero.", "error");
     focusQuickImportValue();
     return;
   }
@@ -865,10 +889,19 @@ async function saveQuickImportEntry(options = {}) {
   renderQuickImportActionButtons();
 
   try {
-    const response = await requestAdminJson("/api/inventory/quick-import", {
-      method: "POST",
-      body: JSON.stringify(getQuickImportSavePayload(item, parsedValue)),
-    });
+    const response = isCountMode
+      ? await requestAdminJson(`/api/products/${productId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            branch: getAdminActionBranch(),
+            stock: parsedValue,
+            note: getQuickImportDraft().note.trim() || "Conteo fisico de inventario",
+          }),
+        })
+      : await requestAdminJson("/api/inventory/quick-import", {
+          method: "POST",
+          body: JSON.stringify(getQuickImportSavePayload(item, parsedValue)),
+        });
 
     if (response.product) {
       const currentIndex = state.quickImport.index;

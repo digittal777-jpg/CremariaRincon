@@ -539,6 +539,7 @@ function seedBranchesFromTemplate(branches = []) {
       timezone: normalizeText(branch.timezone || getBusinessProfile().timezone, 64),
       active: branch.active !== false,
       sortOrder: branch.sortOrder ?? index,
+      copyProducts: false,
     };
 
     if (existing) {

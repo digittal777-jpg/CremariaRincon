@@ -88,6 +88,22 @@ function renderRouteMode() {
 
 function renderCashierSession() {
   const branchLabel = getBranchLabel(getActiveCashierBranch());
+  const branchCode = getActiveCashierBranch();
+  const preparedSnapshots = typeof readStorageJson === "function" && typeof STORAGE_KEYS !== "undefined"
+    ? readStorageJson(STORAGE_KEYS.preparedSnapshots, {})
+    : {};
+  const preparedSnapshot = preparedSnapshots && typeof preparedSnapshots === "object"
+    ? preparedSnapshots[branchCode] || null
+    : null;
+  const preparedProductCount = Array.isArray(preparedSnapshot?.products)
+    ? preparedSnapshot.products.length
+    : state.cashier.authenticated && Array.isArray(state.products)
+      ? state.products.length
+      : 0;
+  const preparedAt = preparedSnapshot?.savedAt || preparedSnapshot?.generatedAt || "";
+  const preparedDetail = preparedProductCount > 0
+    ? `${formatQuantity(preparedProductCount)} producto(s) guardados para ${branchLabel}${preparedAt ? ` desde ${typeof formatAdminTimestamp === "function" ? formatAdminTimestamp(preparedAt) : preparedAt}` : ""}.`
+    : `Sin catalogo offline confirmado para ${branchLabel}.`;
   const cashierLabel = state.cashier.name || "Sin sesion";
   const sessionText = state.cashier.authenticated
     ? `${cashierLabel} en ${branchLabel}`
@@ -151,14 +167,57 @@ function renderCashierSession() {
         ? offlineOperationSummary.requiresReview > 0
           ? `Este dispositivo tiene ${pendingOfflineOperationCount} ${offlineOperationLabel} offline pendiente(s); ${offlineOperationSummary.requiresReview} requiere(n) revision antes de cerrar la cola.`
           : `Este dispositivo tiene ${pendingOfflineOperationCount} ${offlineOperationLabel} offline pendiente(s) por sincronizar.`
-        : "Puedes cambiar de sucursal o cerrar la sesion del cajero cuando lo necesites."
+        : "Equipo preparado para vender offline en esta sucursal mientras conserve este cajero y catalogo guardados."
       : state.online
         ? pendingOfflineOperationCount > 0
           ? offlineOperationSummary.requiresReview > 0
             ? `Tienes ${pendingOfflineOperationCount} ${offlineOperationLabel} offline pendiente(s). Inicia sesion del mismo cajero y revisa lo que quedo en conflicto.`
             : `Tienes ${pendingOfflineOperationCount} ${offlineOperationLabel} offline pendiente(s). Inicia sesion del mismo cajero para sincronizarlos.`
-          : "Selecciona sucursal y entra con la clave del cajero para empezar a vender."
-        : "Sin internet: si este cajero ya entro antes en este dispositivo y sucursal, puedes iniciar con su clave para seguir vendiendo offline.";
+          : "Selecciona sucursal y entra con la clave del cajero para preparar este equipo."
+        : "Sin internet: solo podras vender si este equipo ya fue preparado con ese cajero, sucursal y catalogo.";
+  }
+
+  if (refs.offlineReadyPill) {
+    const offlineReadyState = state.cashier.authenticated
+      ? pendingOfflineOperationCount > 0
+        ? offlineOperationSummary.requiresReview > 0
+          ? {
+              status: "review",
+              label: `${offlineOperationSummary.requiresReview} por revisar`,
+              title: "Hay movimientos offline que necesitan causa y accion antes de cerrar la cola.",
+            }
+          : {
+              status: "pending",
+              label: `${pendingOfflineOperationCount} por sincronizar`,
+              title: "Este equipo esta preparado y tiene movimientos offline guardados.",
+            }
+        : {
+            status: "ready",
+            label: `Offline listo - ${branchLabel}`,
+            title: `Este equipo esta preparado para vender offline. ${preparedDetail}`,
+          }
+      : pendingOfflineOperationCount > 0
+        ? {
+            status: "needs_session",
+            label: "Reactivar cajero",
+            title: "Inicia sesion del mismo cajero para sincronizar los movimientos offline pendientes.",
+          }
+        : {
+            status: state.online ? "setup" : "not_ready",
+            label: state.online && preparedProductCount > 0
+              ? `Preparado - ${branchLabel}`
+              : state.online
+                ? "Preparar offline"
+                : "Offline sin preparar",
+            title: state.online
+              ? preparedProductCount > 0
+                ? `Este equipo tiene catalogo offline guardado. ${preparedDetail}`
+                : "Inicia sesion de cajero para preparar este equipo para operar offline."
+              : "Sin internet y sin sesion preparada en este dispositivo.",
+          };
+    refs.offlineReadyPill.textContent = offlineReadyState.label;
+    refs.offlineReadyPill.title = offlineReadyState.title;
+    refs.offlineReadyPill.dataset.status = offlineReadyState.status;
   }
 
   if (refs.logoutCashierButton) {
@@ -699,7 +758,7 @@ function renderInventory() {
   }
 }
 
-function renderInventorySingle() {
+function legacyInventorySingleUnused() {
   const singleWrapper = document.getElementById("inventory-single-table");
   const comparisonWrapper = document.getElementById("inventory-comparison-wrapper");
   const inventoryProducts = Array.isArray(state.admin.inventoryProducts)
@@ -743,7 +802,7 @@ function renderInventorySingle() {
             </span>
           </td>
           <td>
-            <button class="secondary-button" data-action="save-product" type="button">
+            <button class="secondary-button" data-action="legacy-save-product" type="button">
               Guardar
             </button>
           </td>
@@ -758,7 +817,7 @@ function renderInventorySingle() {
     .join("");
 }
 
-function renderInventoryComparison() {
+function legacyInventoryComparisonUnused() {
   const singleWrapper = document.getElementById("inventory-single-table");
   const comparisonWrapper = document.getElementById("inventory-comparison-wrapper");
   
@@ -815,7 +874,7 @@ function renderInventoryComparison() {
               </span>
             </td>
             <td>
-              <button class="secondary-button" data-action="save-product" type="button">
+              <button class="secondary-button" data-action="legacy-save-product" type="button">
                 Guardar
               </button>
             </td>
@@ -862,7 +921,7 @@ function renderInventoryComparison() {
               </span>
             </td>
             <td>
-              <button class="secondary-button" data-action="save-product" type="button">
+              <button class="secondary-button" data-action="legacy-save-product" type="button">
                 Guardar
               </button>
             </td>
@@ -971,18 +1030,44 @@ function getInventoryEmptyRow(colspan, message = "Sin productos con este filtro.
   `;
 }
 
+function getInventoryLoadMoreMarkup() {
+  const page = state.admin.inventoryPage || {};
+  const visible = Array.isArray(state.admin.inventoryProducts) ? state.admin.inventoryProducts.length : 0;
+  const total = Number(page.total || visible);
+  if (page.loading) {
+    return `<div class="inventory-empty-card">Cargando inventario...</div>`;
+  }
+  if (!page.hasMore) {
+    return total > 0
+      ? `<div class="inventory-empty-card">Mostrando ${formatQuantity(Math.min(visible, total))} de ${formatQuantity(total)} productos.</div>`
+      : "";
+  }
+  return `
+    <button class="secondary-button compact-button" data-action="load-more-admin-products" type="button">
+      Cargar mas (${formatQuantity(Math.min(visible, total))}/${formatQuantity(total)})
+    </button>
+  `;
+}
+
+function getInventoryLoadMoreRow(colspan) {
+  const markup = getInventoryLoadMoreMarkup();
+  return markup
+    ? `
+      <tr>
+        <td colspan="${colspan}">
+          <div class="inventory-empty-state">${markup}</div>
+        </td>
+      </tr>
+    `
+    : "";
+}
+
 function renderInventoryRow(product, options = {}) {
   const status = getInventoryProductStatus(product);
   const active = product.active !== false;
   const branchAttr = options.branch ? ` data-branch="${escapeHtml(options.branch)}"` : "";
-  const removeButton = options.removable
-    ? `
-      <td>
-        <button class="ghost-button danger-button" data-action="remove-product" type="button">
-          Quitar
-        </button>
-      </td>
-    `
+  const branchCell = options.showBranch
+    ? `<td>${escapeHtml(options.branchLabel || getBranchLabel(options.branch || getAdminActionBranch()))}</td>`
     : "";
 
   return `
@@ -990,38 +1075,24 @@ function renderInventoryRow(product, options = {}) {
       <td>
         <div class="inventory-name">
           <strong>${escapeHtml(product.name)}</strong>
-          <small>${escapeHtml(product.categoryLabel || "")} - ${escapeHtml(product.unit || "")}</small>
+          <small>${escapeHtml(product.categoryLabel || "")} - ${escapeHtml(product.unit || "")}${product.sku ? ` - SKU ${escapeHtml(product.sku)}` : ""}</small>
         </div>
       </td>
-      <td>
-        <input class="inventory-input" data-field="price" type="number" min="0" step="0.01" value="${escapeHtml(product.price ?? 0)}" />
-      </td>
-      <td>
-        <input class="inventory-input" data-field="stock" type="number" step="${getProductStep(product)}" value="${escapeHtml(product.stock ?? 0)}" />
-      </td>
-      <td>
-        <input class="inventory-input" data-field="minStock" type="number" min="0" step="${getProductStep(product)}" value="${escapeHtml(product.minStock ?? 0)}" />
-      </td>
-      <td>
-        <label class="inventory-toggle">
-          <input data-field="active" type="checkbox" ${active ? "checked" : ""} />
-          <span>${active ? "Activo" : "Inactivo"}</span>
-        </label>
-      </td>
-      <td>
-        <input class="inventory-input" data-field="note" type="text" maxlength="120" placeholder="Nota del ajuste" />
-      </td>
+      ${branchCell}
+      <td>${formatCurrency(product.price || 0)}</td>
+      <td>${formatQuantity(product.stock ?? 0)} ${escapeHtml(product.unit || "")}</td>
+      <td>${formatQuantity(product.minStock ?? 0)} ${escapeHtml(product.unit || "")}</td>
+      <td>${active ? "Activo" : "Inactivo"}</td>
       <td>
         <span class="status-chip ${sanitizeClassToken(status, "normal")}">
           ${escapeHtml(getStatusLabel(status))}
         </span>
       </td>
       <td>
-        <button class="secondary-button" data-action="save-product" type="button">
-          Guardar
+        <button class="secondary-button compact-button" data-action="edit-product" type="button">
+          Editar
         </button>
       </td>
-      ${removeButton}
     </tr>
   `;
 }
@@ -1033,53 +1104,41 @@ function renderInventoryCard(product, options = {}) {
   const branchLabel = options.branchLabel
     ? `<span class="small-pill">${escapeHtml(options.branchLabel)}</span>`
     : "";
-  const removeButton = options.removable
-    ? `
-      <button class="ghost-button danger-button" data-action="remove-product" type="button">
-        Quitar
-      </button>
-    `
-    : "";
 
   return `
     <article class="inventory-product-card" data-product-id="${product.id}" data-inventory-record${branchAttr}>
       <div class="inventory-card-head">
         <div class="inventory-name">
           <strong>${escapeHtml(product.name)}</strong>
-          <small>${escapeHtml(product.categoryLabel || "")} - ${escapeHtml(product.unit || "")}</small>
+          <small>${escapeHtml(product.categoryLabel || "")} - ${escapeHtml(product.unit || "")}${product.sku ? ` - SKU ${escapeHtml(product.sku)}` : ""}</small>
         </div>
         <div class="inventory-card-badges">
           ${branchLabel}
           <span class="status-chip ${sanitizeClassToken(status, "normal")}">${escapeHtml(getStatusLabel(status))}</span>
         </div>
       </div>
-      <div class="inventory-card-grid">
-        <label class="field">
+      <div class="inventory-card-grid inventory-card-summary-grid">
+        <div class="inventory-card-summary-field">
           <span>Precio</span>
-          <input class="inventory-input" data-field="price" type="number" min="0" step="0.01" value="${escapeHtml(product.price ?? 0)}" />
-        </label>
-        <label class="field">
+          <strong>${formatCurrency(product.price || 0)}</strong>
+        </div>
+        <div class="inventory-card-summary-field">
           <span>Existencia</span>
-          <input class="inventory-input" data-field="stock" type="number" step="${getProductStep(product)}" value="${escapeHtml(product.stock ?? 0)}" />
-        </label>
-        <label class="field">
+          <strong>${formatQuantity(product.stock ?? 0)} ${escapeHtml(product.unit || "")}</strong>
+        </div>
+        <div class="inventory-card-summary-field">
           <span>Minimo</span>
-          <input class="inventory-input" data-field="minStock" type="number" min="0" step="${getProductStep(product)}" value="${escapeHtml(product.minStock ?? 0)}" />
-        </label>
-        <label class="inventory-toggle inventory-card-toggle">
-          <input data-field="active" type="checkbox" ${active ? "checked" : ""} />
-          <span>${active ? "Activo" : "Inactivo"}</span>
-        </label>
-        <label class="field inventory-card-note">
-          <span>Nota</span>
-          <input class="inventory-input" data-field="note" type="text" maxlength="120" placeholder="Nota del ajuste" />
-        </label>
+          <strong>${formatQuantity(product.minStock ?? 0)} ${escapeHtml(product.unit || "")}</strong>
+        </div>
+        <div class="inventory-card-summary-field">
+          <span>Venta</span>
+          <strong>${active ? "Activo" : "Inactivo"}</strong>
+        </div>
       </div>
       <div class="inventory-card-actions">
-        <button class="secondary-button" data-action="save-product" type="button">
-          Guardar
+        <button class="secondary-button" data-action="edit-product" type="button">
+          Editar producto
         </button>
-        ${removeButton}
       </div>
     </article>
   `;
@@ -1111,7 +1170,7 @@ function renderInventoryCards(groups = []) {
           : `<div class="inventory-empty-card">Sin productos con este filtro.</div>`}
       </section>
     `)
-    .join("");
+    .join("") + getInventoryLoadMoreMarkup();
 }
 
 function renderInventorySingle() {
@@ -1137,7 +1196,8 @@ function renderInventorySingle() {
   if (refs.inventoryBody) {
     refs.inventoryBody.innerHTML = filteredProducts.length
       ? filteredProducts.map((product) => renderInventoryRow(product, { removable: true })).join("")
-      : getInventoryEmptyRow(9);
+      : getInventoryEmptyRow(7);
+    refs.inventoryBody.innerHTML += getInventoryLoadMoreRow(7);
   }
 }
 
@@ -1149,49 +1209,47 @@ function renderInventoryComparison() {
   if (comparisonWrapper) comparisonWrapper.hidden = false;
 
   const comparison = state.admin.inventoryComparison;
-  if (!comparison || !comparison.branches || comparison.branches.length < 2) {
+  if (!comparison || !Array.isArray(comparison.branches) || comparison.branches.length === 0) {
     renderInventoryCards([]);
     return;
   }
 
   const [branch1, branch2] = comparison.branches;
-  const branch1Products = filterAdminInventoryProducts(branch1.products);
-  const branch2Products = filterAdminInventoryProducts(branch2.products);
+  const branch1Products = branch1 ? filterAdminInventoryProducts(branch1.products) : [];
+  const branch2Products = branch2 ? filterAdminInventoryProducts(branch2.products) : [];
   const allProducts = comparison.branches.flatMap((branchEntry) =>
     Array.isArray(branchEntry.products) ? branchEntry.products : [],
   );
 
   const label1 = document.getElementById("comparison-branch-1-label");
   const label2 = document.getElementById("comparison-branch-2-label");
-  if (label1) label1.textContent = `${branch1.label} (${branch1Products.length})`;
-  if (label2) label2.textContent = `${branch2.label} (${branch2Products.length})`;
+  if (label1) label1.textContent = branch1 ? `${branch1.label} (${branch1Products.length})` : "Sucursal 1";
+  if (label2) label2.textContent = branch2 ? `${branch2.label} (${branch2Products.length})` : "Sucursal 2";
 
   renderAdminInventoryFilterChips(allProducts);
-  renderInventoryCards([
-    {
-      label: branch1.label,
-      branch: branch1.value,
-      products: branch1Products,
-    },
-    {
-      label: branch2.label,
-      branch: branch2.value,
-      products: branch2Products,
-    },
-  ]);
+  renderInventoryCards(comparison.branches.map((branchEntry) => ({
+    label: branchEntry.label,
+    branch: branchEntry.value,
+    products: filterAdminInventoryProducts(branchEntry.products),
+  })));
 
   const body1 = document.getElementById("inventory-body-branch-1");
   if (body1) {
     body1.innerHTML = branch1Products.length
       ? branch1Products.map((product) => renderInventoryRow(product, { branch: branch1.value })).join("")
-      : getInventoryEmptyRow(8);
+      : getInventoryEmptyRow(7);
   }
 
   const body2 = document.getElementById("inventory-body-branch-2");
   if (body2) {
     body2.innerHTML = branch2Products.length
       ? branch2Products.map((product) => renderInventoryRow(product, { branch: branch2.value })).join("")
-      : getInventoryEmptyRow(8);
+      : getInventoryEmptyRow(7);
+  }
+  const loadMoreRow = getInventoryLoadMoreRow(7);
+  if (loadMoreRow) {
+    if (body1) body1.innerHTML += loadMoreRow;
+    if (body2) body2.innerHTML += getInventoryLoadMoreRow(7);
   }
 }
 
@@ -1501,6 +1559,11 @@ function renderDetailViewer() {
     refs.detailViewerMeta.textContent =
       `${detail.cashier} · ${detail.shift} · ${dateTimeFormatter.format(new Date(detail.createdAt))}`;
     refs.detailViewerBody.innerHTML = `
+      <div class="modal-actions detail-ticket-actions">
+        <button class="secondary-button" data-action="print-sale-ticket" type="button">
+          Imprimir ticket
+        </button>
+      </div>
       <div class="detail-stat-grid">
         <article class="detail-stat-card">
           <span>Total</span>

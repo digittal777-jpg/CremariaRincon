@@ -89,6 +89,7 @@ function loadOfflineSalesContext() {
       getOfflineSaleRecordByClientSaleId,
       getOfflineSaleDisplayState,
       getOfflineSalesStatusSummary,
+      buildOfflineOperationReviewGuidance,
     };
   `).runInContext(vmContext);
 
@@ -212,6 +213,8 @@ test("offline sale summary promotes local stock conflicts to review", () => {
 
   assert.equal(displayState.status, "requires_review");
   assert.match(displayState.note, /Conflicto de stock/i);
+  assert.match(displayState.action, /Corrige inventario/i);
+  assert.equal(displayState.reviewReason, "stock_conflict");
   assert.deepEqual(JSON.parse(JSON.stringify(api.getOfflineSalesStatusSummary())), {
     pending: 0,
     requiresReview: 1,
@@ -265,7 +268,59 @@ test("guest context does not invent stock conflicts for pending offline sales", 
   const displayState = api.getOfflineSaleDisplayState(record);
 
   assert.equal(displayState.status, "pending");
-  assert.match(displayState.note, /iniciar sesion/i);
+  assert.match(displayState.note, /inicia sesion/i);
+  assert.equal(displayState.reviewReason, "auth_required");
+  assert.match(displayState.action, /Luis/i);
+});
+
+test("offline sale display state explains branch and server rejection actions", () => {
+  const api = loadOfflineSalesContext();
+  const payload = {
+    clientSaleId: "sale-4",
+    cashier: "Marta",
+    branch: "miradores",
+    shift: "Tarde",
+    paymentMethod: "Efectivo",
+    items: [
+      {
+        productId: 11,
+        productName: "Leche",
+        quantity: 1,
+        unitPrice: 20,
+        lineTotal: 20,
+      },
+    ],
+  };
+
+  api.state.cashier.name = "Marta";
+  api.state.cashier.branch = "carrizal";
+  api.state.cashier.authenticated = true;
+  api.state.cashier.token = "cashier-token";
+
+  const branchRecord = api.registerPendingOfflineSale(payload, {
+    queueOperationId: "op-4",
+  });
+  const branchDisplay = api.getOfflineSaleDisplayState(branchRecord);
+
+  assert.equal(branchDisplay.status, "requires_review");
+  assert.equal(branchDisplay.reviewReason, "branch_mismatch");
+  assert.match(branchDisplay.note, /otra sucursal|Miradores/i);
+  assert.match(branchDisplay.action, /sucursal/i);
+
+  api.markOfflineSaleForReview("sale-4", {
+    status: "requires_review",
+    lastError: "Producto ya no existe.",
+    lastErrorCode: 409,
+    reviewReason: "sync_error",
+  });
+
+  api.state.cashier.branch = "miradores";
+  const rejectedDisplay = api.getOfflineSaleDisplayState(
+    api.getOfflineSaleRecordByClientSaleId("sale-4"),
+  );
+  assert.equal(rejectedDisplay.status, "requires_review");
+  assert.match(rejectedDisplay.reason, /Producto ya no existe/i);
+  assert.match(rejectedDisplay.action, /rechazo no fue un simple corte de internet/i);
 });
 
 test("offline final cut locks the current cashier locally until sync", () => {

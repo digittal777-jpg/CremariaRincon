@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { fileURLToPath } = require("node:url");
+const Database = require("better-sqlite3");
 
 const {
   BACKUP_ACCESS_KEY_ID,
@@ -69,7 +70,7 @@ function sanitizeSlug(value) {
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80)
-    || "retail-base-pos";
+    || "merxalia-pos";
 }
 
 function getBackupStorageMode() {
@@ -314,6 +315,91 @@ function getLatestBackupRun() {
       LIMIT 1
     `).get(),
   );
+}
+
+function resolveBackupSqlitePathForRun(run) {
+  if (!run) {
+    return "";
+  }
+  if (run.sqliteLocalPath && fs.existsSync(run.sqliteLocalPath)) {
+    return run.sqliteLocalPath;
+  }
+  if (run.storageMode !== "file" || !run.sqliteRemoteKey) {
+    return "";
+  }
+
+  const endpoint = getFreshBackupRuntimeValue("BACKUP_BUCKET_ENDPOINT", BACKUP_BUCKET_ENDPOINT);
+  const bucketName = run.storageBucket || getFreshBackupRuntimeValue("BACKUP_BUCKET_NAME", BACKUP_BUCKET_NAME);
+  if (!endpoint || !bucketName) {
+    return "";
+  }
+
+  try {
+    const rootDir = path.join(fileURLToPath(endpoint), bucketName);
+    const candidatePath = path.join(rootDir, ...String(run.sqliteRemoteKey).split("/"));
+    return fs.existsSync(candidatePath) ? candidatePath : "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function verifyBackupRunRestorable(run = getLatestBackupRun()) {
+  const targetRun = run?.id ? run : getLatestBackupRun();
+  const sqlitePath = resolveBackupSqlitePathForRun(targetRun);
+  const result = {
+    ok: false,
+    runId: targetRun?.id || null,
+    checkedAt: nowIso(),
+    sqlitePath: sqlitePath || "",
+    integrity: "not_checked",
+    tables: {},
+    failures: [],
+  };
+
+  if (!targetRun) {
+    result.failures.push("No hay una corrida de backup para verificar restauracion.");
+    return result;
+  }
+  if (!sqlitePath) {
+    result.failures.push("No encontre el SQLite local o file:// del ultimo backup.");
+    return result;
+  }
+
+  let backupDb = null;
+  try {
+    backupDb = new Database(sqlitePath, { readonly: true, fileMustExist: true });
+    const integrityRow = backupDb.prepare("PRAGMA integrity_check").get();
+    const integrity = String(Object.values(integrityRow || {})[0] || "");
+    result.integrity = integrity;
+    if (integrity.toLowerCase() !== "ok") {
+      result.failures.push(`SQLite integrity_check: ${integrity || "sin resultado"}`);
+    }
+
+    ["products", "sales", "sale_items", "inventory_movements", "backup_runs"].forEach((tableName) => {
+      const exists = backupDb.prepare(`
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = ?
+      `).get(tableName);
+      if (!exists) {
+        result.failures.push(`Falta tabla ${tableName} en el respaldo.`);
+        result.tables[tableName] = null;
+        return;
+      }
+      result.tables[tableName] = Number(
+        backupDb.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get()?.count || 0,
+      );
+    });
+  } catch (error) {
+    result.failures.push(error.message || "No pude abrir el SQLite del backup.");
+  } finally {
+    if (backupDb) {
+      backupDb.close();
+    }
+  }
+
+  result.ok = result.failures.length === 0;
+  return result;
 }
 
 function listRecentBackupRuns(limit = 6) {
@@ -727,7 +813,7 @@ async function sendBackupNotification(profile, run) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      from: "Axentra POS <onboarding@resend.dev>",
+      from: "Merxalia POS <onboarding@resend.dev>",
       to: BACKUP_NOTIFY_TO,
       subject: `[${run.status.toUpperCase()}] Backup ${profile.shortName || profile.businessName} ${run.backupDateKey}`,
       text: buildNotificationText(profile, run),
@@ -968,4 +1054,5 @@ module.exports = {
   listRecentBackupRuns,
   recordClientSyncHealth,
   runNightlyBackup,
+  verifyBackupRunRestorable,
 };

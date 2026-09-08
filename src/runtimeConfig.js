@@ -14,6 +14,7 @@ const PAIRING_RUNTIME_KEYS = new Set(["CONTROL_API_URL", "CONTROL_CLIENT_SLUG", 
 const HTTPS_RUNTIME_URL_KEYS = new Set([
   "CONTROL_API_URL",
   "POS_PUBLIC_ORIGIN",
+  "POS_SUPPORT_WHATSAPP_URL",
   "RESEND_API_URL",
   "TELEGRAM_API_BASE_URL",
 ]);
@@ -63,7 +64,7 @@ const RUNTIME_VARIABLE_DEFINITIONS = [
     group: "POS",
     label: "Base SQLite",
     description: "Ruta de la base del cliente. Cambiarla requiere reiniciar.",
-    placeholder: "data/retail-base-pos.sqlite",
+    placeholder: "data/merxalia-pos.sqlite",
     restartRequired: true,
   },
   {
@@ -88,6 +89,30 @@ const RUNTIME_VARIABLE_DEFINITIONS = [
     label: "Dias exportables",
     description: "Ventana maxima para exportaciones de Excel.",
     placeholder: "14",
+    restartRequired: true,
+  },
+  {
+    key: "POS_SUPPORT_LABEL",
+    group: "POS",
+    label: "Etiqueta soporte",
+    description: "Texto corto del boton de ayuda visible para caja.",
+    placeholder: "Soporte",
+    restartRequired: true,
+  },
+  {
+    key: "POS_SUPPORT_WHATSAPP_URL",
+    group: "POS",
+    label: "WhatsApp soporte",
+    description: "URL directa de WhatsApp para ayuda remota.",
+    placeholder: "https://wa.me/521...",
+    restartRequired: true,
+  },
+  {
+    key: "POS_SUPPORT_PHONE",
+    group: "POS",
+    label: "Telefono soporte",
+    description: "Numero para construir wa.me si no hay URL directa.",
+    placeholder: "5215512345678",
     restartRequired: true,
   },
   {

@@ -177,6 +177,30 @@ test("owner runtime config save preserves stored secrets when fields stay blank"
   assert.equal(secretVariable.maskedValue, "********");
 });
 
+test("runtime config exposes support contact variables", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-runtime-support-"));
+  const configPath = path.join(tempDir, "runtime.json");
+  const previousEnv = {
+    POS_CONFIG_PATH: process.env.POS_CONFIG_PATH,
+  };
+
+  t.after(() => {
+    restoreEnv(previousEnv);
+    clearSrcRequireCache();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  process.env.POS_CONFIG_PATH = configPath;
+  clearSrcRequireCache();
+
+  const runtimeConfig = require("../src/runtimeConfig");
+  const variables = runtimeConfig.getRuntimeConfigEditorSnapshot().variables;
+
+  assert.equal(variables.some((variable) => variable.key === "POS_SUPPORT_LABEL"), true);
+  assert.equal(variables.some((variable) => variable.key === "POS_SUPPORT_WHATSAPP_URL"), true);
+  assert.equal(variables.some((variable) => variable.key === "POS_SUPPORT_PHONE"), true);
+});
+
 test("runtime config save treats identical values as a no-op", (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-runtime-noop-"));
   const configPath = path.join(tempDir, "runtime.json");

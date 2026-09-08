@@ -117,17 +117,228 @@ function getApprovalsMobileStatusCopy() {
 
 function getFilteredMerchandiseProducts() {
   const search = String(state.merchandise.search || "").trim().toLowerCase();
-  return state.products.filter((product) => {
-    if (!product.active) {
-      return false;
-    }
+  const supplierSearch = String(state.merchandise.supplierName || "").trim().toLowerCase();
+  const products = state.products.filter((product) => product.active);
+  const supplierTerms = splitMerchandiseSearchTerms(supplierSearch);
+  const searchTerms = splitMerchandiseSearchTerms(search);
+  const supplierMatchedProducts = supplierTerms.length
+    ? products.filter((product) =>
+        matchesMerchandiseProductTerms(product, supplierTerms, ["supplierName", "brand"]),
+      )
+    : [];
+  const supplierScopedProducts = supplierMatchedProducts.length ? supplierMatchedProducts : products;
 
-    if (!search) {
-      return true;
-    }
+  return supplierScopedProducts
+    .filter((product) => {
+      if (!searchTerms.length) {
+        return true;
+      }
+      return matchesMerchandiseProductTerms(product, searchTerms);
+    })
+    .sort((left, right) => {
+      const leftInRequest = state.merchandise.items.some((item) => item.productId === left.id) ? 0 : 1;
+      const rightInRequest = state.merchandise.items.some((item) => item.productId === right.id) ? 0 : 1;
+      if (leftInRequest !== rightInRequest) {
+        return leftInRequest - rightInRequest;
+      }
+      return String(left.name || "").localeCompare(String(right.name || ""), "es");
+    });
+}
 
-    return product.name.toLowerCase().includes(search);
+function splitMerchandiseSearchTerms(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter(Boolean);
+}
+
+function normalizeMerchandiseSearchValue(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function getMerchandiseProductSearchText(product, fields = null) {
+  const selectedFields = Array.isArray(fields) && fields.length
+    ? fields
+    : ["name", "categoryLabel", "unit", "sku", "barcode", "brand", "supplierName"];
+  return normalizeMerchandiseSearchValue(
+    selectedFields
+      .map((field) => product?.[field])
+      .filter((value) => value != null && value !== "")
+      .join(" "),
+  );
+}
+
+function matchesMerchandiseProductTerms(product, terms, fields = null) {
+  const searchText = getMerchandiseProductSearchText(product, fields);
+  return terms.every((term) => searchText.includes(term));
+}
+
+function getMerchandiseSupplierSuggestions(limit = 8) {
+  const supplierCounts = new Map();
+  state.products
+    .filter((product) => product.active)
+    .forEach((product) => {
+      const label = String(product.supplierName || product.brand || "").trim();
+      if (!label) {
+        return;
+      }
+      const key = label.toLowerCase();
+      const entry = supplierCounts.get(key) || { label, count: 0 };
+      entry.count += 1;
+      supplierCounts.set(key, entry);
+    });
+
+  return [...supplierCounts.values()]
+    .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label, "es"))
+    .slice(0, limit);
+}
+
+function getMerchandiseQuickQuantity(product) {
+  const savedValue = state.merchandise.quickQuantities?.[product.id];
+  if (savedValue != null && savedValue !== "") {
+    return String(savedValue);
+  }
+  return String(getMerchandiseRequestQuantityMin(product));
+}
+
+function getMerchandiseEstimatedUnitCost(product) {
+  const cost = roundMoney(product?.cost || 0);
+  if (cost > 0) {
+    return cost;
+  }
+  return roundMoney(product?.price || 0);
+}
+
+function getMerchandiseQuickTotal(product) {
+  const savedValue = state.merchandise.quickTotals?.[product.id];
+  return savedValue != null ? String(savedValue) : "";
+}
+
+function updateMerchandiseRequestQuickQuantity(productId, value) {
+  if (!state.merchandise.quickQuantities || typeof state.merchandise.quickQuantities !== "object") {
+    state.merchandise.quickQuantities = {};
+  }
+  state.merchandise.quickQuantities[Number(productId)] = String(value || "");
+}
+
+function updateMerchandiseRequestQuickTotal(productId, value) {
+  if (!state.merchandise.quickTotals || typeof state.merchandise.quickTotals !== "object") {
+    state.merchandise.quickTotals = {};
+  }
+  state.merchandise.quickTotals[Number(productId)] = String(value || "");
+}
+
+function setMerchandiseSupplierFilter(value) {
+  state.merchandise.supplierName = String(value || "");
+  if (refs.merchandiseRequestSupplier) {
+    refs.merchandiseRequestSupplier.value = state.merchandise.supplierName;
+  }
+  renderMerchandiseRequestModal();
+}
+
+function getMerchandiseRequestItemCount(productId) {
+  return state.merchandise.items
+    .filter((item) => item.productId === Number(productId))
+    .reduce((sum, item) => sum + item.quantity * getMerchandiseRequestItemSignedMultiplier(item.mode), 0);
+}
+
+function upsertMerchandiseRequestItem(product, options = {}) {
+  if (!product) {
+    showToast("No hay producto para agregar a la solicitud.", "error");
+    return false;
+  }
+
+  const mode = options.mode === "return" ? "return" : "receive";
+  const quantity = normalizeMerchandiseRequestQuantity(options.quantity, product);
+
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    showToast("Captura una cantidad valida para la solicitud.", "error");
+    return false;
+  }
+
+  const unitPrice = options.totalValue != null
+    ? roundMoney(Math.abs(options.totalValue) / quantity)
+    : getMerchandiseEstimatedUnitCost(product);
+  const signedMultiplier = getMerchandiseRequestItemSignedMultiplier(mode);
+  const rawLineTotal = roundMoney(Math.abs(options.totalValue ?? unitPrice * quantity));
+  if (!Number.isFinite(rawLineTotal) || rawLineTotal <= 0) {
+    showToast("Captura un valor valido para la linea.", "error");
+    return false;
+  }
+
+  const totalValue = roundMoney(rawLineTotal * signedMultiplier);
+  const existingIndex = state.merchandise.items.findIndex(
+    (item) => item.productId === product.id && item.mode === mode,
+  );
+
+  if (existingIndex >= 0) {
+    const currentItem = state.merchandise.items[existingIndex];
+    state.merchandise.items[existingIndex] = {
+      ...currentItem,
+      quantity: roundStock(currentItem.quantity + quantity),
+      unitPrice,
+      totalValue: roundMoney(currentItem.totalValue + totalValue),
+    };
+    return true;
+  }
+
+  state.merchandise.items.push({
+    productId: product.id,
+    productName: product.name,
+    unit: product.unit,
+    categoryLabel: product.categoryLabel,
+    quantity,
+    unitPrice,
+    totalValue,
+    mode,
   });
+  return true;
+}
+
+function addMerchandiseRequestQuickItem(productId, mode = "receive") {
+  const product = state.products.find((item) => item.id === Number(productId));
+  if (!product) {
+    showToast("No pude encontrar ese producto.", "error");
+    return;
+  }
+
+  const quantity = state.merchandise.quickQuantities?.[product.id] || getMerchandiseQuickQuantity(product);
+  const quickTotalValue = state.merchandise.quickTotals?.[product.id];
+  const parsedQuickTotal = quickTotalValue != null && String(quickTotalValue).trim() !== ""
+    ? roundMoney(Math.abs(quickTotalValue))
+    : null;
+  if (!upsertMerchandiseRequestItem(product, { mode, quantity, totalValue: parsedQuickTotal })) {
+    return;
+  }
+
+  updateMerchandiseRequestQuickQuantity(product.id, getMerchandiseRequestQuantityMin(product));
+  updateMerchandiseRequestQuickTotal(product.id, "");
+  renderMerchandiseRequestModal();
+  showToast(`${product.name} agregado.`, "success");
+}
+
+function getMerchandiseProductMeta(product) {
+  return [
+    product.supplierName || "",
+    product.brand || "",
+    product.sku ? `SKU ${product.sku}` : "",
+    product.barcode ? `Cod. ${product.barcode}` : "",
+  ].filter(Boolean).join(" - ");
+}
+
+function getMerchandiseProductCardSummary(product) {
+  const netQuantity = getMerchandiseRequestItemCount(product.id);
+  if (!netQuantity) {
+    return "";
+  }
+  const prefix = netQuantity > 0 ? "+" : "";
+  return `${prefix}${formatQuantity(netQuantity)} ${product.unit}`;
 }
 
 function getMerchandiseRequestQuantityMin(product) {
@@ -161,6 +372,8 @@ function resetMerchandiseRequestDraft() {
   state.merchandise.supplierName = "";
   state.merchandise.notes = "";
   state.merchandise.search = "";
+  state.merchandise.quickQuantities = {};
+  state.merchandise.quickTotals = {};
   state.merchandise.saving = false;
   state.merchandise.currentProduct = null;
   state.merchandise.currentMode = "receive";
@@ -180,7 +393,7 @@ function syncMerchandiseRequestProductsFromSnapshot() {
       return item;
     }
 
-    const unitPrice = roundMoney(product.price);
+    const unitPrice = getMerchandiseEstimatedUnitCost(product);
     const fallbackTotalValue = roundMoney(
       unitPrice * item.quantity * getMerchandiseRequestItemSignedMultiplier(item.mode),
     );
@@ -329,11 +542,17 @@ function openMerchandiseRequestModal() {
     return;
   }
 
-  resetMerchandiseRequestDraft();
+  const hasDraft = state.merchandise.items.length > 0
+    || state.merchandise.supplierName
+    || state.merchandise.notes
+    || state.merchandise.search;
+  if (!hasDraft) {
+    resetMerchandiseRequestDraft();
+  }
   renderMerchandiseRequestModal();
   setModalOpen(refs.merchandiseRequestModal, true);
   window.requestAnimationFrame(() => {
-    refs.merchandiseRequestSearch?.focus();
+    refs.merchandiseRequestSupplier?.focus();
   });
 }
 
@@ -376,7 +595,7 @@ function syncMerchandiseRequestItemTotal(options = {}) {
   const quantity = Number.isFinite(parsedQuantity) && parsedQuantity > 0
     ? normalizeMerchandiseRequestQuantity(parsedQuantity, state.merchandise.currentProduct)
     : null;
-  const unitPrice = roundMoney(state.merchandise.currentProduct.price);
+  const unitPrice = getMerchandiseEstimatedUnitCost(state.merchandise.currentProduct);
   const signedMultiplier = getMerchandiseRequestItemSignedMultiplier();
   refs.merchandiseRequestItemUnitPrice.value = unitPrice.toFixed(2);
 
@@ -423,16 +642,7 @@ function syncMerchandiseRequestQuantityFromTotal() {
     return;
   }
 
-  const lineTotal = roundMoney(Math.abs(parsedValue));
-  const quantity = normalizeQuantityFromLineTotal(
-    lineTotal,
-    state.merchandise.currentProduct,
-  );
-
-  state.merchandise.currentQuantity = String(
-    normalizeMerchandiseRequestQuantity(quantity, state.merchandise.currentProduct),
-  );
-  refs.merchandiseRequestItemQuantity.value = state.merchandise.currentQuantity;
+  refs.merchandiseRequestItemTotal.value = String(parsedValue);
 }
 
 function finalizeMerchandiseRequestItemTotalInput() {
@@ -448,7 +658,6 @@ function finalizeMerchandiseRequestItemTotalInput() {
 
   const signedMultiplier = getMerchandiseRequestItemSignedMultiplier();
   refs.merchandiseRequestItemTotal.value = roundMoney(lineTotal * signedMultiplier).toFixed(2);
-  syncMerchandiseRequestQuantityFromTotal();
 }
 
 function adjustMerchandiseRequestItemQuantity(delta) {
@@ -483,6 +692,7 @@ function renderMerchandiseRequestModal() {
   }
 
   const filteredProducts = getFilteredMerchandiseProducts();
+  const supplierSuggestions = getMerchandiseSupplierSuggestions();
   const totalValue = getMerchandiseRequestTotal();
   const totalLabel = totalValue > 0
     ? "Entrada neta"
@@ -499,21 +709,42 @@ function renderMerchandiseRequestModal() {
     ? "Guardando..."
     : "Enviar a admin";
 
+  if (refs.merchandiseRequestSupplierChips) {
+    refs.merchandiseRequestSupplierChips.innerHTML = supplierSuggestions.length
+      ? supplierSuggestions
+          .map((supplier) => {
+            const isActive = state.merchandise.supplierName.trim().toLowerCase() === supplier.label.toLowerCase();
+            return `
+              <button
+                class="merchandise-supplier-chip ${isActive ? "active" : ""}"
+                data-action="set-merchandise-supplier"
+                data-supplier="${escapeHtml(supplier.label)}"
+                type="button"
+              >
+                ${escapeHtml(supplier.label)}
+                <span>${formatQuantity(supplier.count)}</span>
+              </button>
+            `;
+          })
+          .join("")
+      : `<div class="empty-state compact">Sin proveedores guardados todavia.</div>`;
+  }
+
   if (filteredProducts.length === 0) {
     refs.merchandiseRequestProducts.innerHTML = `
       <div class="empty-state">
-        No hay productos que coincidan con la busqueda.
+        No hay productos que coincidan con proveedor o busqueda.
       </div>
     `;
   } else {
     refs.merchandiseRequestProducts.innerHTML = filteredProducts
-      .map((product) => `
-        <button
-          class="product-card ${sanitizeClassToken(product.status, "normal")}"
-          data-action="open-merchandise-product"
-          data-product-id="${product.id}"
-          type="button"
-        >
+      .map((product) => {
+        const quickQuantity = getMerchandiseQuickQuantity(product);
+        const quickTotal = getMerchandiseQuickTotal(product);
+        const requestSummary = getMerchandiseProductCardSummary(product);
+        const meta = getMerchandiseProductMeta(product);
+        return `
+        <article class="product-card merchandise-product-card ${sanitizeClassToken(product.status, "normal")}">
           <div class="product-top">
             <span class="product-chip">${escapeHtml(product.categoryLabel)}</span>
             <span class="status-chip ${sanitizeClassToken(product.status, "normal")}">
@@ -521,14 +752,66 @@ function renderMerchandiseRequestModal() {
             </span>
           </div>
           <h3>${escapeHtml(product.name)}</h3>
+          ${meta ? `<p class="merchandise-product-meta">${escapeHtml(meta)}</p>` : ""}
           <div class="product-bottom">
             <div class="product-stock">
               ${escapeHtml(formatProductStock(product))}
             </div>
             <div class="product-price">${formatCurrency(product.price)}</div>
           </div>
-        </button>
-      `)
+          <div class="merchandise-product-quick-row">
+            <input
+              aria-label="Cantidad para ${escapeHtml(product.name)}"
+              data-merchandise-quick-quantity="${product.id}"
+              type="number"
+              min="${escapeHtml(String(getMerchandiseRequestQuantityMin(product)))}"
+              step="${escapeHtml(String(getMerchandiseRequestQuantityInputStep(product)))}"
+              inputmode="decimal"
+              value="${escapeHtml(quickQuantity)}"
+            />
+            <input
+              aria-label="Costo total proveedor para ${escapeHtml(product.name)}"
+              data-merchandise-quick-total="${product.id}"
+              type="number"
+              min="0"
+              step="0.01"
+              inputmode="decimal"
+              placeholder="Costo prov."
+              value="${escapeHtml(quickTotal)}"
+            />
+            <button
+              class="secondary-button compact-button"
+              data-action="quick-add-merchandise"
+              data-mode="receive"
+              data-product-id="${product.id}"
+              type="button"
+            >
+              Entro
+            </button>
+            <button
+              class="ghost-button compact-button"
+              data-action="quick-add-merchandise"
+              data-mode="return"
+              data-product-id="${product.id}"
+              type="button"
+            >
+              Salio
+            </button>
+          </div>
+          <div class="merchandise-product-card-foot">
+            <span>${escapeHtml(requestSummary || "Sin agregar")}</span>
+            <button
+              class="ghost-button compact-button"
+              data-action="open-merchandise-product"
+              data-product-id="${product.id}"
+              type="button"
+            >
+              Detalle
+            </button>
+          </div>
+        </article>
+      `;
+      })
       .join("");
   }
 
@@ -548,7 +831,7 @@ function renderMerchandiseRequestModal() {
               <p>
                 ${escapeHtml(getMerchandiseRequestModeLabel(item.mode))} ·
                 ${escapeHtml(formatQuantity(item.quantity))} ${escapeHtml(item.unit)} ·
-                ${formatCurrency(item.unitPrice)}
+                costo ${formatCurrency(item.unitPrice)}
               </p>
             </div>
             <button
@@ -620,46 +903,17 @@ function addMerchandiseRequestItem() {
   }
 
   const mode = state.merchandise.currentMode;
-  const unitPrice = roundMoney(product.price);
-  const signedMultiplier = getMerchandiseRequestItemSignedMultiplier(mode);
   const rawLineTotal = roundMoney(
-    Math.abs(refs.merchandiseRequestItemTotal?.value || unitPrice * quantity),
+    Math.abs(refs.merchandiseRequestItemTotal?.value || getMerchandiseEstimatedUnitCost(product) * quantity),
   );
-  if (!Number.isFinite(rawLineTotal) || rawLineTotal <= 0) {
-    showToast("Captura un valor valido para la linea.", "error");
+  if (!upsertMerchandiseRequestItem(product, { mode, quantity, totalValue: rawLineTotal })) {
     return;
   }
 
-  const totalValue = roundMoney(rawLineTotal * signedMultiplier);
-  const existingIndex = state.merchandise.items.findIndex(
-    (item) => item.productId === product.id && item.mode === mode,
-  );
-
   state.merchandise.currentQuantity = String(quantity);
   refs.merchandiseRequestItemQuantity.value = state.merchandise.currentQuantity;
-  refs.merchandiseRequestItemTotal.value = totalValue.toFixed(2);
-
-  if (existingIndex >= 0) {
-    const currentItem = state.merchandise.items[existingIndex];
-    const nextQuantity = roundStock(currentItem.quantity + quantity);
-    state.merchandise.items[existingIndex] = {
-      ...currentItem,
-      quantity: nextQuantity,
-      unitPrice,
-      totalValue: roundMoney(currentItem.totalValue + totalValue),
-    };
-  } else {
-    state.merchandise.items.push({
-      productId: product.id,
-      productName: product.name,
-      unit: product.unit,
-      categoryLabel: product.categoryLabel,
-      quantity,
-      unitPrice,
-      totalValue,
-      mode,
-    });
-  }
+  refs.merchandiseRequestItemTotal.value =
+    roundMoney(rawLineTotal * getMerchandiseRequestItemSignedMultiplier(mode)).toFixed(2);
 
   renderMerchandiseRequestModal();
   closeMerchandiseRequestItemModal();

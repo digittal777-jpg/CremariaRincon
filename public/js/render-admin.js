@@ -32,15 +32,21 @@ function updateAdminInventoryChrome(inventoryVisibleRows, inventoryTotal) {
     refs.adminInventoryMovementPanel.hidden = isEditMode;
   }
   if (refs.adminInventoryFilterBar) {
-    refs.adminInventoryFilterBar.hidden = !isEditMode;
+    refs.adminInventoryFilterBar.hidden = !isExpanded;
   }
   if (refs.adminProductCreateForm) {
-    refs.adminProductCreateForm.hidden = !isEditMode;
+    refs.adminProductCreateForm.hidden = !isExpanded;
+  }
+  if (refs.adminOnboardingPanel) {
+    refs.adminOnboardingPanel.hidden = !isExpanded;
+  }
+  if (refs.adminTableHint) {
+    refs.adminTableHint.hidden = !isExpanded;
   }
   if (refs.adminInventorySearch && refs.adminInventorySearch.value !== state.admin.inventorySearch) {
     refs.adminInventorySearch.value = state.admin.inventorySearch || "";
   }
-  if (isEditMode && typeof renderAdminInventoryFilterChips === "function") {
+  if (isExpanded && typeof renderAdminInventoryFilterChips === "function") {
     renderAdminInventoryFilterChips(getAdminInventoryChromeProducts());
   }
   if (refs.adminInventoryWrap) {
@@ -49,17 +55,135 @@ function updateAdminInventoryChrome(inventoryVisibleRows, inventoryTotal) {
   if (refs.toggleAdminInventoryButton) {
     refs.toggleAdminInventoryButton.textContent = isEditMode
       ? isExpanded
-        ? "Ocultar edicion"
-        : "Mostrar edicion"
-      : "Editar productos";
+        ? "Cerrar catalogo avanzado"
+        : "Abrir catalogo avanzado"
+      : "Abrir catalogo avanzado";
   }
   if (refs.adminInventoryStatus) {
     refs.adminInventoryStatus.textContent = isEditMode
       ? isExpanded
-        ? "Edicion completa: precio, existencia, minimo, estado y nota."
-        : "Modo edicion listo. Abre la lista solo cuando necesites corregir productos."
-      : "Operacion rapida: registra entradas o salidas sin abrir la tabla completa.";
+        ? "Catalogo avanzado abierto: busca un producto y edita solo el que necesites."
+        : "Catalogo avanzado listo. Abrelo solo para cambiar productos, precios o importar listas."
+      : "Elige una tarea diaria: entrada, salida o conteo fisico.";
   }
+}
+
+const ADMIN_ONBOARDING_FIELDS = [
+  { key: "name", label: "Producto", required: true },
+  { key: "price", label: "Precio", required: true },
+  { key: "category", label: "Categoria" },
+  { key: "unit", label: "Unidad" },
+  { key: "stock", label: "Existencia" },
+  { key: "minStock", label: "Minimo" },
+  { key: "cost", label: "Costo" },
+  { key: "sku", label: "SKU" },
+  { key: "barcode", label: "Codigo barras" },
+  { key: "brand", label: "Marca" },
+  { key: "supplierName", label: "Proveedor" },
+  { key: "packSize", label: "Contenido" },
+  { key: "active", label: "Activo" },
+];
+
+function renderAdminProductOnboarding() {
+  if (!refs.adminOnboardingPanel) {
+    return;
+  }
+
+  const onboarding = state.admin.onboarding || {};
+  const preview = onboarding.preview || null;
+  const summary = preview?.summary || {};
+  const hasFile = Boolean(onboarding.file);
+  const hasErrors = Number(summary.errors || 0) > 0;
+  const canApply = hasFile && preview && !hasErrors && !onboarding.loading && !onboarding.applying;
+
+  if (refs.adminOnboardingStatus) {
+    refs.adminOnboardingStatus.textContent = onboarding.loading
+      ? "Leyendo..."
+      : onboarding.applying
+        ? "Importando..."
+        : preview
+          ? `${formatQuantity(summary.create || 0)} altas / ${formatQuantity(summary.update || 0)} cambios`
+          : hasFile
+            ? onboarding.file.name
+            : "Sin archivo";
+  }
+
+  if (refs.previewAdminOnboardingButton) {
+    refs.previewAdminOnboardingButton.disabled = !hasFile || onboarding.loading || onboarding.applying;
+    refs.previewAdminOnboardingButton.textContent = onboarding.loading ? "Leyendo..." : "Revisar archivo";
+  }
+  if (refs.applyAdminOnboardingButton) {
+    refs.applyAdminOnboardingButton.disabled = !canApply;
+    refs.applyAdminOnboardingButton.textContent = onboarding.applying ? "Importando..." : "Importar productos revisados";
+  }
+
+  if (refs.adminOnboardingMapping) {
+    const columns = Array.isArray(preview?.columns) ? preview.columns : [];
+    const mapping = onboarding.mapping || preview?.mapping || {};
+    refs.adminOnboardingMapping.innerHTML = columns.length
+      ? ADMIN_ONBOARDING_FIELDS.map((field) => {
+          const selected = Object.prototype.hasOwnProperty.call(mapping, field.key)
+            && Number.isInteger(Number(mapping[field.key]))
+            ? String(mapping[field.key])
+            : "";
+          const options = [
+            `<option value="">No usar</option>`,
+            ...columns.map((column) => `
+              <option value="${column.index}" ${selected === String(column.index) ? "selected" : ""}>
+                ${escapeHtml(column.label)}
+              </option>
+            `),
+          ].join("");
+          return `
+            <label class="field admin-onboarding-map-field">
+              <span>${escapeHtml(field.label)}${field.required ? " *" : ""}</span>
+              <select data-onboarding-field="${escapeHtml(field.key)}">${options}</select>
+            </label>
+          `;
+        }).join("")
+      : "";
+  }
+
+  if (!refs.adminOnboardingPreview) {
+    return;
+  }
+
+  if (!preview) {
+    refs.adminOnboardingPreview.innerHTML = onboarding.status
+      ? `<div class="empty-state">${escapeHtml(onboarding.status)}</div>`
+      : `<div class="empty-state">Carga un CSV o Excel para revisar columnas, duplicados y coincidencias antes de cambiar el catalogo.</div>`;
+    return;
+  }
+
+  const rows = Array.isArray(preview.rows) ? preview.rows : [];
+  const visibleRows = rows.slice(0, 12);
+  const statusLabel = hasErrors
+    ? `${formatQuantity(summary.errors || 0)} con error`
+    : `${formatQuantity(summary.total || 0)} listos`;
+  refs.adminOnboardingPreview.innerHTML = `
+    <article class="admin-record-item admin-onboarding-summary">
+      <div class="admin-record-item-head">
+        <strong>${statusLabel}</strong>
+        <span class="small-pill">${formatQuantity(summary.warnings || 0)} avisos</span>
+      </div>
+      <p>${formatQuantity(summary.create || 0)} nuevos - ${formatQuantity(summary.update || 0)} actualizaciones - sucursal ${escapeHtml(getBranchLabel(preview.branch))}</p>
+    </article>
+    ${visibleRows.map((row) => {
+      const product = row.product || {};
+      const messages = [...(row.errors || []), ...(row.warnings || [])];
+      return `
+        <article class="admin-record-item admin-onboarding-row ${row.status === "error" ? "needs-attention" : ""}">
+          <div class="admin-record-item-head">
+            <strong>Fila ${formatQuantity(row.rowNumber)} - ${escapeHtml(product.name || "Sin producto")}</strong>
+            <span class="small-pill">${row.status === "update" ? "Actualizar" : row.status === "create" ? "Crear" : "Error"}</span>
+          </div>
+          <p>${formatCurrency(product.price || 0)} - ${escapeHtml(product.categoryLabel || product.category || "general")} - ${escapeHtml(product.unitLabel || product.unit || "pza")} - stock ${formatQuantity(product.stock || 0)}</p>
+          ${messages.length ? `<p>${messages.map(escapeHtml).join(" / ")}</p>` : ""}
+        </article>
+      `;
+    }).join("")}
+    ${rows.length > visibleRows.length ? `<div class="empty-state">Mostrando 12 de ${formatQuantity(rows.length)} filas.</div>` : ""}
+  `;
 }
 
 function renderAdminPerformanceMetrics() {
@@ -115,7 +239,7 @@ function renderAdminPerformanceMetrics() {
     : Array.isArray(state.admin.inventoryProducts)
       ? state.admin.inventoryProducts.length
       : 0;
-  updateAdminInventoryChrome(inventoryVisibleRows, inventoryTotal);
+  updateAdminInventoryChrome(inventoryVisibleRows, Number(state.admin.inventoryPage?.total || inventoryTotal));
   refs.adminDomNodes.textContent = formatQuantity(clientMetrics.domNodes);
   refs.adminServerRuntime.textContent = serverMetrics
     ? `${formatQuantity(serverMetrics.process.uptimeSeconds)} s`
@@ -267,6 +391,123 @@ function renderAdminProfitabilityPanel() {
   }
 }
 
+function buildMerchantStatusItem({ status = "info", label, value, note }) {
+  return `
+    <article class="merchant-status-item ${sanitizeClassToken(status, "info")}">
+      <span>${escapeHtml(label || "")}</span>
+      <strong>${escapeHtml(value || "")}</strong>
+      <p>${escapeHtml(note || "")}</p>
+    </article>
+  `;
+}
+
+function renderMerchantStatusSummary(health) {
+  if (!refs.adminMerchantStatusSummary) {
+    return;
+  }
+
+  const backupStatusBundle = state.admin.backupsStatus;
+  const backups = backupStatusBundle || health?.backups || null;
+  const backupEnabled = typeof backups?.enabled === "boolean" ? backups.enabled : true;
+  const lastBackupRun = backupEnabled ? backups?.lastRun || null : null;
+  const pendingQueueCount = Array.isArray(state.pendingQueue) ? state.pendingQueue.length : 0;
+  const pendingRegisterCount = Array.isArray(state.register?.events)
+    ? state.register.events.filter((event) => !event?.synced).length
+    : 0;
+  const blockedQueueCount = typeof getBlockedPendingOperationCount === "function"
+    ? getBlockedPendingOperationCount()
+    : 0;
+  const pendingTotal = pendingQueueCount + pendingRegisterCount;
+  const appVersion = health?.app?.version
+    ? `${health.app.name || "POS"} ${health.app.version}`
+    : "Sin lectura";
+  const supportConfigured = Boolean(
+    health?.supportContact?.configured
+    || state.support?.configured
+    || state.support?.whatsappUrl,
+  );
+  const supportLabel = health?.supportContact?.label || state.support?.label || "Soporte";
+  const printingMode = health?.app?.printing?.mode === "browser"
+    ? `${formatQuantity(health.app.printing.receiptWidthMm || 80)} mm navegador`
+    : "Pendiente de lectura";
+  const backupValue = !backupEnabled
+    ? "Desactivado"
+    : backups?.restartRequired
+      ? "Reinicio pendiente"
+      : lastBackupRun?.status === "ok"
+        ? "OK"
+        : lastBackupRun?.status === "partial"
+          ? "Parcial"
+          : lastBackupRun?.status === "failed"
+            ? "Fallido"
+            : "Sin corrida";
+  const backupStatus = !backupEnabled
+    ? "risk"
+    : backups?.restartRequired || lastBackupRun?.status === "partial"
+      ? "risk"
+      : lastBackupRun?.status === "ok"
+        ? "ok"
+        : lastBackupRun?.status === "failed"
+          ? "critical"
+          : "risk";
+  const backupNote = !backupEnabled
+    ? "Backups apagados para este cliente."
+    : lastBackupRun
+      ? `${lastBackupRun.backupDateKey || "sin fecha"} - ${lastBackupRun.status || "sin estado"}`
+      : "Falta ejecutar el primer backup.";
+  const syncStatus = blockedQueueCount > 0
+    ? "critical"
+    : pendingTotal > 0
+      ? "risk"
+      : "ok";
+  const syncValue = blockedQueueCount > 0
+    ? "Revisar cola"
+    : pendingTotal > 0
+      ? `${pendingTotal} pendiente(s)`
+      : "Sin pendientes";
+
+  refs.adminMerchantStatusSummary.innerHTML = [
+    buildMerchantStatusItem({
+      status: state.online ? "ok" : "risk",
+      label: "Internet",
+      value: state.online ? "En linea" : "Sin conexion",
+      note: state.online ? "La caja puede hablar con el servidor." : "Solo funciona si el equipo ya fue preparado.",
+    }),
+    buildMerchantStatusItem({
+      status: syncStatus,
+      label: "Offline",
+      value: syncValue,
+      note: blockedQueueCount > 0
+        ? `${blockedQueueCount} operacion(es) necesitan revision.`
+        : `${pendingQueueCount} venta/abono - ${pendingRegisterCount} evento(s) de caja.`,
+    }),
+    buildMerchantStatusItem({
+      status: backupStatus,
+      label: "Ultimo backup",
+      value: backupValue,
+      note: backupNote,
+    }),
+    buildMerchantStatusItem({
+      status: health?.app?.version ? "ok" : "risk",
+      label: "Version",
+      value: appVersion,
+      note: "Confirma que el cliente corre la version esperada.",
+    }),
+    buildMerchantStatusItem({
+      status: supportConfigured ? "ok" : "risk",
+      label: "Soporte",
+      value: supportConfigured ? supportLabel : "Sin configurar",
+      note: supportConfigured ? "Contacto visible para pedir ayuda." : "Configura WhatsApp o telefono.",
+    }),
+    buildMerchantStatusItem({
+      status: health?.app?.printing?.mode === "browser" ? "ok" : "risk",
+      label: "Impresion",
+      value: printingMode,
+      note: "Ticket por navegador; hardware real se valida aparte.",
+    }),
+  ].join("");
+}
+
 function renderAdminHealthPanel() {
   if (!refs.adminHealthSummary) {
     return;
@@ -308,6 +549,15 @@ function renderAdminHealthPanel() {
       ? "HTTPS"
       : "HTTP";
   const latestSale = health?.latestSale || null;
+  const appVersionLabel = health?.app?.version
+    ? `${health.app.name || "pos"} ${health.app.version}`
+    : "version sin lectura";
+  const printingLabel = health?.app?.printing?.mode === "browser"
+    ? `impresion ${formatQuantity(health.app.printing.receiptWidthMm || 80)}mm navegador`
+    : "impresion sin lectura";
+  const supportContactLabel = health?.supportContact?.configured
+    ? `${health.supportContact.label || "Soporte"} configurado`
+    : "soporte sin WhatsApp";
   const runtimeDetail = runtimeConfig?.error
     ? runtimeConfig.error
     : runtimeConfig?.restartRequired
@@ -329,9 +579,11 @@ function renderAdminHealthPanel() {
         <strong>${escapeHtml(getAdminHealthLabel(status))}</strong>
         <p>Backup ${escapeHtml(backupStatus)} - runtime ${escapeHtml(runtimeStatus)} - sync ${health.syncHealth?.hasPending ? "pendiente" : "limpio"} - seguridad ${escapeHtml(securitySummary)}</p>
         <p>Errores ${formatQuantity(health.recentErrors?.length || 0)} - cookies ${security?.secureCookies ? "seguras" : "abiertas"} - owner ${escapeHtml(controlSecurityLabel)}</p>
+        <p>${escapeHtml(appVersionLabel)} - ${escapeHtml(printingLabel)} - ${escapeHtml(supportContactLabel)}</p>
         <p>${escapeHtml(runtimeDetail)}</p>
       `
     : `<div class="empty-state">Esperando salud del cliente.</div>`;
+  renderMerchantStatusSummary(health);
 
   renderAdminActionList(
     refs.adminHealthReasons,
@@ -549,16 +801,14 @@ function renderAdminModal() {
   const adminSnapshot = state.admin.snapshot;
   const serverMetrics = state.admin.metrics;
   const clientMetrics = getClientMetrics();
-  const currentBranch = adminSnapshot?.store?.currentBranch || getAdminBranch();
-  const currentBranchLabel =
-    adminSnapshot?.store?.currentBranchLabel || getBranchLabel(currentBranch);
+  const currentBranch = getAdminBranch();
+  const currentBranchLabel = getBranchLabel(currentBranch);
   const summary = adminSnapshot?.summary || state.summary;
   const shiftSummary = Array.isArray(adminSnapshot?.shiftSummary)
     ? adminSnapshot.shiftSummary
     : [];
 
   setSelectOptions(refs.adminBranchSelect, getBranchOptions(), currentBranch);
-  state.admin.branch = currentBranch;
 
   if (refs.adminBranchTitle) {
     refs.adminBranchTitle.textContent = currentBranchLabel;
@@ -682,7 +932,7 @@ function renderAdminModal() {
     : Array.isArray(state.admin.inventoryProducts)
       ? state.admin.inventoryProducts.length
       : 0;
-  updateAdminInventoryChrome(inventoryVisibleRows, inventoryTotal);
+  updateAdminInventoryChrome(inventoryVisibleRows, Number(state.admin.inventoryPage?.total || inventoryTotal));
   refs.adminDomNodes.textContent = formatQuantity(clientMetrics.domNodes);
   refs.adminServerRuntime.textContent = serverMetrics
     ? `${formatQuantity(serverMetrics.process.uptimeSeconds)} s`
@@ -705,9 +955,11 @@ function renderAdminModal() {
   renderAdminHealthPanel();
   renderAdminSubscriptionPanel();
   renderAdminDevPanel();
+  renderAdminProductOnboarding();
   renderAdminBranches();
   renderAdminPeriodClosuresPanel();
   renderAdminWeightedAuditPanel();
+  renderAdminRecordLists();
   updateModuleVisibility();
 } // FIX: llave de cierre de renderAdminModal que faltaba
 
@@ -1187,6 +1439,155 @@ function renderAdminDevPanel() {
   renderOfflineSalesPanel(refs.adminOfflineSalesList, refs.adminOfflineSalesStatus);
 }
 
+function renderAdminReceivableDuplicates() {
+  if (!refs.adminReceivableDuplicatesList) {
+    return;
+  }
+  if (!refs.adminModal?.classList.contains("open")) {
+    return;
+  }
+
+  const candidates = Array.isArray(state.admin.receivableDuplicates)
+    ? state.admin.receivableDuplicates
+    : [];
+  const loading = Boolean(state.admin.receivableDuplicatesLoading);
+  const merging = Boolean(state.admin.receivableDuplicateMerging);
+
+  if (refs.adminReceivableDuplicateSearch && refs.adminReceivableDuplicateSearch.value !== state.admin.receivableDuplicateSearch) {
+    refs.adminReceivableDuplicateSearch.value = state.admin.receivableDuplicateSearch || "";
+  }
+  if (refs.adminReceivableDuplicatesStatus) {
+    refs.adminReceivableDuplicatesStatus.textContent = loading
+      ? "Buscando..."
+      : candidates.length
+        ? `${formatQuantity(candidates.length)} grupos`
+        : "Sin duplicados";
+  }
+
+  if (loading && candidates.length === 0) {
+    refs.adminReceivableDuplicatesList.innerHTML = `<div class="empty-state">Buscando clientes fiados duplicados.</div>`;
+    return;
+  }
+
+  refs.adminReceivableDuplicatesList.innerHTML = candidates.length
+    ? candidates.map((group) => {
+        const target = (group.customers || [])[0] || null;
+        const customers = Array.isArray(group.customers) ? group.customers : [];
+        return `
+          <article class="admin-record-item admin-receivable-duplicate-group">
+            <div class="admin-record-item-head">
+              <strong>${escapeHtml(group.customerName || "Cliente fiado")}</strong>
+              <span class="small-pill">${escapeHtml(getBranchLabel(group.branch))}</span>
+            </div>
+            <p>${formatCurrency(group.pendingAmount || 0)} pendiente - ${formatQuantity(group.openSalesCount || 0)} ventas abiertas - ${formatQuantity(group.paymentsCount || 0)} abonos</p>
+            <div class="admin-record-list compact-list">
+              ${customers.map((customer) => `
+                <div class="admin-record-item compact-record">
+                  <div class="admin-record-item-head">
+                    <strong>${escapeHtml(customer.customerName || "Cliente")}</strong>
+                    <span class="small-pill">${formatCurrency(customer.pendingAmount || 0)}</span>
+                  </div>
+                  <p>${formatQuantity(customer.openSalesCount || 0)} abiertas - ${formatQuantity(customer.totalSalesCount || 0)} historicas - ${escapeHtml(customer.ticketNumbers?.slice(0, 3).join(", ") || "sin tickets")}</p>
+                  <div class="admin-record-actions">
+                    <button class="ghost-button compact-button" data-action="rename-receivable-customer" data-customer-key="${escapeHtml(customer.customerKey)}" type="button" ${merging ? "disabled" : ""}>
+                      Corregir nombre
+                    </button>
+                    ${target && customer.customerKey !== target.customerKey ? `
+                      <button class="secondary-button compact-button" data-action="merge-receivable-customer" data-source-customer-key="${escapeHtml(customer.customerKey)}" data-target-customer-key="${escapeHtml(target.customerKey)}" type="button" ${merging ? "disabled" : ""}>
+                        Fusionar con principal
+                      </button>
+                    ` : `<span class="small-pill">Principal</span>`}
+                  </div>
+                </div>
+              `).join("")}
+            </div>
+          </article>
+        `;
+      }).join("")
+    : `<div class="empty-state">No hay clientes fiados duplicados en esta vista.</div>`;
+}
+
+function renderAdminProductDuplicates() {
+  if (!refs.adminProductDuplicatesList) {
+    return;
+  }
+  if (!refs.adminModal?.classList.contains("open")) {
+    return;
+  }
+
+  const candidates = Array.isArray(state.admin.productDuplicates)
+    ? state.admin.productDuplicates
+    : [];
+  const loading = Boolean(state.admin.productDuplicatesLoading);
+  const merging = Boolean(state.admin.productDuplicateMerging);
+
+  if (refs.adminProductDuplicateSearch && refs.adminProductDuplicateSearch.value !== state.admin.productDuplicateSearch) {
+    refs.adminProductDuplicateSearch.value = state.admin.productDuplicateSearch || "";
+  }
+  if (refs.adminProductDuplicatesStatus) {
+    refs.adminProductDuplicatesStatus.textContent = loading
+      ? "Buscando..."
+      : candidates.length
+        ? `${formatQuantity(candidates.length)} grupos`
+        : "Sin duplicados";
+  }
+
+  if (loading && candidates.length === 0) {
+    refs.adminProductDuplicatesList.innerHTML = `<div class="empty-state">Buscando productos duplicados.</div>`;
+    return;
+  }
+
+  refs.adminProductDuplicatesList.innerHTML = candidates.length
+    ? candidates.map((group) => {
+        const products = Array.isArray(group.products) ? group.products : [];
+        const target = products.find((product) => product.active) || products[0] || null;
+        return `
+          <article class="admin-record-item admin-product-duplicate-group">
+            <div class="admin-record-item-head">
+              <strong>${escapeHtml(group.matchLabel || "Coincidencia")}: ${escapeHtml(group.matchValue || "")}</strong>
+              <span class="small-pill">${escapeHtml(getBranchLabel(group.branch))}</span>
+            </div>
+            <p>${formatQuantity(group.activeCount || 0)} activos - stock unido ${formatQuantity(group.stockTotal || 0)}</p>
+            <div class="admin-record-list compact-list">
+              ${products.map((product) => `
+                <div class="admin-record-item compact-record">
+                  <div class="admin-record-item-head">
+                    <strong>${escapeHtml(product.name || "Producto")}</strong>
+                    <span class="small-pill">${product.active ? "Activo" : "Inactivo"}</span>
+                  </div>
+                  <p>
+                    ${formatCurrency(product.price || 0)} venta - costo ${formatCurrency(product.cost || 0)} -
+                    stock ${formatQuantity(product.stock || 0)}
+                  </p>
+                  <p>${escapeHtml([
+                    product.supplierName ? `Proveedor ${product.supplierName}` : "",
+                    product.brand ? `Marca ${product.brand}` : "",
+                    product.sku ? `SKU ${product.sku}` : "",
+                    product.barcode ? `Cod. ${product.barcode}` : "",
+                  ].filter(Boolean).join(" - ") || "Sin codigos guardados")}</p>
+                  <div class="admin-record-actions">
+                    ${target && Number(product.id) !== Number(target.id) ? `
+                      <button
+                        class="secondary-button compact-button"
+                        data-action="merge-product-duplicate"
+                        data-source-product-id="${escapeHtml(String(product.id))}"
+                        data-target-product-id="${escapeHtml(String(target.id))}"
+                        type="button"
+                        ${merging ? "disabled" : ""}
+                      >
+                        Fusionar con principal
+                      </button>
+                    ` : `<span class="small-pill">Principal</span>`}
+                  </div>
+                </div>
+              `).join("")}
+            </div>
+          </article>
+        `;
+      }).join("")
+    : `<div class="empty-state">No hay productos duplicados en esta vista.</div>`;
+}
+
 function renderAdminRecordLists() {
   if (!refs.adminSalesList) {
     return;
@@ -1199,6 +1600,9 @@ function renderAdminRecordLists() {
   const registerEvents = state.admin.editorData.registerEvents || [];
   const inventoryMovements = state.admin.editorData.inventoryMovements || [];
   const auditLogs = state.admin.auditLogs || [];
+
+  renderAdminReceivableDuplicates();
+  renderAdminProductDuplicates();
 
   refs.adminSalesList.innerHTML = sales.length
     ? sales
@@ -1594,7 +1998,7 @@ function renderOwnerOperationGuide() {
           <span class="small-pill">${escapeHtml(current.templateKey || "base")}</span>
         </div>
         <p>${escapeHtml(current.businessName || state.profile?.businessName || "Negocio")}</p>
-        <p>DB ${escapeHtml(current.dbPath || "data/retail-base-pos.sqlite")}</p>
+        <p>DB ${escapeHtml(current.dbPath || "data/merxalia-pos.sqlite")}</p>
       </article>
       <article class="admin-record-item">
         <div class="admin-record-item-head">
@@ -1763,6 +2167,12 @@ function renderOwnerConsoleModal() {
   if (refs.applyOwnerTemplateButton) {
     refs.applyOwnerTemplateButton.disabled = ownerTemplateBusy || !state.owner.authenticated;
     refs.applyOwnerTemplateButton.textContent = applyingTemplate ? "Reiniciando..." : "Aplicar plantilla completa";
+  }
+  if (refs.ownerAdminSimplePresetButton) {
+    refs.ownerAdminSimplePresetButton.disabled = loading || saving || !state.owner.authenticated;
+  }
+  if (refs.ownerAdminFullPresetButton) {
+    refs.ownerAdminFullPresetButton.disabled = loading || saving || !state.owner.authenticated;
   }
 
   renderOwnerOperationGuide();

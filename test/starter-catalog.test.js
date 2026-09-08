@@ -41,6 +41,36 @@ const EXPECTATIONS = {
       assert.ok(cheeseItems >= 10);
     },
   },
+  dulceria: {
+    minProducts: 30,
+    requiredCategories: ["chocolates", "gomitas", "paletas", "botanas", "fiesta", "bebidas"],
+    extraAssertions(db) {
+      const kgProducts = Number(db.prepare("SELECT COUNT(*) AS count FROM products WHERE unit = 'kg'").get()?.count || 0);
+      const partyItems = Number(db.prepare("SELECT COUNT(*) AS count FROM products WHERE category = 'fiesta'").get()?.count || 0);
+      assert.ok(kgProducts >= 6);
+      assert.ok(partyItems >= 5);
+    },
+  },
+  ferreteria: {
+    minProducts: 35,
+    requiredCategories: ["herramienta", "fijacion", "electricidad", "plomeria", "pintura", "seguridad"],
+    extraAssertions(db) {
+      const meterItems = Number(db.prepare("SELECT COUNT(*) AS count FROM products WHERE unit = 'metro'").get()?.count || 0);
+      const safetyItems = Number(db.prepare("SELECT COUNT(*) AS count FROM products WHERE category = 'seguridad'").get()?.count || 0);
+      assert.ok(meterItems >= 4);
+      assert.ok(safetyItems >= 4);
+    },
+  },
+  limpieza: {
+    minProducts: 30,
+    requiredCategories: ["quimicos", "jarceria", "papel", "desechables", "hogar"],
+    extraAssertions(db) {
+      const literItems = Number(db.prepare("SELECT COUNT(*) AS count FROM products WHERE unit = 'lt'").get()?.count || 0);
+      const disposableItems = Number(db.prepare("SELECT COUNT(*) AS count FROM products WHERE category = 'desechables'").get()?.count || 0);
+      assert.ok(literItems >= 7);
+      assert.ok(disposableItems >= 6);
+    },
+  },
   papeleria: {
     minProducts: 55,
     requiredCategories: ["cuadernos", "escritura", "oficina", "arte", "impresion"],

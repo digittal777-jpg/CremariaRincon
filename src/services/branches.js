@@ -106,6 +106,183 @@ function renameBranchReferences(currentCode, nextCode) {
   });
 }
 
+function getProductCountForBranch(branchCode) {
+  return Number(db.prepare("SELECT COUNT(*) AS count FROM products WHERE branch = ?").get(branchCode)?.count || 0);
+}
+
+function resolveProductCopySourceBranch(targetCode, requestedSource = "") {
+  const requestedCode = normalizeBranchCode(requestedSource);
+  if (
+    requestedCode
+    && requestedCode !== targetCode
+    && getBranchByCode(requestedCode, { includeInactive: true })
+    && getProductCountForBranch(requestedCode) > 0
+  ) {
+    return requestedCode;
+  }
+
+  const sourceRow = db.prepare(`
+    SELECT b.code, COUNT(p.id) AS product_count
+    FROM branches b
+    LEFT JOIN products p ON p.branch = b.code
+    WHERE b.code <> ? AND b.active = 1
+    GROUP BY b.code
+    HAVING product_count > 0
+    ORDER BY product_count DESC, b.sort_order ASC, b.name COLLATE NOCASE
+    LIMIT 1
+  `).get(targetCode);
+
+  return sourceRow?.code || null;
+}
+
+function copyProductsToBranch(sourceCode, targetCode, now) {
+  if (!sourceCode || sourceCode === targetCode || getProductCountForBranch(targetCode) > 0) {
+    return {
+      sourceBranch: sourceCode || null,
+      productsCopied: 0,
+      attributeValuesCopied: 0,
+    };
+  }
+
+  const sourceProducts = db.prepare(`
+    SELECT
+      id,
+      name,
+      price,
+      cost,
+      category,
+      unit,
+      category_id,
+      unit_id,
+      type_code,
+      sku,
+      barcode,
+      brand,
+      supplier_name,
+      pack_size,
+      stock,
+      min_stock,
+      stock_initialized,
+      active,
+      display_order
+    FROM products
+    WHERE branch = ?
+    ORDER BY display_order ASC, name COLLATE NOCASE
+  `).all(sourceCode);
+
+  const insertProduct = db.prepare(`
+    INSERT INTO products (
+      name,
+      price,
+      cost,
+      category,
+      unit,
+      category_id,
+      unit_id,
+      type_code,
+      sku,
+      barcode,
+      brand,
+      supplier_name,
+      pack_size,
+      stock,
+      min_stock,
+      stock_initialized,
+      active,
+      display_order,
+      branch,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertAttributeValue = db.prepare(`
+    INSERT INTO product_attribute_values (product_id, definition_id, value_text, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(product_id, definition_id) DO UPDATE SET
+      value_text = excluded.value_text,
+      updated_at = excluded.updated_at
+  `);
+  const getAttributeValues = db.prepare(`
+    SELECT definition_id, value_text
+    FROM product_attribute_values
+    WHERE product_id = ?
+  `);
+  const insertMovement = db.prepare(`
+    INSERT INTO inventory_movements (
+      product_id,
+      movement_type,
+      branch,
+      quantity_delta,
+      stock_before,
+      stock_after,
+      note,
+      reference_type,
+      reference_id,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  let attributeValuesCopied = 0;
+
+  sourceProducts.forEach((product) => {
+    const inserted = insertProduct.run(
+      product.name,
+      Number(product.price || 0),
+      Number(product.cost || 0),
+      product.category,
+      product.unit,
+      product.category_id,
+      product.unit_id,
+      product.type_code,
+      product.sku,
+      product.barcode,
+      product.brand,
+      product.supplier_name,
+      product.pack_size,
+      Number(product.stock || 0),
+      Number(product.min_stock || 0),
+      Number(product.stock_initialized || 0),
+      Number(product.active || 0),
+      Number(product.display_order || 0),
+      targetCode,
+      now,
+      now,
+    );
+    const newProductId = Number(inserted.lastInsertRowid);
+
+    getAttributeValues.all(product.id).forEach((attributeValue) => {
+      insertAttributeValue.run(
+        newProductId,
+        attributeValue.definition_id,
+        attributeValue.value_text,
+        now,
+      );
+      attributeValuesCopied += 1;
+    });
+
+    if (Number(product.stock_initialized || 0) && Number(product.stock || 0) !== 0) {
+      insertMovement.run(
+        newProductId,
+        "initial",
+        targetCode,
+        Number(product.stock || 0),
+        0,
+        Number(product.stock || 0),
+        `Copia inicial desde ${sourceCode}`,
+        "branch_create",
+        null,
+        now,
+      );
+    }
+  });
+
+  return {
+    sourceBranch: sourceCode,
+    productsCopied: sourceProducts.length,
+    attributeValuesCopied,
+  };
+}
+
 function createBranch(payload = {}) {
   const code = normalizeBranchCode(payload.code || "");
   const name = normalizeText(payload.name || "", 80);
@@ -129,12 +306,22 @@ function createBranch(payload = {}) {
   }
 
   const now = nowIso();
-  db.prepare(`
-    INSERT INTO branches (code, name, timezone, active, sort_order, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(code, name, timezone, active ? 1 : 0, sortOrder, now, now);
+  const shouldCopyProducts = payload.copyProducts !== false;
+  const copySourceBranch = shouldCopyProducts
+    ? resolveProductCopySourceBranch(code, payload.copyProductsFromBranch || payload.sourceBranch)
+    : null;
+  const productCopy = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO branches (code, name, timezone, active, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(code, name, timezone, active ? 1 : 0, sortOrder, now, now);
+    return copyProductsToBranch(copySourceBranch, code, now);
+  })();
 
-  return getBranchByCode(code, { includeInactive: true });
+  return {
+    ...getBranchByCode(code, { includeInactive: true }),
+    productCopy,
+  };
 }
 
 function updateBranch(currentCode, payload = {}) {
@@ -210,6 +397,7 @@ function ensureBranchesExist(branchCodes = []) {
         timezone: STORE_TIME_ZONE,
         active: true,
         sortOrder: listConfiguredBranches({ includeInactive: true }).length + index,
+        copyProducts: false,
       }),
     );
   });
@@ -219,6 +407,7 @@ function ensureBranchesExist(branchCodes = []) {
 
 module.exports = {
   buildBranchNameFromCode,
+  copyProductsToBranch,
   createBranch,
   ensureBranchesExist,
   getBranchByCode,

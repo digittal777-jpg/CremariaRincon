@@ -1428,6 +1428,58 @@ test("guest bootstrap hides operational data while authenticated flows keep work
   assert.ok(Array.isArray(adminProducts.body.products));
   assert.ok(adminProducts.body.products.some((product) => product.name === "Producto Smoke"));
 
+  const pagedAdminProducts = await adminClient.json(
+    "/api/admin/products?branch=carrizal&limit=1&offset=0&search=Smoke&includeInactive=1",
+    {
+      headers: { "X-CSRF-Token": adminCsrfToken },
+    },
+  );
+  assert.equal(pagedAdminProducts.status, 200);
+  assert.equal(pagedAdminProducts.body.products.length, 1);
+  assert.equal(pagedAdminProducts.body.products[0].name, "Producto Smoke");
+  assert.equal(pagedAdminProducts.body.page.limit, 1);
+  assert.equal(pagedAdminProducts.body.page.total, 1);
+
+  const onboardingCsv = [
+    "Producto,Precio,Existencia,Categoria,Unidad",
+    "Producto Smoke,19.50,7,general,pza",
+    "Producto Onboarding,22.00,4,general,pza",
+  ].join("\n");
+  const previewForm = new FormData();
+  previewForm.append("catalog", new Blob([onboardingCsv], { type: "text/csv" }), "onboarding.csv");
+  previewForm.append("branch", "carrizal");
+  const onboardingPreview = await adminClient.json("/api/admin/onboarding/products/preview", {
+    method: "POST",
+    headers: { "X-CSRF-Token": adminCsrfToken },
+    body: previewForm,
+  });
+  assert.equal(onboardingPreview.status, 200);
+  assert.equal(onboardingPreview.body.preview.summary.update, 1);
+  assert.equal(onboardingPreview.body.preview.summary.create, 1);
+
+  const applyForm = new FormData();
+  applyForm.append("catalog", new Blob([onboardingCsv], { type: "text/csv" }), "onboarding.csv");
+  applyForm.append("branch", "carrizal");
+  applyForm.append("mapping", JSON.stringify(onboardingPreview.body.preview.mapping));
+  const onboardingApply = await adminClient.json("/api/admin/onboarding/products/apply", {
+    method: "POST",
+    headers: { "X-CSRF-Token": adminCsrfToken },
+    body: applyForm,
+  });
+  assert.equal(onboardingApply.status, 201, JSON.stringify(onboardingApply.body));
+  assert.equal(onboardingApply.body.summary.updated, 1);
+  assert.equal(onboardingApply.body.summary.created, 1);
+
+  const adminProductsAfterOnboarding = await adminClient.json("/api/admin/products?branch=carrizal&includeInactive=1", {
+    headers: { "X-CSRF-Token": adminCsrfToken },
+  });
+  assert.equal(adminProductsAfterOnboarding.status, 200);
+  const productSmokeAfterOnboarding = adminProductsAfterOnboarding.body.products.find((product) =>
+    product.name === "Producto Smoke"
+  );
+  assert.equal(productSmokeAfterOnboarding.price, 19.5);
+  assert.ok(adminProductsAfterOnboarding.body.products.some((product) => product.name === "Producto Onboarding"));
+
   const initCashiers = await adminClient.json("/api/admin/cashiers/init-test", {
     method: "POST",
     headers: { "X-CSRF-Token": adminCsrfToken },
@@ -1462,7 +1514,7 @@ test("guest bootstrap hides operational data while authenticated flows keep work
     body: JSON.stringify({
       shift: "Tarde",
       paymentMethod: "Efectivo",
-      receivedAmount: 18.5,
+      receivedAmount: smokeProduct.price,
       items: [
         {
           productId: smokeProduct.id,
@@ -1529,7 +1581,7 @@ test("guest bootstrap hides operational data while authenticated flows keep work
   assert.equal(creditSaleResponse.body.sale.customerName, "Cliente Demo");
   assert.equal(creditSaleResponse.body.sale.receivedAmount, 10);
   assert.equal(creditSaleResponse.body.sale.receivedPaymentMethod, "Efectivo");
-  assert.equal(creditSaleResponse.body.sale.pendingAmount, 8.5);
+  assert.equal(creditSaleResponse.body.sale.pendingAmount, smokeProduct.price - 10);
   const creditSaleId = creditSaleResponse.body.sale.id;
 
   const registerSummary = await cashierClient.json(
@@ -1539,9 +1591,9 @@ test("guest bootstrap hides operational data while authenticated flows keep work
     },
   );
   assert.equal(registerSummary.status, 200);
-  assert.equal(registerSummary.body.summary.cashSales, 28.5);
-  assert.equal(registerSummary.body.summary.creditSales, 8.5);
-  assert.equal(registerSummary.body.summary.expectedCash, 28.5);
+  assert.equal(registerSummary.body.summary.cashSales, smokeProduct.price + 10);
+  assert.equal(registerSummary.body.summary.creditSales, smokeProduct.price - 10);
+  assert.equal(registerSummary.body.summary.expectedCash, smokeProduct.price + 10);
 
   const receivables = await cashierClient.json("/api/receivables?search=Cliente", {
     headers: { "X-Cashier-Token": cashierToken },
@@ -1549,7 +1601,7 @@ test("guest bootstrap hides operational data while authenticated flows keep work
   assert.equal(receivables.status, 200);
   assert.equal(receivables.body.customers.length, 1);
   assert.equal(receivables.body.customers[0].customerName, "Cliente Demo");
-  assert.equal(receivables.body.customers[0].pendingAmount, 8.5);
+  assert.equal(receivables.body.customers[0].pendingAmount, smokeProduct.price - 10);
 
   const receivableDetail = await cashierClient.json(
     `/api/receivables/customer/${encodeURIComponent(receivables.body.customers[0].customerKey)}`,
@@ -1559,7 +1611,7 @@ test("guest bootstrap hides operational data while authenticated flows keep work
   );
   assert.equal(receivableDetail.status, 200);
   assert.equal(receivableDetail.body.customer.sales.length, 1);
-  assert.equal(receivableDetail.body.customer.sales[0].pendingAmount, 8.5);
+  assert.equal(receivableDetail.body.customer.sales[0].pendingAmount, smokeProduct.price - 10);
 
   const receivablePayment = await cashierClient.json("/api/receivables/payments", {
     method: "POST",
@@ -1577,7 +1629,7 @@ test("guest bootstrap hides operational data while authenticated flows keep work
   });
   assert.equal(receivablePayment.status, 201);
   assert.equal(receivablePayment.body.payment.amount, 5);
-  assert.equal(receivablePayment.body.customer.pendingAmount, 3.5);
+  assert.equal(receivablePayment.body.customer.pendingAmount, smokeProduct.price - 15);
 
   const registerSummaryAfterPayment = await cashierClient.json(
     `/api/register/summary?shift=Tarde&branch=carrizal&cashier=${encodeURIComponent("Juan")}`,
@@ -1586,9 +1638,9 @@ test("guest bootstrap hides operational data while authenticated flows keep work
     },
   );
   assert.equal(registerSummaryAfterPayment.status, 200);
-  assert.equal(registerSummaryAfterPayment.body.summary.cashSales, 33.5);
-  assert.equal(registerSummaryAfterPayment.body.summary.creditSales, 3.5);
-  assert.equal(registerSummaryAfterPayment.body.summary.expectedCash, 33.5);
+  assert.equal(registerSummaryAfterPayment.body.summary.cashSales, smokeProduct.price + 15);
+  assert.equal(registerSummaryAfterPayment.body.summary.creditSales, smokeProduct.price - 15);
+  assert.equal(registerSummaryAfterPayment.body.summary.expectedCash, smokeProduct.price + 15);
 
   const guestActivity = await guest.json(`/api/activity/sale/${saleId}`);
   assert.equal(guestActivity.status, 401);
@@ -1606,7 +1658,7 @@ test("guest bootstrap hides operational data while authenticated flows keep work
   assert.equal(cashierCreditSaleActivity.status, 200);
   assert.equal(cashierCreditSaleActivity.body.detail.paidAmount, 15);
   assert.equal(cashierCreditSaleActivity.body.detail.laterPaymentsTotal, 5);
-  assert.equal(cashierCreditSaleActivity.body.detail.pendingAmount, 3.5);
+  assert.equal(cashierCreditSaleActivity.body.detail.pendingAmount, smokeProduct.price - 15);
   assert.equal(cashierCreditSaleActivity.body.detail.payments.length, 1);
 
   const receivablePaymentActivity = await cashierClient.json(

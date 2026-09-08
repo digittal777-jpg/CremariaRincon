@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-labelledby="title desc">
+  <title id="title">Merxalia POS</title>
+  <desc id="desc">Insignia de Merxalia para punto de venta.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" x2="100%" y1="0%" y2="100%">
+      <stop offset="0%" stop-color="#2f8f83" />
+      <stop offset="100%" stop-color="#d8a83f" />
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="36" fill="url(#bg)" />
+  <rect x="18" y="18" width="156" height="156" rx="24" fill="rgba(255,252,248,0.94)" />
+  <path d="M46 139V55h23l27 39 27-39h23v84h-22V90l-22 31H90L68 90v49H46z" fill="#233f3b"/>
+  <circle cx="146" cy="48" r="11" fill="#d8a83f"/>
+</svg>

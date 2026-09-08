@@ -85,7 +85,10 @@ const DB_PATH = CONFIGURED_DB_PATH
   : DEFAULT_DB_PATH;
 const DATA_DIR = path.dirname(DB_PATH);
 const PORT = Number(readRuntimeConfigValue("PORT", "3100", { preferEnv: true }) || 3100);
-const STORE_NAME = "Cremeria El Rincon";
+const STORE_NAME = "Merxalia POS";
+const POS_SUPPORT_LABEL = String(readRuntimeConfigValue("POS_SUPPORT_LABEL", "Soporte") || "Soporte").trim();
+const POS_SUPPORT_WHATSAPP_URL = String(readRuntimeConfigValue("POS_SUPPORT_WHATSAPP_URL") || "").trim();
+const POS_SUPPORT_PHONE = String(readRuntimeConfigValue("POS_SUPPORT_PHONE") || "").trim();
 const STORE_TIME_ZONE = readRuntimeConfigValue("POS_TIMEZONE", "America/Mexico_City");
 const STORE_SHIFTS = ["Manana", "Tarde"];
 const STORE_BRANCHES = ["carrizal", "miradores"];
@@ -261,6 +264,9 @@ module.exports = {
   DB_PATH,
   PORT,
   STORE_NAME,
+  POS_SUPPORT_LABEL,
+  POS_SUPPORT_WHATSAPP_URL,
+  POS_SUPPORT_PHONE,
   STORE_TIME_ZONE,
   STORE_SHIFTS,
   STORE_BRANCHES,

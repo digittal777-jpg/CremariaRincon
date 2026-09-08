@@ -182,6 +182,8 @@ test("subscription, error reports and support health stay advisory", () => {
 
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-support-health-"));
     process.env.POS_DB_PATH = path.join(tempDir, "test.sqlite");
+    process.env.POS_SUPPORT_LABEL = "Soporte WhatsApp";
+    process.env.POS_SUPPORT_PHONE = "5215512345678";
 
     const { getDb, nowIso } = require("./src/db");
     const services = require("./src/services");
@@ -239,6 +241,11 @@ test("subscription, error reports and support health stay advisory", () => {
   assert.equal(payload.health.semaphore.reasons.some((reason) => reason.code === "recent_errors"), true);
   assert.equal(payload.health.semaphore.actions.length > 0, true);
   assert.equal(payload.health.database.bytes > 0, true);
+  assert.equal(payload.health.supportContact.configured, true);
+  assert.equal(payload.health.supportContact.label, "Soporte WhatsApp");
+  assert.equal(payload.health.supportContact.whatsappUrl, "https://wa.me/5215512345678");
+  assert.equal(payload.health.app.printing.mode, "browser");
+  assert.equal(payload.health.app.printing.nativeDriverRequired, false);
 });
 
 test("support health stops counting old backup failures when backups are disabled by runtime", () => {

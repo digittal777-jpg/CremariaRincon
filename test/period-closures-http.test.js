@@ -95,6 +95,7 @@ async function startServer(testContext) {
       ...process.env,
       PORT: String(port),
       POS_DB_PATH: path.join(tempDir, "test.sqlite"),
+      POS_CONFIG_PATH: path.join(tempDir, "runtime.json"),
       POS_BOOTSTRAP_TOKEN: "bootstrap-secret-123",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -181,14 +182,22 @@ test("admin bootstrap has a dedicated admin endpoint", async (t) => {
   const server = await startServer(t);
   const { adminClient, csrfToken } = await setupAdminSession(server.baseUrl);
 
-  const adminSnapshot = await adminClient.json("/api/admin/bootstrap?branch=all&includeInactiveInventory=1", {
+  const lightAdminSnapshot = await adminClient.json("/api/admin/bootstrap?branch=all", {
+    headers: { "X-CSRF-Token": csrfToken },
+  });
+
+  assert.equal(lightAdminSnapshot.status, 200);
+  assert.equal(lightAdminSnapshot.body.auth.role, "admin");
+  assert.equal(lightAdminSnapshot.body.store.currentBranch, "all");
+  assert.ok(Array.isArray(lightAdminSnapshot.body.adminCapabilities));
+  assert.deepEqual(lightAdminSnapshot.body.products, []);
+  assert.equal(lightAdminSnapshot.body.inventoryComparison, undefined);
+
+  const adminSnapshot = await adminClient.json("/api/admin/bootstrap?branch=all&includeInventory=1&includeInactiveInventory=1", {
     headers: { "X-CSRF-Token": csrfToken },
   });
 
   assert.equal(adminSnapshot.status, 200);
-  assert.equal(adminSnapshot.body.auth.role, "admin");
-  assert.equal(adminSnapshot.body.store.currentBranch, "all");
-  assert.ok(Array.isArray(adminSnapshot.body.adminCapabilities));
   assert.ok(Array.isArray(adminSnapshot.body.inventoryComparison?.branches));
 
   const guest = createCookieClient(server.baseUrl);
