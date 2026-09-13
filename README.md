@@ -2,6 +2,9 @@
 
 POS web para tiendas rurales y comercios de mostrador. Esta instancia esta configurada para Cremeria El Rincon y opera con Node.js, SQLite y Socket.IO desde una sola URL publica.
 
+Guia para instalarlo en otra PC y preparar una venta comercial: [GUIA-INSTALACION-COMERCIAL.md](GUIA-INSTALACION-COMERCIAL.md).
+Para hacerlo de una sentada en Windows, ejecuta [INSTALAR-COMERCIAL.bat](INSTALAR-COMERCIAL.bat) como administrador solo si tu politica de instalacion lo requiere.
+
 ## Lo que incluye hoy
 
 - Caja con login por cajero, carrito, cobro, cambio y cortes.
