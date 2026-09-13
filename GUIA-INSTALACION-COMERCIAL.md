@@ -17,9 +17,12 @@ Si tienes las dos carpetas juntas como en este workspace, ejecuta `INSTALAR-COME
 4. Abre `owner-control` y registra el cliente automaticamente por API.
 5. Recibe la API key generada y la conecta al POS.
 6. Crea el clon con plantilla y catalogo.
-7. Genera un `POS_BOOTSTRAP_TOKEN` y abre el POS.
+7. Comparte `node_modules` con el POS base mediante un junction de Windows para no duplicar espacio.
+8. Genera un `POS_BOOTSTRAP_TOKEN` y abre el POS.
 
 Los tokens solo viven en las ventanas abiertas por el instalador. Anota los valores mostrados y, despues de crear `owner` y `admin`, cierra el proceso o elimina el bootstrap del entorno antes de entregar el equipo. El BAT sirve para una instalacion local o de demostracion; para produccion en Railway conserva la configuracion indicada mas abajo.
+
+El junction solo comparte dependencias; cada clon mantiene su propia base SQLite, catalogo, configuracion y credenciales. Si ya creaste un clon con una copia completa de `node_modules`, elimina solo esa carpeta dentro del clon y vuelve a crear el junction apuntando a `cremeria-rincon\node_modules`.
 
 ## 1. Requisitos de la nueva PC
 

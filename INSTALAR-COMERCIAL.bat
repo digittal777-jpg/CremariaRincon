@@ -132,11 +132,24 @@ if not exist "%CLIENT_DIR%\package.json" (
 if not exist "%CLIENT_DIR%\catalogos" mkdir "%CLIENT_DIR%\catalogos"
 copy /Y "%CATALOG%" "%CLIENT_DIR%\catalogos\%CLIENT_SLUG%.xlsx" >nul
 
-echo [5/6] Instalando dependencias del clon...
-pushd "%CLIENT_DIR%"
-call npm.cmd install
-if errorlevel 1 goto :failed
-popd
+echo [5/6] Compartiendo dependencias del POS base para ahorrar espacio...
+if not exist "%POS_DIR%\node_modules" (
+  echo ERROR: No existe node_modules del POS base.
+  echo Ejecuta nuevamente el paso de instalacion de dependencias.
+  goto :failed
+)
+if exist "%CLIENT_DIR%\node_modules" (
+  echo ERROR: El clon ya tiene una carpeta node_modules. No la reemplazo automaticamente.
+  echo Elimina el clon incompleto y vuelve a ejecutar el instalador.
+  goto :failed
+)
+mklink /J "%CLIENT_DIR%\node_modules" "%POS_DIR%\node_modules" >nul
+if errorlevel 1 (
+  echo ERROR: Windows no pudo crear el enlace de node_modules.
+  echo Puedes ejecutar el BAT como usuario con permisos para crear junctions.
+  goto :failed
+)
+echo Dependencias compartidas mediante junction; no se duplico node_modules.
 
 for /f "delims=" %%T in ('node -e "const c=require('node:crypto'); console.log('bootstrap_'+c.randomBytes(32).toString('base64url'))"') do set "POS_BOOTSTRAP_TOKEN=%%T"
 set "POS_DB_PATH=%CLIENT_DIR%\data\merxalia-pos.sqlite"
