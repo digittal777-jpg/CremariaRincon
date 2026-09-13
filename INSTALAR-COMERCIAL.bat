@@ -78,6 +78,11 @@ if not defined CLIENT_SLUG (
   echo ERROR: El slug es obligatorio.
   goto :failed
 )
+if /i "%CLIENT_SLUG%"=="cremeria-rincon" (
+  echo ERROR: El slug no puede ser cremeria-rincon porque esa es la carpeta del POS base.
+  echo Usa otro slug, por ejemplo cremeria-el-rincon o cremeria-lupita.
+  goto :failed
+)
 
 set "TEMPLATE="
 set /p "TEMPLATE=Plantilla [abarrotes/cremeria/dulceria/ferreteria/limpieza/papeleria]: "
