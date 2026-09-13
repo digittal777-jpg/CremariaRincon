@@ -4,6 +4,7 @@ POS web para tiendas rurales y comercios de mostrador. Esta instancia esta confi
 
 Guia para instalarlo en otra PC y preparar una venta comercial: [GUIA-INSTALACION-COMERCIAL.md](GUIA-INSTALACION-COMERCIAL.md).
 Para hacerlo de una sentada en Windows, ejecuta [INSTALAR-COMERCIAL.bat](INSTALAR-COMERCIAL.bat) como administrador solo si tu politica de instalacion lo requiere.
+Para actualizar el POS base y despues propagar el codigo a los clones, usa [ACTUALIZAR-POS-BASE.bat](ACTUALIZAR-POS-BASE.bat) y luego [ACTUALIZAR-CLONES.bat](ACTUALIZAR-CLONES.bat).
 
 ## Lo que incluye hoy
 

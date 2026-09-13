@@ -7,6 +7,23 @@ Esta guia explica como instalar Merxalia POS en otra PC y como preparar una inst
 
 Cada cliente debe tener su propia base de datos, volumen, URL, slug y API key. Nunca compartas una base de datos ni una llave entre clientes.
 
+## Actualizar el POS y los clones
+
+Cuando publiques una mejora en GitHub y quieras aplicarla en esta PC:
+
+1. Cierra el POS base y todas las ventanas de los clones.
+2. Ejecuta `ACTUALIZAR-POS-BASE.bat`. Hace `git pull --ff-only origin prueba-ruta` y se detiene si hay cambios locales sin guardar.
+3. Ejecuta `ACTUALIZAR-CLONES.bat` y confirma con `S`. Copia el codigo a las carpetas hermanas que parezcan clones POS.
+
+El actualizador excluye `data`, `node_modules`, SQLite, Excel, logs y `.pos-runtime.env`; por tanto conserva ventas, inventario, usuarios, catalogos y tokens de cada negocio. Si el clon no tiene junction de `node_modules`, intenta crearlo sin duplicar dependencias.
+
+Antes de hacer una actualizacion real puedes comprobar el entorno con:
+
+```powershell
+cmd /c .\ACTUALIZAR-POS-BASE.bat --check
+cmd /c .\ACTUALIZAR-CLONES.bat --check
+```
+
 ## Instalacion automatica en Windows
 
 Si tienes las dos carpetas juntas como en este workspace, ejecuta `INSTALAR-COMERCIAL.bat` desde `cremeria-rincon`. El instalador:
