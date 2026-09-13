@@ -92,7 +92,7 @@ set "PUBLIC_URL="
 set /p "PUBLIC_URL=URL publica del POS [http://localhost:3100]: "
 if not defined PUBLIC_URL set "PUBLIC_URL=http://localhost:3100"
 
-start "Merxalia owner-control" /D "%OWNER_DIR%" cmd /k npm.cmd start
+start "Merxalia owner-control" /D "%OWNER_DIR%" cmd.exe /d /k "npm.cmd start"
 echo Registrando automaticamente el cliente en owner-control...
 set "CONTROL_CLIENT_SECRET="
 for /f "delims=" %%K in ('node "%POS_DIR%\scripts\provision-owner-client.js" --url "http://localhost:3200" --slug "%CLIENT_SLUG%" --name "%BUSINESS_NAME%" --base-url "%PUBLIC_URL%"') do set "CONTROL_CLIENT_SECRET=%%K"
@@ -143,7 +143,7 @@ echo Bootstrap token del POS: %POS_BOOTSTRAP_TOKEN%
 echo.
 echo Se abrira el POS en otra ventana. Usa el bootstrap token para crear owner y admin.
 echo Despues retira ese token del entorno y reinicia el POS.
-start "Merxalia POS - %CLIENT_SLUG%" /D "%CLIENT_DIR%" cmd /k npm.cmd start
+start "Merxalia POS - %CLIENT_SLUG%" /D "%CLIENT_DIR%" cmd.exe /d /k "npm.cmd start"
 echo.
 echo Cliente creado en: %CLIENT_DIR%
 echo El panel owner esta en: http://localhost:3200
