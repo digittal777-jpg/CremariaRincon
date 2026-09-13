@@ -3424,7 +3424,7 @@ services.ensureCatalogSeeded().catch((error) => {
   console.error("No pude preparar el catalogo inicial:", error.message);
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   const protocol = httpsCredentials.enabled ? "https" : "http";
   console.log(`Servidor corriendo en ${protocol}://localhost:${PORT}`);
   if (httpsCredentials.enabled && httpsCredentials.sources.length > 0) {
