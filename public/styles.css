@@ -5534,6 +5534,8 @@ button:active,
 .merchandise-product-card {
   cursor: default;
   text-align: left;
+  min-height: 0;
+  contain: none;
 }
 
 .merchandise-product-meta {
