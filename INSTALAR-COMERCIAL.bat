@@ -17,20 +17,20 @@ echo.
 
 if not exist "%POS_DIR%\package.json" (
   echo ERROR: Ejecuta este archivo desde la carpeta cremeria-rincon.
-  exit /b 1
+  goto :failed
 )
 if not exist "%OWNER_DIR%\package.json" (
   echo ERROR: No encuentro owner-control en "%OWNER_DIR%".
-  exit /b 1
+  goto :failed
 )
 where node >nul 2>nul || (
   echo ERROR: Node.js no esta instalado o no esta en PATH.
   echo Instala Node.js 24 o superior y vuelve a ejecutar este archivo.
-  exit /b 1
+  goto :failed
 )
 where npm >nul 2>nul || (
   echo ERROR: npm no esta disponible en PATH.
-  exit /b 1
+  goto :failed
 )
 
 for /f "delims=" %%V in ('node --version') do set "NODE_VERSION=%%V"
@@ -76,7 +76,7 @@ set "CLIENT_SLUG="
 set /p "CLIENT_SLUG=Slug del cliente, ejemplo abarrotes-lupita: "
 if not defined CLIENT_SLUG (
   echo ERROR: El slug es obligatorio.
-  exit /b 1
+  goto :failed
 )
 
 set "TEMPLATE="
@@ -85,7 +85,7 @@ if not defined TEMPLATE set "TEMPLATE=abarrotes"
 set "CATALOG=%POS_DIR%\catalogos\%TEMPLATE%-base.xlsx"
 if not exist "%CATALOG%" (
   echo ERROR: No existe "%CATALOG%".
-  exit /b 1
+  goto :failed
 )
 
 set "PUBLIC_URL="
@@ -99,7 +99,7 @@ for /f "delims=" %%K in ('node "%POS_DIR%\scripts\provision-owner-client.js" --u
 if errorlevel 1 goto :failed
 if not defined CONTROL_CLIENT_SECRET (
   echo ERROR: owner-control no devolvio una API key.
-  exit /b 1
+  goto :failed
 )
 echo Cliente registrado y API key recibida.
 
@@ -113,7 +113,7 @@ popd
 set "CLIENT_DIR=%WORKSPACE_DIR%\%CLIENT_SLUG%"
 if not exist "%CLIENT_DIR%\package.json" (
   echo ERROR: No se creo el clon en "%CLIENT_DIR%".
-  exit /b 1
+  goto :failed
 )
 if not exist "%CLIENT_DIR%\catalogos" mkdir "%CLIENT_DIR%\catalogos"
 copy /Y "%CATALOG%" "%CLIENT_DIR%\catalogos\%CLIENT_SLUG%.xlsx" >nul
@@ -164,4 +164,7 @@ exit /b 0
 echo.
 echo ERROR: Un comando fallo. Revisa el mensaje anterior.
 popd >nul 2>nul
+echo.
+echo La ventana quedara abierta para que puedas leer el error.
+pause
 exit /b 1
