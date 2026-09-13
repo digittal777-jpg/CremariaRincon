@@ -151,6 +151,28 @@ set "CONTROL_API_URL=http://localhost:3200"
 set "CONTROL_CLIENT_SLUG=%CLIENT_SLUG%"
 set "CONTROL_REQUIRE_HTTPS=true"
 
+> "%CLIENT_DIR%\.pos-runtime.env" (
+  echo # Archivo privado generado por INSTALAR-COMERCIAL.bat
+  echo POS_DB_PATH=%POS_DB_PATH%
+  echo POS_WORKBOOK_PATH=%POS_WORKBOOK_PATH%
+  echo POS_TIMEZONE=%POS_TIMEZONE%
+  echo POS_PUBLIC_ORIGIN=%POS_PUBLIC_ORIGIN%
+  echo POS_ALLOWED_ORIGINS=%POS_ALLOWED_ORIGINS%
+  echo POS_SECURE_COOKIES=%POS_SECURE_COOKIES%
+  echo POS_FORCE_HTTPS=%POS_FORCE_HTTPS%
+  echo POS_TRUST_PROXY=%POS_TRUST_PROXY%
+  echo POS_BOOTSTRAP_TOKEN=%POS_BOOTSTRAP_TOKEN%
+  echo CONTROL_API_URL=%CONTROL_API_URL%
+  echo CONTROL_CLIENT_SLUG=%CONTROL_CLIENT_SLUG%
+  echo CONTROL_CLIENT_SECRET=%CONTROL_CLIENT_SECRET%
+  echo CONTROL_REQUIRE_HTTPS=%CONTROL_REQUIRE_HTTPS%
+)
+if errorlevel 1 (
+  echo ERROR: No se pudo guardar la configuracion privada del POS.
+  goto :failed
+)
+echo Configuracion privada del POS guardada en .pos-runtime.env.
+
 echo.
 echo [6/6] Instalacion terminada.
 echo Bootstrap token del POS: %POS_BOOTSTRAP_TOKEN%

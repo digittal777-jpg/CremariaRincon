@@ -5545,7 +5545,7 @@ button:active,
 
 .merchandise-product-quick-row {
   display: grid;
-  grid-template-columns: minmax(72px, 0.8fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
   align-items: center;
 }
@@ -5558,6 +5558,12 @@ button:active,
   background: rgba(255, 252, 248, 0.94);
   padding: 9px 10px;
   font-weight: 800;
+}
+
+.merchandise-product-quick-row button {
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 .merchandise-product-card-foot {
@@ -5665,6 +5671,6 @@ button:active,
   }
 
   .merchandise-product-quick-row {
-    grid-template-columns: minmax(80px, 1fr) 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
 }
