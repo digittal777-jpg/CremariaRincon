@@ -51,7 +51,8 @@ popd
 
 echo.
 echo El token owner-control protege tu panel central.
-echo Deja vacio para generar uno nuevo automaticamente.
+echo Si owner-control ya existe, escribe su token actual.
+echo Deja vacio solo para una instalacion nueva.
 set "OWNER_CONTROL_TOKEN="
 set /p "OWNER_CONTROL_TOKEN=OWNER_CONTROL_TOKEN: "
 if not defined OWNER_CONTROL_TOKEN for /f "delims=" %%T in ('node -e "const c=require('node:crypto'); console.log('owner_'+c.randomBytes(32).toString('base64url'))"') do set "OWNER_CONTROL_TOKEN=%%T"
@@ -97,7 +98,13 @@ set "PUBLIC_URL="
 set /p "PUBLIC_URL=URL publica del POS [http://localhost:3100]: "
 if not defined PUBLIC_URL set "PUBLIC_URL=http://localhost:3100"
 
-start "Merxalia owner-control" /D "%OWNER_DIR%" cmd.exe /d /k "npm.cmd start"
+node -e "fetch('http://localhost:3200/api/health').then(response => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+if errorlevel 1 (
+  echo owner-control no estaba iniciado; abriendo una instancia nueva.
+  start "Merxalia owner-control" /D "%OWNER_DIR%" cmd.exe /d /k "npm.cmd start"
+) else (
+  echo owner-control ya esta iniciado; se reutilizara la instancia existente.
+)
 echo Registrando automaticamente el cliente en owner-control...
 set "CONTROL_CLIENT_SECRET="
 set "OWNER_CLIENT_RESULT=%TEMP%\merxalia-owner-client-%RANDOM%.log"
