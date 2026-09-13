@@ -5526,6 +5526,9 @@ button:active,
 
 .merchandise-request-products {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  align-items: start;
   max-height: 560px;
   overflow: auto;
   padding-right: 4px;
@@ -5534,7 +5537,12 @@ button:active,
 .merchandise-product-card {
   cursor: default;
   text-align: left;
+  height: auto;
   min-height: 0;
+  overflow: visible;
+  opacity: 1;
+  transform: none;
+  animation: none;
   contain: none;
 }
 
