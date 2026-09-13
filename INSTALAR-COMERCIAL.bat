@@ -95,8 +95,17 @@ if not defined PUBLIC_URL set "PUBLIC_URL=http://localhost:3100"
 start "Merxalia owner-control" /D "%OWNER_DIR%" cmd.exe /d /k "npm.cmd start"
 echo Registrando automaticamente el cliente en owner-control...
 set "CONTROL_CLIENT_SECRET="
-for /f "delims=" %%K in ('node "%POS_DIR%\scripts\provision-owner-client.js" --url "http://localhost:3200" --slug "%CLIENT_SLUG%" --name "%BUSINESS_NAME%" --base-url "%PUBLIC_URL%"') do set "CONTROL_CLIENT_SECRET=%%K"
-if errorlevel 1 goto :failed
+set "OWNER_CLIENT_RESULT=%TEMP%\merxalia-owner-client-%RANDOM%.log"
+node "%POS_DIR%\scripts\provision-owner-client.js" --url "http://localhost:3200" --slug "%CLIENT_SLUG%" --name "%BUSINESS_NAME%" --base-url "%PUBLIC_URL%" > "%OWNER_CLIENT_RESULT%" 2>&1
+if errorlevel 1 (
+  echo.
+  echo ERROR detallado al registrar el cliente:
+  type "%OWNER_CLIENT_RESULT%"
+  del /q "%OWNER_CLIENT_RESULT%" >nul 2>nul
+  goto :failed
+)
+set /p "CONTROL_CLIENT_SECRET=" < "%OWNER_CLIENT_RESULT%"
+del /q "%OWNER_CLIENT_RESULT%" >nul 2>nul
 if not defined CONTROL_CLIENT_SECRET (
   echo ERROR: owner-control no devolvio una API key.
   goto :failed
